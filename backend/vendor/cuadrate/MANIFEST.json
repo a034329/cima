@@ -1,0 +1,16 @@
+{
+  "source": "/app/720",
+  "copied_at": "2026-05-25T10:28:58.915240+00:00",
+  "files": {
+    "irpf/motor_fiscal.py": "89b2064c3c7d8c67808912a50ee9919ec1b86bcfc98c9d949d0d29382d46b02b",
+    "irpf/generar_irpf.py": "fce2f20315add811d6fde45691cb323bb919b1e4a277dcbb65b5db4277cb2f88",
+    "irpf/compensacion_perdidas.py": "8ae9cbbdcba4e5d4e7f45dafcd5121fa400abb11c6092f2c01a740b9eae0ef5e",
+    "irpf/instrument_classifier.py": "e237c4cb2631ed2d819629cd1e50faf5ade1ff2065d548c451b9dab6d224d472",
+    "irpf/derechos_clasificados.json": "ac1c7841a5491120545bea561a206c8557a063463b887fd7822ef57eecf4dc32",
+    "irpf/etf_isin_list.json": "11e0e78b8038119ad8218d63b587a0d20ad8f93924d16771141cdf34b03f2f84",
+    "irpf/stock_blacklist.json": "e8966b557032c7bc6a45ecf13da97a3b13c627471bd147826b26d3e05feb03c2",
+    "irpf/socimi_es_isin_list.json": "c581b3eee9f1533be90ebc0f5740c3b6b1cb63f52656df3c67542c658e3949a5",
+    "irpf/ecb_fx_cache.json": "ba1c8b28a12351febf02997a1c48fbd28702a4eb6ad2b12a929a6460a301b7ab",
+    "casillas_irpf.json": "fd5434b81b8a772fcc70e5afbb0b7503daf34eff4a88960748b9410d896b3cd1"
+  }
+}

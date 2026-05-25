@@ -1,0 +1,396 @@
+# Cima — Roadmap
+
+> Documento operativo. Vive, se actualiza, se commitea. No es marketing —
+> es la lista de lo que hay que hacer y en qué orden.
+
+**Última actualización**: 2026-05-25.
+
+---
+
+## Estado real (resumen al 2026-05-25)
+
+> Lo construido va MUY por delante de los checkboxes de abajo (que se mantenían en ⬜).
+> Backend FastAPI + SQLAlchemy (SQLite dev, micro-migraciones sin Alembic aún) + frontend
+> Next 14 funcional. **224 tests backend en verde.** Sin git todavía (repo aparte pendiente).
+
+**Fase 1 — Base: casi completa.**
+- ✅ Modelo de datos multi-broker + triple PM (real/fiscal-ES/opciones). PM display = media ponderada.
+- ✅ Importadores DEGIRO, IBKR, Trade Republic (+ reconciliación cross-broker FIFO). 🔵 faltan Trading212/ING/MyInvestor.
+- ✅ Motor fiscal de Cuádrate in-process: FIFO multi-año, regla 2M, opciones, forex, intereses, letras, dividendos + retención ES (0591) / CDI (0588 parcial), bolsas 4 años, base ahorro.
+- ✅ **Bloques de estrategia — ampliado más allá del plan original** (ver Fase 1.4 abajo): catálogo de categorías con fichas (criterios/no_es), objetivos de peso + déficit, colchón especial, y **flag `en_estrategia`** (cualquier bloque dentro/fuera de la IF, generaliza el colchón). 8 categorías + 2 opcionales (cripto, materias primas).
+- ✅ **Clasificador IA puntual + lote** (1.6): compuertas deterministas + IA (Claude Max vía CLI) con distribución de probabilidad, razonamiento y few-shot de overrides del usuario.
+- ✅ **Plan por valor** (PlanPaso, decisión por ISIN) + **plan de compra top-down** (hueco de asignación: objetivo/actual/planeado/déficit por bloque; watchlist-first para empresas nuevas). NO estaba en el roadmap original.
+- ✅ UI: dashboard, posiciones, página de posición, Estrategia (Bloques/Plan/Estimaciones/Seguimiento/Rotación), hub Fiscalidad (7 sub-pestañas), Config.
+- ⬜ Onboarding IA (1.5) — bloqueado por no cablear API key. 🔵 friction popups (1.7) pendientes. ⬜ integración Cuádrate (1.9). ⬜ beta cerrada (1.10).
+
+**Fase 2 — Estimaciones: el núcleo hecho.**
+- ✅ Métricas valoración multi-método (PER/P_FCF/P_BV/P_FRE), CAGR4+Div, consenso analistas FMP, umbrales fiscales R-U.
+- ✅ Editor custom + watchlist (Seguimiento) con valoración.
+- ✅ Filtro fiscal de rotación (umbrales R-U) — página Rotación + columnas.
+- 🔵 Catálogo: feed on-demand (FMP+YF+OpenFIGI) con caché, no un top-1.000 mantenido aún.
+
+**Fase 3 — Plan IA: pendiente.** Stub de créditos (`registrar_uso_ia`). Régimen macro, comandos profundos, 9 filtros, PASO 0, AI Act → no construidos.
+
+**Pendiente de fundador**: registrar `cima.app`, validación legal, git/CI, esquema mercantil, branding.
+
+---
+
+## Convenciones
+
+- **Prioridad**: 🔴 alta · 🟠 media · 🟡 baja
+- **Esfuerzo**: <1d, 1-3d, 1w, 2w+, 1m+
+- **Estado**: ⬜ pendiente · 🔵 en curso · ✅ hecho · ⏸️ pausado · ❌ descartado
+- Cada hito tiene: descripción + criterio de aceptación + dependencias.
+
+---
+
+## Hito 0 — Setup inicial (mes 0-1)
+
+Objetivo: tener un repositorio funcional con stack decidido, CI básico, primeros endpoints stub, validación legal en marcha.
+
+### 0.1 Decisiones de stack 🔴 1-3d ✅
+
+- [ ] **Backend**: Python (FastAPI) por reutilización del motor Cuádrate (Python). Alternativa: Node (peor encaje con `generar_irpf.py`).
+- [ ] **Frontend**: Next.js 14 + TypeScript + Tailwind. Alternativa: Remix.
+- [ ] **DB**: PostgreSQL 16 (Supabase para fase beta, self-hosted en fase 3).
+- [ ] **Auth**: Clerk / Supabase Auth / Auth.js. Decidir según pricing y MFA.
+- [ ] **Pagos**: Lemon Squeezy (Merchant of Record, sin IVA propio).
+- [ ] **Hosting backend**: Railway (continuidad con Cuádrate) o Fly.io.
+- [ ] **Hosting frontend**: Vercel.
+- [ ] **CI/CD**: GitHub Actions + tests + deploy a staging automático.
+- [ ] **Observability**: Sentry (errores) + Plausible (analytics privacy-friendly).
+
+**Criterio aceptación**: stack decidido, documentado en `docs/decisions/001-stack-tecnico.md`.
+
+### 0.2 Validación legal con abogado fintech 🔴 1w ⬜
+
+- [ ] Identificar 2-3 despachos: Cuatrecasas, finReg360, Futur Legal, Pinsent Masons.
+- [ ] Sesión inicial (1-2h): validar modelo "coaching no asesoramiento" para MiFID II.
+- [ ] Validar diseño dual modo Owner / modo SaaS.
+- [ ] Validar tratamiento staking cripto (DGT V0975-22).
+- [ ] Redactar términos y condiciones + disclaimers.
+
+**Criterio aceptación**: documento legal firmado por el despacho confirmando que el diseño actual NO requiere licencia EAFN.
+
+**Coste estimado**: 600-1.500 €.
+
+### 0.3 Setup repositorio + CI 🔴 1-3d ⬜
+
+- [ ] Estructura `cima/{backend,frontend,tests,docs}` (ya creada).
+- [ ] GitHub repo privado.
+- [ ] `.gitignore` riguroso (PII, .env, secretos).
+- [ ] Pre-commit hooks (ruff, black, prettier, mypy).
+- [ ] GitHub Actions: tests + lint en cada PR.
+- [ ] Branch protection: main protegido, sólo PR con CI verde.
+
+**Criterio aceptación**: PR de prueba pasa CI verde y se despliega a staging.
+
+### 0.4 Entrevistas con usuarios diana 🔴 2w ⬜
+
+- [ ] Identificar 15-20 usuarios de Cuádrate con perfil ICP.
+- [ ] Entrevista de 30 min con cada uno (script estandarizado).
+- [ ] Preguntas clave:
+  - ¿Cómo gestionas hoy tu cartera + plan?
+  - ¿Cuánto pagarías por una herramienta que (X, Y, Z)?
+  - ¿Qué te frustra de tu Excel/tracker actual?
+  - ¿Confiarías en un asesor IA o no?
+- [ ] Sintetizar hallazgos en `docs/research/entrevistas-icp-2026-may.md`.
+
+**Criterio aceptación**: 15 entrevistas hechas, hallazgos documentados, pricing validado contra disposición real a pagar.
+
+### 0.5 Auditoría Cuádrate vs micartera.app 🟠 1d ✅
+
+- [ ] Suscribirse 1 mes a micartera (≈10 €).
+- [ ] Probar mismos CSVs reales en ambos.
+- [ ] Documentar dónde Cuádrate gana, empata o pierde.
+- [ ] Resultado: `docs/research/cuadrate-vs-micartera-2026-may.md`.
+
+**Criterio aceptación**: matriz completa de funcionalidades con evidencia.
+
+---
+
+## Fase 1 — Base (mes 1-6)
+
+Objetivo: tracker multi-broker con fiscalidad española completa, bloques de estrategia, onboarding IA y clasificador puntual. Funcionalmente equivalente a "Cuádrate + estrategia + onboarding".
+
+### Criterio de paso a Fase 2
+
+- 500 usuarios pagos sostenidos 90 días
+- churn < 5%
+- NPS > 50
+- > 25% usan importador opciones
+- > 50 solicitudes/mes de "estimaciones"
+
+### 1.1 Modelo de datos multi-broker con opciones 🔴 2w ✅ (Alembic pendiente; SQLite dev)
+
+- [ ] Diseño: posición global por ticker, lots por broker.
+- [ ] Tablas: `cartera`, `posiciones`, `lots`, `transacciones`, `opciones`, `dividendos`, `corporate_events`.
+- [ ] Triple PM por posición: real, fiscal-ES, opciones-total.
+- [ ] Migraciones con Alembic.
+- [ ] ADR: `docs/decisions/002-modelo-datos-multibroker.md`.
+
+### 1.2 Importadores de broker 🔴 4w 🔵 (DEGIRO/IBKR/TR ✅; faltan Trading212/ING/MyInvestor)
+
+Reutilizar parsers de Cuádrate (`/app/720/irpf/generar_irpf.py`). Orden:
+
+- [ ] **DEGIRO** (transacciones + cuenta) — base ya operativa en Cuádrate.
+- [ ] **IBKR** (Activity Statement) — base ya operativa en Cuádrate.
+- [ ] **Trade Republic** — parser completado en este sprint ✅.
+- [ ] **Trading 212** — nuevo, partir de Pocket Portfolio como referencia.
+- [ ] **ING Bróker Naranja** — relevante mercado tradicional ES.
+- [ ] **MyInvestor** — completa la oferta principal.
+- [ ] Reconciliación cross-broker por ISIN (FIFO global).
+
+### 1.3 Motor fiscal español 🔴 reutilizar ✅ (in-process desde Cuádrate; CDI 0588 parcial)
+
+- [ ] Importar (no fork) las funciones de `/app/720/irpf/`:
+  - FIFO multi-año por ISIN.
+  - Regla 2 meses.
+  - Opciones (5 casos DGT V2172-21).
+  - Corporate actions (splits, ISIN_CHANGE, scrip puro/mixto, rights, M&A complejas).
+  - Tasas externas (Tobin, Stamp Duty, SEC, FINRA, FTT).
+  - Dividendos + retenciones + deducción CDI casilla 0588.
+  - Bolsas pérdidas 4 años, RCM vs patrimoniales.
+- [ ] Decidir estrategia: copiar a `backend/motor_fiscal/`, o extraer a `wg-core/` compartido entre Cuádrate y Cima.
+- [ ] Tests de regresión: importar suite de `/app/720/tests/`.
+
+### 1.4 Bloques de estrategia 🔴 1w ✅ (ampliado más allá del plan)
+
+- [x] Catálogo con **fichas** (descripción + criterios medibles + frontera `no_es`) como fuente única.
+- [x] 6 base (Compounders/Dividend Growth/Estable/High Yield/Satélite/Colchón) + 4 opcionales (Índice/Renta Fija/Cripto/Materias primas). Tope 12. Saco "Sin clasificar".
+- [x] Objetivos de peso + tolerancia + **déficit/hueco de asignación** (plan de compra top-down).
+- [x] **Flag `en_estrategia`**: cualquier bloque dentro/fuera de la IF (generaliza el colchón). Fuera → no cuenta para progreso IF ni para el déficit.
+- [x] Colchón especial: efectivo asignado + rendimiento. CheckConstraint eliminado (validación en servicio).
+- [x] UI agrupada: Estrategia IF / Fuera de estrategia / Disponibles (vacíos compactos).
+- [ ] Drag & drop (se usa selector/asignación, no DnD — opcional).
+
+### 1.5 Onboarding IA co-construido 🔴 3-4w ⬜
+
+- [ ] Diseño conversacional paso a paso (6 etapas).
+- [ ] Integración con Claude API + prompt caching.
+- [ ] Tres simuladores: histórico (2008/2020/2022), capacidad IF, comparador mix.
+- [ ] Output: plan personal firmado (PDF + JSON guardado en DB).
+- [ ] Modo Owner: sin disclaimers; modo SaaS: con disclaimers.
+- [ ] Tests: que la IA nunca diga "compra X" en modo SaaS (test adversarial).
+
+### 1.6 Clasificador IA puntual 🔴 1w ✅
+
+- [x] Endpoint puntual + **lote**: IA sugiere bloque con razonamiento + distribución de probabilidad.
+- [x] Compuertas deterministas (cripto/ETF/yield) antes de la IA (sin coste). IA = Claude Max vía CLI (sin API key aún).
+- [x] **Few-shot del sesgo del usuario**: los overrides (sugerida ≠ elegida) se capturan y reinyectan.
+- [x] Usuario decide siempre; la IA nunca asigna sola. Vale para posiciones Y watchlist.
+- [ ] Logs auditables formales (hoy se guardan overrides; falta traza completa).
+
+### 1.6b Plan por valor + plan de compra top-down 🔴 ✅ (no estaba en el plan)
+
+- [x] `PlanPaso`: cola de decisiones por ISIN (COMPRAR/REFORZAR/MANTENER/…), réplica de la hoja Plan de WG.
+- [x] **Watchlist-first**: empresas nuevas se siguen (Seguimiento), se clasifican y se les crea paso COMPRAR.
+- [x] **Hueco de asignación**: por bloque, objetivo% − proyectado% (actual + planeado) = déficit en %/€. El déficit marca dónde comprar; el régimen macro (Fase 3) dará el ritmo.
+
+### 1.7 Operativa diaria 🔴 2w 🔵 (añadir op + reconciliación ✅; friction popups y WebSocket ⬜)
+
+- [ ] Botón "Añadir operación" (modal 5 campos, 15 segundos).
+- [ ] Reconciliación al importar extractos (matching ±2 días, ±0,5% precio).
+- [ ] Friction popups cuando se rompe regla del plan firmado.
+- [ ] Recálculo en cascada <500 ms.
+- [ ] WebSocket para refresh en tiempo real.
+
+### 1.8 UI básica 🔴 4w ✅ (dashboard, posiciones, Estrategia, hub Fiscalidad, Config)
+
+- [ ] Dashboard cartera (resumen por bloque, posiciones, alertas).
+- [ ] Página de cada posición con triple PM y opciones cubiertas.
+- [ ] Bolsas fiscales visibles.
+- [ ] Vista del Plan firmado (read-only + revisión periódica).
+- [ ] Configuración (perfil, brokers conectados, integración Cuádrate).
+
+### 1.9 Integración Cuádrate 🟠 1w ⬜
+
+- [ ] API entre Cima y Cuádrate (SSO + datos cartera).
+- [ ] Descuento 50% Cuádrate para usuarios Cima.
+- [ ] Botón "Generar declaración IRPF con Cuádrate" desde dashboard.
+
+### 1.10 Beta cerrada 🔴 1m ⬜
+
+- [ ] Apertura a 100-300 usuarios de Cuádrate (exclusiva primeros 3 meses).
+- [ ] Feedback semanal.
+- [ ] Fix bugs fiscales según aparecen.
+- [ ] Monitoreo: NPS, churn, MRR.
+
+---
+
+## Fase 2 — Estimaciones (mes 6-9)
+
+Objetivo: pasar de tracker a "decidir mejor". Catálogo top 1.000 mantenido, editor custom, métricas de valoración.
+
+### Criterio de paso a Fase 3
+
+- 2.000 usuarios pagos
+- MRR > 15.000 €
+- Validación legal completada
+- Auditoría AI Act aprobada
+- Prompt caching probado en producción
+
+### 2.1 Catálogo top 1.000 empresas 🔴 2w 🔵 (feed on-demand FMP+YF+OpenFIGI con caché; falta catálogo mantenido)
+
+- [ ] Pipeline ingesta: FMP + Yahoo Finance + SEC EDGAR.
+- [ ] Cache 48h (lección del Excel actual).
+- [ ] Cron job actualización diaria.
+- [ ] Multi-divisa con divisa canónica por celda.
+
+### 2.2 Métricas de valoración 🔴 2w ✅
+
+- [ ] Multi-método: PER, P/FCF, P/BV, P/FRE.
+- [ ] CAGR4 + Yield neto por posición.
+- [ ] Switching cost 1Y, 2Y, 3Y, 4Y.
+- [ ] Rentabilidad potencial agregada (C10 del Excel).
+
+### 2.3 Editor custom 🟠 1w ✅ (watchlist/Seguimiento + múltiplo/métrica editables)
+
+- [ ] Usuario añade empresas fuera del top 1.000.
+- [ ] Métrica base 4Y editable.
+- [ ] Múltiplo objetivo configurable.
+
+### 2.4 Filtro fiscal automático 🟠 1w ✅ (umbrales R-U: página Rotación + columnas)
+
+- [ ] Al considerar rotación, comparar CAGR4+Div destino vs umbrales R-U del origen.
+- [ ] Mensaje claro al usuario.
+
+---
+
+## Fase 3 — Plan IA (mes 9-13)
+
+Objetivo: el agente IA continuo con régimen macro, comandos profundos y los 9 filtros.
+
+### 3.1 Régimen macro automático 🔴 2w ⬜
+
+- [ ] Ingesta: 4 indicadores (ciclo, inflación/tipos, geopolítica, mercado).
+- [ ] Clasificador VERDE/AMARILLO/ROJO.
+- [ ] Calibración DCA: tamaño + espaciado.
+- [ ] Regla -14% S&P500.
+
+### 3.2 Comandos profundos 🔴 3w ⬜
+
+- [ ] `/comps` (comparables sector).
+- [ ] `/dcf` (validación valoración).
+- [ ] `/earnings` (impacto resultados).
+- [ ] `/one-pager` (estudio inicial).
+- [ ] `/edgar` (filings SEC).
+
+### 3.3 9 filtros automáticos 🔴 2w ⬜
+
+- [ ] Auditoría de bloque.
+- [ ] Filtro de fase.
+- [ ] Criterio 15/15.
+- [ ] Filtro fiscal rotación.
+- [ ] Filtro de calidad rotación (4 checks).
+- [ ] Abogado del diablo.
+- [ ] Filtro macro.
+- [ ] Anti-churn.
+- [ ] Verificación umbrales R-U.
+
+### 3.4 PASO 0/0A/0B/0C 🔴 2w ⬜
+
+- [ ] Búsqueda contextual web automática.
+- [ ] Disección del negocio.
+- [ ] Test coyuntural vs estructural.
+- [ ] Regla del moat intangible.
+
+### 3.5 Sistema de créditos 🟠 1w ⬜
+
+- [ ] 30 análisis IA/mes en Plan IA.
+- [ ] Ilimitados en Full/Pro.
+- [ ] UI clara del uso.
+
+### 3.6 Cumplimiento AI Act 🔴 2w ⬜
+
+- [ ] Auditoría: riesgo limitado (no alto riesgo).
+- [ ] Transparencia: razonamiento + fuentes + confianza por output.
+- [ ] Decisión humana siempre final.
+- [ ] No scoring patrimonial.
+
+### 3.7 Sandbox CNMV 🟠 6m ⬜
+
+- [ ] Aplicar al sandbox financiero (Ley 7/2020).
+- [ ] 12-18 meses bajo supervisión.
+- [ ] Validación oficial del modelo.
+
+---
+
+## Fase 4 — Add-on Recuperación CDI (mes 14+)
+
+Objetivo: captar segmento "dividendero serio" con recuperación automática del exceso de retención en origen.
+
+### 4.1 Investigación inicial 🟠 2w ⬜
+
+- [ ] Cuantificar demanda en base de usuarios Fase 1-3.
+- [ ] Analizar partner: Divizend (10-15% revenue share).
+- [ ] Decidir modelo: A (interno), B (partner), C (formularios pre-rellenos).
+
+### 4.2 Implementación 🔴 2-6m ⬜
+
+- [ ] Según modelo elegido.
+- [ ] Foco inicial: DE (Alemania 11,375% recuperable), FR (15% vía 5000), CH (20% vía 85).
+
+---
+
+## Hito transversal — Modo Owner del fundador
+
+Objetivo: que el fundador pueda usar Cima en su día a día como sustituto del Excel, sin las restricciones IA del SaaS, con agente externo (Claude Code, voz) actuando vía API.
+
+### Tareas paralelas a las fases
+
+- [ ] Flag `WG_MODE=owner` en config con efecto en agente, disclaimers y permisos.
+- [ ] API REST completa con auth por API key personal.
+- [ ] Servidor MCP encima de la API para que Claude Code lo consuma.
+- [ ] Cliente de voz: Whisper STT → agente → MCP → API.
+- [ ] Importador one-shot del Excel actual (`analisis.xlsx`) a la BD del producto.
+- [ ] Documentación: cómo el agente externo opera Cima.
+
+**Activación**: cuando Fase 1 esté en beta cerrada y la API esté estable.
+
+---
+
+## Decisiones pendientes (consolidadas del documento de diseño)
+
+1. Esquema mercantil: misma sociedad que Cuádrate o sociedad separada con marca paraguas.
+2. Modelo Fase 4 CDI: A (interno) / B (partner Divizend) / C (formularios).
+3. Política empresas fuera top 1.000 en el Base: bloquear, mostrar sin métricas o input manual.
+4. Onboarding por voz o solo texto inicial.
+5. Compliance officer interno o externalizado.
+6. Branding: ¿submarca de Cuádrate o marca paraguas independiente?
+
+---
+
+## Hitos transversales recurrentes
+
+- **Cada 4 semanas**: revisión cruzada WG personal ↔ Cima (qué aprendizajes nuevos integrar).
+- **Cada 8 semanas**: revisión del roadmap, repriorización, descartes.
+- **Mensualmente**: backup de la BD a almacenamiento off-site (cuando exista BD productiva).
+
+---
+
+## Riesgos y mitigaciones (versión corta del doc Word)
+
+| Riesgo | Mitigación |
+|---|---|
+| MiFID II — IA podría considerarse asesoramiento | Diseño semántico riguroso, plan firmado por usuario, validación legal H0.2 |
+| AI Act — alto riesgo | Tres anclas: decisión humana, transparencia, no scoring |
+| Coste API IA | Prompt caching obligatorio, IA puntual en Base, créditos en Plan IA |
+| Divergencia con WG personal | Revisión cruzada mensual, extraer `wg-core/` cuando 3+ funciones dupliquen |
+| Cambios fiscales en España | Capa fiscal aislada y versionada |
+| Atascarse en Fase 1 | Criterios de paso medibles a priori |
+| Canibalización Cuádrate | Cuádrate independiente, descuento 50% para Cima users |
+| Adquisición fuera Cuádrate | Beta cerrada 3m exclusiva Cuádrate, luego SEO + comunidad + partnerships |
+
+---
+
+## Próximos pasos inmediatos (al 2026-05-25)
+
+Lo nuclear de Fase 1 y el núcleo de Fase 2 están hechos. Lo siguiente, por valor:
+
+1. 🔴 **Cablear ANTHROPIC_API_KEY** → desbloquea onboarding IA (1.5) y deja la IA lista para producción (hoy va por Claude Max/CLI en dev).
+2. 🔴 **Fricción "avisa, rebate 2 veces, te deja"** (pilar psicológico) — friction popups de 1.7 + captura de override al ejecutar.
+3. 🟠 **Refinar clasificador**: añadir beta + ROIC a los fundamentales para endurecer los cortes Estable/Compounder (hoy los hace la IA por conocimiento).
+4. 🟠 **Importadores** Trading212/ING/MyInvestor (1.2) + integración Cuádrate (1.9).
+5. 🟠 **git + CI** (repo propio, .gitignore, GitHub Actions) — sigue sin versionar.
+6. 🟡 Decisión fundador: registrar `cima.app`, validación legal, esquema mercantil, branding.

@@ -1,0 +1,54 @@
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# ── Node / Next ─────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+.vercel/
+
+# ── Entorno / secretos (los *.example SÍ se commitean) ──────────────
+.env
+.env.local
+.env.production
+.env.development
+.env.*.local
+
+# ── Base de datos local = DATOS REALES del usuario → nunca al repo ──
+*.db
+*.db-journal
+*.db.bak*
+cima.db*
+
+# ── Cachés generadas ────────────────────────────────────────────────
+precios_cache.json
+cache_*.json
+*_cache.json
+# …pero el motor vendorizado SÍ va al repo, incluida su caché BCE de tipos
+# históricos (dato de referencia, necesario para la conversión FX en el contenedor):
+!backend/vendor/cuadrate/irpf/ecb_fx_cache.json
+
+# ── Datos personales (PII): extractos de broker reales ─────────────
+test_data/
+*.csv
+*.pdf
+*.xlsx
+!*.example.csv
+
+# ── Misc ────────────────────────────────────────────────────────────
+*.log
+.DS_Store

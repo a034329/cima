@@ -1,0 +1,35 @@
+{
+  "_comentario": "Clasificación de ISINs de derechos de suscripción/asignación. Actualizar con /irpf classify.",
+  "_tipos": {
+    "A": "Derecho de suscripción preferente (ampliación real con desembolso). Venta → casillas de derechos del ejercicio (Renta 2025: 341-346).",
+    "B": "Derecho de asignación gratuita / scrip dividend. Venta mercado → casillas de derechos del ejercicio (Renta 2025: 341-346; G/P, Art. 37.1.a). Recompra emisor precio comprometido → casilla RCM (Renta 2025: 0029; Art. 25.1.a). Canje por acción → sin tributación este año; acción liberada con coste prorrateado (Art. 37.1.a §4)."
+  },
+  "_campos": {
+    "ratio_canje": "Nº de derechos que se canjean por 1 acción nueva (ej. 35 → 35 derechos = 1 acción).",
+    "precio_comprometido_eur": "Precio por derecho al que el emisor se compromete a recomprar los residuales (EUR). Solo aplicable a TIPO B."
+  },
+  "ES06670509Q3": {
+    "tipo": "B",
+    "emisor": "ACS ACTIVIDADES DE CONST",
+    "descripcion": "Scrip dividend ene-2025. 35 derechos = 1 acción. Precio comprometido: 0,454 EUR/derecho. Período negociación: 21/01-04/02/2025.",
+    "ratio_canje": 35,
+    "precio_comprometido_eur": 0.454,
+    "fuente": "OCU Inversiones, Grupo ACS IR"
+  },
+  "ES06670509R1": {
+    "tipo": "B",
+    "emisor": "ACS ACTIVIDADES DE CONST",
+    "descripcion": "Scrip dividend jul-2025. 35 derechos = 1 acción. Importe comprometido: 1,557 EUR/acción (equiv. 0,0445 EUR/derecho). Período: 01/07-15/07/2025.",
+    "ratio_canje": 35,
+    "precio_comprometido_eur": 0.0445,
+    "fuente": "OCU Inversiones, Grupo ACS IR"
+  },
+  "ES0684262944": {
+    "tipo": "B",
+    "emisor": "VISCOFAN SA",
+    "descripcion": "Scrip dividend nov-2025. 35 derechos = 1 acción. Importe comprometido: 1,548 EUR/acción (equiv. 0,0442 EUR/derecho). Período: 20/11-04/12/2025.",
+    "ratio_canje": 35,
+    "precio_comprometido_eur": 0.0442,
+    "fuente": "OCU Inversiones, Viscofan IR"
+  }
+}

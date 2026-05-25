@@ -1,0 +1,204 @@
+{
+  "_comentario": "Casillas del Modelo 100 (IRPF) por ejercicio. AEAT renumera casillas cada año, por lo que es obligatorio verificar cuando se abra la campaña y actualizar la entrada correspondiente antes de generar informes. CRÍTICO: las casillas de este fichero deben verificarse SIEMPRE contra RentaWEB del año correspondiente, no contra fuentes secundarias (blogs, foros, agentes IA). Una casilla mal asignada se propaga al PDF, al XLSX y a las instrucciones que reciben los usuarios.",
+  "_estructura": {
+    "ejercicio": "Año fiscal al que corresponde (p. ej. '2025' = rentas generadas en 2025, declaradas en abril-junio 2026).",
+    "campana": "Año natural en el que se presenta la declaración.",
+    "casillas": "Diccionario concepto → {casilla | rango | flujo} con descripción, apartado y referencia AEAT.",
+    "fuentes": "URLs y documentos usados para verificar las casillas del ejercicio."
+  },
+  "_ejercicio_activo_por_defecto": "2025",
+
+  "_doctrina_renta_web_global": [
+    "RentaWEB no acepta importación masiva de operaciones desde DeGiro/IBKR (esos brokers no informan a la AEAT). Las operaciones se introducen una a una en 'Mi cartera de valores' o directamente en el formulario.",
+    "El popup de 'Alta capital mobiliario' (apartado B) es UN ÚNICO formulario que sirve para dividendos, intereses, T-Bills y cualquier rendimiento del capital mobiliario base del ahorro. Tres campos clave: 'Ingresos íntegros', 'Retenciones' (solo IRPF español Art. 99 LIRPF), 'Gastos de administración y depósito'.",
+    "Se permite UNA SOLA entrada agregada en el bloque 0029 con la suma de todos los dividendos del año (nacionales + extranjeros). No es obligatorio desglosar por pagador. Recomendable mantener anexo propio por trazabilidad.",
+    "Las retenciones del extranjero NO van en el campo 'Retenciones' del popup — se gestionan vía deducción CDI (casilla 0588) sujeta al tope del Convenio aplicable.",
+    "Los gastos de administración y depósito (Art. 26.1.a LIRPF) se introducen en el campo correspondiente del popup; RentaWEB los totaliza en 0037 y los resta del rendimiento bruto sin permitir saldo negativo.",
+    "Los sumatorios de retenciones del capital mobiliario son CALCULADOS automáticamente por RentaWEB a partir de las entradas individuales del popup. El contribuyente nunca tiene que rellenar manualmente la casilla del sumario."
+  ],
+
+  "2025": {
+    "campana": "2026",
+    "verificado_el": "2026-05-06",
+    "verificado_contra": "Capturas literales de RentaWEB del declarante de prueba — fuente primaria",
+    "notas_globales": [
+      "La base del ahorro incluye: dividendos (RCM), intereses (RCM), G/P por transmisión de elementos patrimoniales (acciones, ETFs, derechos, opciones, cripto, etc.).",
+      "Apartado F2 = 'Ganancias y pérdidas patrimoniales derivadas de la transmisión de elementos patrimoniales (base imponible del ahorro)'.",
+      "Las casillas de detalle por valor/pagador se cumplimentan dentro de subapartados con rangos de casillas."
+    ],
+    "casillas": {
+      "intereses_rcm": {
+        "casilla": "0027",
+        "apartado": "B. Rendimientos del capital mobiliario (base del ahorro)",
+        "concepto": "Intereses de cuentas, depósitos y de activos financieros en general. Incluye Credit/Bond Interest de IBKR, intereses de cuentas remuneradas, etc.",
+        "base_legal": "Art. 25.2 LIRPF",
+        "rentaweb_flujo": "Alta capital mobiliario → campo 'Ingresos íntegros' (con la suma del año)."
+      },
+      "dividendos_rcm": {
+        "casilla": "0029",
+        "apartado": "B. Rendimientos del capital mobiliario (base del ahorro)",
+        "concepto": "Dividendos y demás rendimientos por la participación en fondos propios de entidades. Se admite UNA SOLA entrada agregada con el total del año (nacionales + extranjeros).",
+        "base_legal": "Art. 25.1.a LIRPF",
+        "rentaweb_flujo": "Alta capital mobiliario → campo 'Ingresos íntegros' (suma de todos los dividendos brutos del año)."
+      },
+      "letras_tesoro_rcm": {
+        "casilla": "0030",
+        "apartado": "B. Rendimientos del capital mobiliario (base del ahorro)",
+        "concepto": "Rendimientos procedentes de la transmisión o amortización de Letras del Tesoro (cupón cero — el rendimiento es la diferencia entre precio compra y nominal/precio venta).",
+        "base_legal": "Art. 25.2 LIRPF",
+        "rentaweb_flujo": "Alta capital mobiliario → campo 'Ingresos íntegros' (suma de los rendimientos por amortización de T-Bills del año)."
+      },
+      "gastos_admin_deposito": {
+        "casilla": "0037",
+        "apartado": "B. Rendimientos del capital mobiliario — Gastos fiscalmente deducibles",
+        "concepto": "Gastos de administración y depósito de valores negociables, exclusivamente. Incluye comisiones de conectividad de DeGiro (XMAD, XLON, XPAR, etc.), custodia, mantenimiento de cuenta. Reducen el rendimiento bruto sin permitir saldo negativo.",
+        "base_legal": "Art. 26.1.a LIRPF",
+        "rentaweb_flujo": "Alta capital mobiliario → campo 'Gastos de administración y depósito' del MISMO popup donde se introduce un rendimiento (cualquier rendimiento sirve: dividendos, intereses, T-Bills). RentaWEB los totaliza solos en la casilla 0037 del bloque B."
+      },
+      "retencion_pagador_espanol": {
+        "casilla": "(no tiene casilla independiente; se introduce dentro del popup individual del rendimiento)",
+        "apartado": "B. Rendimientos del capital mobiliario",
+        "concepto": "Retención a cuenta del IRPF practicada por pagador español (típicamente 19%). Aplica a brokers/bancos españoles (Bankinter, Renta4, etc.) o sus filiales. DeGiro e IBKR NO retienen IRPF español porque no son sujetos obligados Art. 99 LIRPF (no tienen establecimiento permanente en España).",
+        "base_legal": "Art. 99 LIRPF + Art. 75 RIRPF",
+        "rentaweb_flujo": "Alta capital mobiliario → campo 'Retenciones' del popup. RentaWEB suma todas las retenciones individuales automáticamente y traslada el sumario al bloque de 'Pagos a cuenta' (casilla calculada, no editable, que se resta de la cuota líquida en el cálculo final)."
+      },
+      "deduccion_cdi_internacional": {
+        "casilla": "0588",
+        "apartado": "N. Cuota líquida — deducciones",
+        "concepto": "Deducción por doble imposición internacional. Recupera la retención aplicada en el país de origen sobre dividendos extranjeros, sujeta al tope del Convenio de Doble Imposición aplicable y al límite del Art. 80 LIRPF (menor entre [retención efectiva extranjera] y [tipo medio efectivo IRPF × base extranjera]).",
+        "base_legal": "Art. 80 LIRPF + CDI aplicable país por país",
+        "limites_cdi_tipicos": {
+          "USA": "15%",
+          "UK": "0% (sin retención en origen)",
+          "Países_Bajos": "15%",
+          "Italia": "15%",
+          "Alemania": "26.375% (excede CDI 15% — exceso recuperable solicitando devolución al fisco alemán)",
+          "Francia": "30% (excede CDI 15% — exceso vía formulario 5000)",
+          "Suiza": "35% (excede CDI 15% — exceso vía formulario 85)"
+        },
+        "rentaweb_flujo": "Apartado N → casilla 0588 directa con el importe recuperable (no el bruto retenido en origen, sino el menor entre el retenido y el tope CDI)."
+      },
+      "acciones_cotizadas_gp": {
+        "rango_detalle": "0326-0340",
+        "campos_principales": {
+          "0326": "Contribuyente titular",
+          "0327": "Denominación de los valores transmitidos (entidad emisora)",
+          "0328": "Importe global de las transmisiones (valor de transmisión bruto)",
+          "0329": "Valor transmisión destinado a renta vitalicia",
+          "0330": "Valor transmisión susceptible DT 9ª",
+          "0331": "Valor de adquisición global",
+          "0332": "Ganancias patrimoniales (resultado calculado)",
+          "0333": "Ganancias exentas por reinversión rentas vitalicias",
+          "0334": "Parte susceptible reducción DT 9ª",
+          "0335": "Reducción aplicable DT 9ª",
+          "0336": "Ganancia reducida no exenta = 0332 − 0333 − 0335 (lo que efectivamente tributa)",
+          "0337": "Pérdidas patrimoniales — importe obtenido",
+          "0338": "Pérdidas patrimoniales — importe computable",
+          "0339": "Sumario ganancias del bloque (suma de 0336)",
+          "0340": "Sumario pérdidas del bloque (suma de 0338)"
+        },
+        "apartado": "F2 — Ganancias/pérdidas patrimoniales derivadas de transmisiones de acciones negociadas en mercados oficiales",
+        "concepto": "Transmisiones de acciones y ETFs admitidos a negociación en mercados regulados (incluye IIC/ETF UCITS cotizados). Cumplimentar detalle por emisor: una entrada por ISIN con razón social, valor transmisión y valor adquisición. RentaWEB calcula la G/P automáticamente.",
+        "base_legal": "Art. 33 y 37 LIRPF",
+        "rentaweb_flujo": "Apartado F2 → 'Acciones cotizadas' → Alta por cada empresa transmitida (razón social, NIF/ISIN si lo pide, valor transmisión = importe − gastos venta, valor adquisición = suma costes FIFO + gastos compra)."
+      },
+      "derechos_suscripcion_gp": {
+        "rango_detalle": "0341-0355",
+        "campos_principales": {
+          "0341": "Contribuyente titular de los derechos transmitidos",
+          "0342": "Denominación de los derechos (entidad emisora)",
+          "0343": "Importe global de las transmisiones efectuadas en el ejercicio",
+          "0344": "Valor de transmisión destinado a constituir renta vitalicia",
+          "0345": "Valor de transmisión al que resulta aplicable DT 9ª",
+          "0346": "Valor de adquisición global de los valores transmitidos",
+          "0347": "Ganancias patrimoniales (resultado calculado)",
+          "0348": "Ganancias exentas por reinversión rentas vitalicias",
+          "0349": "Parte susceptible reducción DT 9ª",
+          "0350": "Reducción aplicable DT 9ª",
+          "0351": "Ganancia reducida no exenta = 0347 − 0348 − 0350 (lo que efectivamente tributa)",
+          "0352": "Pérdidas patrimoniales — importe obtenido",
+          "0353": "Pérdidas patrimoniales — importe computable",
+          "0354": "Sumario ganancias del bloque (suma de 0351)",
+          "0355": "Sumario pérdidas del bloque (suma de 0353)"
+        },
+        "apartado": "F2 — Transmisión de derechos de suscripción",
+        "concepto": "Venta en mercado de derechos de suscripción preferente y derechos de asignación gratuita (scrip dividend TYPE A y TYPE B). Desde reforma 2017 (Ley 26/2014): tributa como ganancia patrimonial, NO reduce el coste de la matriz. Coste asignado 0 EUR para derechos recibidos gratis (asignación); coste = precio pagado para derechos comprados (TYPE A ampliación real).",
+        "base_legal": "Art. 37.1.a LIRPF (redacción Ley 26/2014 — aplicable desde 1/1/2017)",
+        "rentaweb_flujo": "Apartado F2 → 'Derechos de suscripción' → Alta por cada emisor con derechos vendidos en el ejercicio."
+      },
+      "otros_elementos_patrimoniales_gp": {
+        "rango_detalle": "1624-1654",
+        "campos_principales": {
+          "1624": "Contribuyente titular",
+          "1626": "Tipo de elemento patrimonial — CLAVE (4 = otros elementos no afectos: opciones, forex, etc.)",
+          "1631": "Fecha de transmisión",
+          "1632": "Fecha de adquisición",
+          "1633": "Valor de transmisión",
+          "1637": "Valor de adquisición",
+          "1638": "Pérdida obtenida (1633 − 1637 negativa)",
+          "1639": "Pérdida imputable al ejercicio",
+          "1640": "Ganancia obtenida (1633 − 1637 positiva)",
+          "1645": "Ganancia no exenta = 1640 − 1642 − 1644",
+          "1650": "Ganancia reducida no exenta imputable al ejercicio (lo que tributa)"
+        },
+        "casillas_sumario": {
+          "0385": "Suma pérdidas patrimoniales otros elementos (suma de 1639)",
+          "0386": "Suma ganancias patrimoniales otros elementos NO afectos (suma de 1650)"
+        },
+        "apartado": "F2 — Ganancias/pérdidas patrimoniales derivadas de transmisiones de otros elementos patrimoniales",
+        "concepto": "Opciones financieras (call/put cerradas/expiradas), CFDs, criptomonedas, acciones no cotizadas, divisas (forex Art. 33 LIRPF), inmuebles. La CLAVE de la casilla 1626 identifica el tipo de elemento.",
+        "claves_1626": {
+          "1": "Valores Art. 314 RDL 4/2015",
+          "2": "Acciones/participaciones NO admitidas a negociación",
+          "3": "Acciones admitidas a negociación pero transmitidas fuera de mercado regulado",
+          "4": "Otros elementos patrimoniales NO afectos a actividades económicas (opciones, CFDs, forex multi-divisa)",
+          "5": "Otros elementos AFECTOS a actividades económicas (no aplica a inversor particular)"
+        },
+        "base_legal": "Art. 33, 37 y 14.1.c LIRPF · DGT V2172-21 (opciones)",
+        "subconceptos": {
+          "opciones_call_put": "Primas cerradas/expiradas — clave 4. La prima NO tributa cuando se cobra, sino en la fecha de caducidad o cierre (Art. 14.1 LIRPF + DGT V2172-21). Si la opción se ejerce y se asignan acciones, la prima se integra en el coste/precio del subyacente — NO se declara aquí (caso OPC).",
+          "forex_multidivisa": "Ganancia/pérdida de divisa por mantener saldos en USD/GBP/etc. (Art. 33 LIRPF). FIFO de divisa: cada entrada de divisa (dividendo, venta, deposit) crea un lote con su EUR/divisa del día; cada salida (conversión, comisión, compra) consume FIFO. La diferencia es G/P de divisa.",
+          "criptomonedas": "Clave 0 (cuando aplique en formulario). Ver también Modelo 721 para declaración informativa de saldos."
+        },
+        "rentaweb_flujo": "Apartado F2 → 'Otros elementos patrimoniales' → Alta por cada elemento, seleccionando clave 4 en casilla 1626. Para opciones puede agruparse por contrato; para forex multi-divisa puede agruparse por divisa con un único registro anual."
+      },
+      "saldos_negativos_arrastre_gp": {
+        "rango_detalle": "1258-1269 (G/P patrimoniales, base ahorro) · 1271-1283 (RCM negativos, base ahorro) · 1245-1257 (G/P base general — no aplica a inversores normales)",
+        "apartado": "F — Saldos negativos de ejercicios anteriores pendientes de compensar (bloque base imponible del ahorro)",
+        "concepto": "Pérdidas patrimoniales y RCM negativos de ejercicios anteriores pendientes de compensar (máximo 4 años). Hacienda NO los aplica automáticamente — el contribuyente debe introducirlos manualmente. Por cada ejercicio origen se rellenan tres campos: pendiente al inicio, aplicado en esta declaración, pendiente a futuros.",
+        "base_legal": "Art. 49 LIRPF",
+        "casillas_gp_ahorro_por_ejercicio": {
+          "2021": {"pendiente_inicio": "1259", "aplicado": "1260", "futuros": null, "nota": "Expira en 2025 — último año compensable."},
+          "2022": {"pendiente_inicio": "1261", "aplicado": "1262", "futuros": "1263"},
+          "2023": {"pendiente_inicio": "1264", "aplicado": "1265", "futuros": "1266"},
+          "2024": {"pendiente_inicio": "1267", "aplicado": "1268", "futuros": "1269"},
+          "_saldo_total_contribuyente": "1258",
+          "_saldo_nuevo_2025_a_futuros": "(en bloque superior, junto al titular)"
+        },
+        "casillas_rcm_ahorro_por_ejercicio": {
+          "2021": {"pendiente_inicio": "1272", "aplicado": "1273", "futuros": null, "nota": "Expira en 2025."},
+          "2022": {"pendiente_inicio": "1274", "aplicado": "1275", "futuros": "1276"},
+          "2023": {"pendiente_inicio": "1277", "aplicado": "1278", "futuros": "1279"},
+          "2024": {"pendiente_inicio": "1280", "aplicado": "1281", "futuros": "1282"},
+          "_saldo_total_contribuyente": "1271",
+          "_saldo_nuevo_2025_a_futuros": "1283"
+        },
+        "fuente_verificacion": "Capturas literales RentaWEB 2025 — webapp/static/assets/RentaWebGuide/CompensacionPerdidasPAtrimoniales.png y CompensacionMobiliarios.png · Anexo I-II Modelo 100 Renta 2025 publicado por Hacienda (26-ene-2026).",
+        "rentaweb_flujo": "Apartado F → bloque 'Saldos negativos de ganancias y pérdidas patrimoniales pendientes de compensar en los ejercicios siguientes' → subbloque 'Saldo neto negativo... base imponible del AHORRO' (el bloque superior 'base imponible general' es para pérdidas patrimoniales no derivadas de transmisión y no aplica a inversores con ventas de acciones)."
+      }
+    },
+    "fuentes": [
+      "Capturas literales de RentaWEB 2025 del declarante de prueba (verificación 2026-05-06) — FUENTE PRIMARIA",
+      "https://sede.agenciatributaria.gob.es/Sede/Ayuda/25Presentacion/100/7_6_6_2/ganancias_perdidas_patrimoniales_derivadas_acciones.html",
+      "https://sede.agenciatributaria.gob.es/Sede/ayuda/manuales-videos-folletos/manuales-practicos/irpf-2024/c11-ganancias-perdidas-patrimoniales/declaracion-tributacion-ganancias-perdidas-patrimoniales/ganancias-perdidas-patrimoniales-que-integran-imponible.html",
+      "https://sede.agenciatributaria.gob.es/Sede/ciudadanos-familias-personas-discapacidad/residentes-rentas-procedentes-extranjero/obtencion-dividendos-procedentes-otro-pais.html"
+    ],
+    "_historial_cambios": [
+      {
+        "fecha": "2026-05-06",
+        "tipo": "CORRECCIÓN CRÍTICA",
+        "descripcion": "Auditoría completa contra capturas literales de RentaWEB. Errores corregidos: 'intereses_cuentas_remuneradas' pasa de 0023 (incorrecta — está en bloque trabajo) a 0027. 'gastos_admin_deposito' pasa de 0030 (incorrecta — esa es Letras del Tesoro) a 0037 (con mecánica vía popup). 'retencion_espanola' pasa de 0591 (incorrecta — esa es DT 6ª LIS) a 'sin casilla independiente, se introduce en popup individual'. Rangos 326-338 ampliados a 0326-0340 (incluye sumarios). Rango 341-346 ampliado a 0341-0355 (incluye sumarios). Añadido bloque T-Bills (0030) separado del bloque intereses. Añadido bloque otros patrimoniales con sumarios 0385/0386."
+      }
+    ]
+  }
+}

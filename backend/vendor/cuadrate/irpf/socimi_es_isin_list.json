@@ -1,0 +1,40 @@
+{
+  "_comentario": "Lista curada de ISINs de SOCIMI españolas (Sociedades Anónimas Cotizadas de Inversión en el Mercado Inmobiliario, Ley 11/2009). Tributariamente reciben tratamiento especial en IRPF: las G/P de transmisión van en casillas 0324/0325 (apartado F2 RentaWEB, subapartado IIC/SOCIMI), no en 0326-0340 como acciones normales. Los dividendos siguen en 0029 igual que cualquier acción (la SOCIMI tributa al 0% en IS pero el inversor minorista no tiene tratamiento diferenciado en IRPF). NO incluye REITs/SIIC extranjeros (Klepierre, Realty Income, Simon, OBDC, BDCs USA, etc.) — la AEAT solo aplica el régimen especial a SOCIMI españolas constituidas bajo Ley 11/2009; los REITs/SIIC extranjeros se tratan como acciones cotizadas normales (0326-0340 + 0029) por ausencia de doctrina DGT que los reclasifique. Lista AMPLIABLE: añadir nuevas SOCIMI según aparezcan en informes de usuarios.",
+  "_fuentes": [
+    "BME Mercado Continuo — listado público (3 SOCIMI grandes)",
+    "BME Growth (ex-MAB) — sector 0702 SOCIMI: https://www.bmegrowth.es/esp/Listado.aspx",
+    "ASOCIMI / Grant Thornton — Informe SOCIMI 2024 (158 vehículos a cierre 2025, ~78 cotizadas en BME Growth)",
+    "CNMV — registro de emisores cotizados",
+    "Ley 11/2009, BOE-A-2009-17000"
+  ],
+  "_estructura": "Cada entrada: ISIN → {nombre, ticker, mercado}. mercado='Continuo' (BME mercado regulado MiFID II → regla 2M Art. 33.5.f) o 'Growth' (SMN → regla 1 año Art. 33.5.g).",
+  "_actualizado": "2026-05-07",
+  "_pendiente_ampliar": "Listado BME Growth tiene ~78 SOCIMI distribuidas en 4 páginas (1NK-EUR, EUR-ISC, JAB-SEC, SER-ZAM). Esta lista cubre la página 1 + las grandes del Continuo. Ampliar scrapeando https://www.bmegrowth.es/esp/Listado.aspx?sector=0702 cuando se necesite.",
+
+  "socimis": {
+    "ES0105025003": {"nombre": "Merlin Properties SOCIMI SA", "ticker": "MRL", "mercado": "Continuo"},
+    "ES0139140174": {"nombre": "Inmobiliaria Colonial SOCIMI SA", "ticker": "COL", "mercado": "Continuo"},
+    "ES0105015012": {"nombre": "Lar España Real Estate SOCIMI SA", "ticker": "LRE", "mercado": "Continuo"},
+
+    "ES0105405007": {"nombre": "Adriano Care SOCIMI SA", "ticker": "YACA", "mercado": "Growth"},
+    "ES0105448007": {"nombre": "Advero Properties SOCIMI SA", "ticker": "YADV", "mercado": "Growth"},
+    "ES0105495008": {"nombre": "All Iron RE I SOCIMI SA", "ticker": "YAIR", "mercado": "Growth"},
+    "ES0105383006": {"nombre": "Arrienda Rental Properties SOCIMI SA", "ticker": "YARP", "mercado": "Growth"},
+    "ES0105318002": {"nombre": "Atom Hoteles SOCIMI SA", "ticker": "YATM", "mercado": "Growth"},
+    "ES0105373007": {"nombre": "Azaria Rental SOCIMI SA", "ticker": "YAZR", "mercado": "Growth"},
+    "ES0105284006": {"nombre": "Barcino Property SOCIMI SA", "ticker": "YBCP", "mercado": "Growth"},
+    "ES0105360004": {"nombre": "Castellana Properties SOCIMI SA", "ticker": "YCPS", "mercado": "Growth"},
+    "ES0105281002": {"nombre": "Elaia Investment SOCIMI SA", "ticker": "YELI", "mercado": "Growth"},
+    "ES0105685004": {"nombre": "Emperador Properties SOCIMI SA", "ticker": "YEMP", "mercado": "Growth"},
+    "ES0131172001": {"nombre": "Entrecampos Cuatro SOCIMI SA", "ticker": "YENT", "mercado": "Growth"},
+    "ES0105175006": {"nombre": "Euro Cervantes SOCIMI SA", "ticker": "YEUC", "mercado": "Growth"},
+
+    "ES0105287070": {"nombre": "Árima Real Estate SOCIMI SA", "ticker": "ARM", "mercado": "Growth"},
+    "ES0105270001": {"nombre": "Vivenio Residencial SOCIMI SA", "ticker": "YVIV", "mercado": "Growth"},
+    "ES0105228007": {"nombre": "Millenium Hotels Real Estate I SOCIMI SA", "ticker": "YMHRE", "mercado": "Growth"},
+    "ES0105263006": {"nombre": "GMP Property SOCIMI SA", "ticker": "YGMP", "mercado": "Growth"},
+    "ES0105309007": {"nombre": "Trajano Iberia SOCIMI SA", "ticker": "YTJN", "mercado": "Growth"},
+    "ES0105230003": {"nombre": "Mistral Iberia Real Estate SOCIMI SA", "ticker": "YMIR", "mercado": "Growth"},
+    "ES0105294001": {"nombre": "Saint Croix Holding Immobilier SOCIMI SA", "ticker": "YSCH", "mercado": "Growth"}
+  }
+}

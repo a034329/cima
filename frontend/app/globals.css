@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Marca Cima · Patrimonio (grafito + oro), familia Cuádrate ──────────────
+   Tema OSCURO por defecto (html.dark). Claro al quitar la clase `dark`.
+   Variables RGB consumidas como rgb(var(--x)) en toda la app. */
+
+:root {
+  /* Claro — papel cálido (Patrimonio) */
+  --bg: 251 250 248;     /* #FBFAF8 */
+  --fg: 35 35 35;        /* #232323 */
+  --muted: 120 113 108;
+  --card: 255 255 255;
+  --border: 232 228 222;
+  --accent: 184 134 11;  /* #B8860B oro/bronce (legible en claro) */
+}
+
+.dark {
+  /* Oscuro — grafito cálido */
+  --bg: 20 17 14;        /* #14110E */
+  --fg: 245 241 234;     /* #F5F1EA */
+  --muted: 165 157 146;
+  --card: 31 27 22;      /* #1F1B16 */
+  --border: 58 52 44;    /* #3A342C */
+  --accent: 230 183 99;  /* #E6B763 oro Cuádrate */
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Titulares en serif (Fraunces) — familia Cuádrate */
+h1, h2, h3, h4 {
+  font-family: var(--font-fraunces), Georgia, serif;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.28);
+}

@@ -1,0 +1,44 @@
+{
+  "_comentario": "Lista de ISINs de ACCIONES con nombres engañosos que la heurística por nombre podría confundir con ETFs (contienen MSCI, S&P, FTSE, Nasdaq, etc. pero son la EMPRESA proveedora del índice o el exchange, no un fondo). Usado por instrument_classifier.py como override defensivo.",
+  "_estructura": "Cada entrada: ISIN → {nombre, motivo}",
+  "_actualizado": "2026-05-06",
+
+  "stocks_engañosos": {
+    "US55354G1004": {"nombre": "MSCI Inc.", "motivo": "Empresa proveedora del índice MSCI (cotiza NYSE), NO un ETF MSCI"},
+    "US78409V1044": {"nombre": "S&P Global Inc.", "motivo": "Empresa propietaria de Standard & Poor's (cotiza NYSE), NO un ETF S&P"},
+    "US35671D8570": {"nombre": "FactSet Research Systems Inc.", "motivo": "Empresa de datos financieros (cotiza NYSE), nombre puede sonar a fondo"},
+    "US6153691059": {"nombre": "Moody's Corporation", "motivo": "Empresa de rating (cotiza NYSE), nombre similar a fondos"},
+    "US6177001095": {"nombre": "Morningstar Inc.", "motivo": "Empresa de research/rating (cotiza Nasdaq), proveedor de Morningstar Indexes pero no fondo"},
+    "US12572Q1058": {"nombre": "CME Group Inc.", "motivo": "Operador de bolsa (Chicago Mercantile Exchange), NO ETF/fondo"},
+    "US45866F1049": {"nombre": "Intercontinental Exchange Inc. (ICE)", "motivo": "Operador de bolsa (NYSE owner), NO ETF/fondo"},
+    "US12503M1080": {"nombre": "Cboe Global Markets Inc.", "motivo": "Operador de bolsa (Chicago Board Options), NO ETF/fondo"},
+    "US6311031081": {"nombre": "Nasdaq Inc.", "motivo": "Operador de bolsa Nasdaq, NO ETF Nasdaq"},
+    "GB00B0SWJX34": {"nombre": "London Stock Exchange Group plc", "motivo": "Operador de bolsa LSE, NO ETF UK"},
+    "DE0005810055": {"nombre": "Deutsche Börse AG", "motivo": "Operador de bolsa Frankfurt, NO ETF DAX"},
+    "ES0177542018": {"nombre": "Bolsas y Mercados Españoles (BME)", "motivo": "Operador BME, NO ETF Ibex (en su día)"},
+    "IE00B4BNMY34": {"nombre": "Accenture plc", "motivo": "Empresa de consultoría (sede fiscal Irlanda IE00, pero acción individual)"},
+    "IE00BFY8C754": {"nombre": "Medtronic plc", "motivo": "Empresa de tecnología médica (sede fiscal Irlanda)"},
+    "IE00BD1RP616": {"nombre": "Aon plc", "motivo": "Empresa de seguros (sede fiscal Irlanda)"},
+    "IE00B4Q5ZN47": {"nombre": "Eaton Corporation plc", "motivo": "Empresa industrial (sede fiscal Irlanda)"},
+    "IE00BLP1HW54": {"nombre": "Trane Technologies plc", "motivo": "Empresa industrial (sede fiscal Irlanda)"},
+    "IE00B6330302": {"nombre": "STERIS plc", "motivo": "Empresa de tecnología médica (sede fiscal Irlanda)"},
+    "IE00BFY8C754": {"nombre": "Medtronic plc", "motivo": "Empresa de tecnología médica (sede fiscal Irlanda)"},
+    "IE00BLS09M33": {"nombre": "Johnson Controls International plc", "motivo": "Empresa industrial (sede fiscal Irlanda)"},
+    "IE0006WW1TQ4": {"nombre": "Linde plc", "motivo": "Empresa de gases industriales (sede fiscal Irlanda)"},
+    "LU0569974404": {"nombre": "Aperam SA", "motivo": "Empresa siderúrgica (sede Luxemburgo LU00, NO fondo)"},
+    "LU0775917882": {"nombre": "Subsea 7 SA", "motivo": "Empresa de servicios offshore (sede Luxemburgo)"},
+    "LU0061462528": {"nombre": "ArcelorMittal", "motivo": "Empresa siderúrgica (sede Luxemburgo)"},
+    "LU0026031039": {"nombre": "RTL Group", "motivo": "Empresa de medios (sede Luxemburgo)"},
+    "LU1598757687": {"nombre": "Spotify Technology SA", "motivo": "Empresa de streaming (sede Luxemburgo)"},
+    "LU2237380790": {"nombre": "Allegro.eu", "motivo": "Empresa de e-commerce (sede Luxemburgo)"},
+    "LU0568952171": {"nombre": "Stabilus SE", "motivo": "Empresa industrial (sede Luxemburgo)"},
+    "LU1598756070": {"nombre": "Globant SA", "motivo": "Empresa de servicios IT (sede Luxemburgo)"},
+    "LU2598653136": {"nombre": "ProsperHelp / similar", "motivo": "(placeholder — añadir según aparezca)"}
+  },
+
+  "_notas_uso": {
+    "criterio_inclusion": "Solo entrada cuando el nombre contiene palabras de la heurística ETF (MSCI, S&P, FTSE, Nasdaq, Index, etc.) o cuando el ISIN tiene país que sugiere ETF (IE/LU/DE) y el nombre NO contiene marca ETF clara, pero el activo es realmente una empresa.",
+    "ampliacion": "Añadir cada vez que el classifier marque erróneamente una acción como ETF y el usuario lo señale.",
+    "verificacion": "Confirmar que es empresa cotizada (no fondo) consultando perfil en yahoo finance, bloomberg, perfil de la empresa."
+  }
+}

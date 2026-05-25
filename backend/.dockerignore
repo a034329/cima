@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.venv/
+venv/
+tests/
+*.db
+*.db.bak*
+cima.db*
+precios_cache.json
+cache_*.json
+.env
+.env.*

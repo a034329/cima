@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.local
+.env.production
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# Datos personales (PII) — NUNCA commitear
+uploads/
+sessions/
+*.csv
+*.pdf
+*.xlsx
+*.xlsx#
+!*.example.csv
