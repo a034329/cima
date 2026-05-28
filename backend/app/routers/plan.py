@@ -69,6 +69,7 @@ class HuecoBloqueOut(BaseModel):
     valor_actual_eur: Decimal = Field(decimal_places=2)
     planeado_eur: Decimal = Field(decimal_places=2)
     deficit_eur: Decimal | None = Field(default=None, decimal_places=2)
+    criterios: str = ""
 
 
 class HuecoOut(BaseModel):
@@ -87,6 +88,22 @@ class CrearPasoIn(BaseModel):
     capital_objetivo_eur: Decimal | None = None
     fecha_objetivo: date | None = None
     notas: str | None = None
+    # Fricción: si el paso se crea tras rebatir un aviso, se registra el override.
+    friccion_severidad: str | None = None
+    friccion_motivo: str | None = None
+
+
+class FriccionIn(BaseModel):
+    isin: str
+    decision: str
+
+
+class FriccionOut(BaseModel):
+    severidad: str
+    titulo: str
+    rebate1: str
+    rebate2: str
+    etiquetas: list[str]
 
 
 class EditarPasoIn(BaseModel):
@@ -155,20 +172,39 @@ def get_hueco(db: Session = Depends(get_db)) -> HuecoOut:
                 planeado_pct=_q4(b.planeado_pct), proyectado_pct=_q4(b.proyectado_pct),
                 deficit_pct=_q4(b.deficit_pct), valor_actual_eur=_q2(b.valor_actual_eur),
                 planeado_eur=_q2(b.planeado_eur), deficit_eur=_q2(b.deficit_eur),
+                criterios=b.criterios,
             )
             for b in r.bloques
         ],
     )
 
 
+@router.post("/evaluar-friccion", response_model=FriccionOut | None,
+             summary="¿Esta decisión (VENDER/RECORTAR) merece fricción? null = deja pasar")
+def evaluar_friccion(payload: FriccionIn, db: Session = Depends(get_db)) -> FriccionOut | None:
+    from app.services import friccion
+    r = friccion.evaluar_friccion(db, _cartera(db).id, payload.isin, payload.decision)
+    if r is None:
+        return None
+    return FriccionOut(severidad=r.severidad, titulo=r.titulo, rebate1=r.rebate1,
+                       rebate2=r.rebate2, etiquetas=r.etiquetas)
+
+
 @router.post("", response_model=PasoOut, status_code=status.HTTP_201_CREATED,
              summary="Crear un paso del plan para una posición")
 def crear(payload: CrearPasoIn, db: Session = Depends(get_db)) -> PasoOut:
+    cid = _cartera(db).id
     p = svc.crear_paso(
-        db, _cartera(db).id, payload.isin, payload.decision, payload.prioridad,
+        db, cid, payload.isin, payload.decision, payload.prioridad,
         razon=payload.razon, capital_objetivo_eur=payload.capital_objetivo_eur,
         fecha_objetivo=payload.fecha_objetivo, notas=payload.notas,
     )
+    # Si el paso se creó tras rebatir una fricción, registrar el override.
+    if payload.friccion_severidad:
+        from app.services import friccion
+        friccion.registrar_evento(db, cid, payload.isin, payload.decision,
+                                  payload.friccion_severidad, payload.friccion_motivo)
+        db.commit()
     return _to_paso_out(p)
 
 

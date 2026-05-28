@@ -43,6 +43,9 @@ class BloqueDistOut(BaseModel):
     tolerancia: Decimal = Field(decimal_places=4)
     desviacion: Decimal | None = None
     fuera_tolerancia: bool
+    cagr4_div_pct: Decimal | None = None        # CAGR4+Div proyectado ponderado del bloque
+    cobertura_estimacion: Decimal | None = None  # fracción del valor del bloque con estimación
+    n_con_estimacion: int = 0                    # posiciones del bloque con CAGR estimado
 
 
 class DistribucionOut(BaseModel):
@@ -112,6 +115,31 @@ class AutoclasificarIn(BaseModel):
     isines: list[str] | None = None     # si se da, clasifica solo ese batch
 
 
+class CriterioCheckOut(BaseModel):
+    etiqueta: str
+    valor: float | None = None
+    valor_txt: str
+    objetivo_txt: str
+    cumple: bool | None = None          # None = dato no disponible
+
+
+class EvaluacionOut(BaseModel):
+    """Encaje de un candidato: en qué bloque cae (IA) y si cumple sus criterios."""
+    isin: str
+    nombre: str
+    categoria_sugerida: str
+    confianza: float
+    razonamiento: str
+    criterios_texto: str
+    checks: list[CriterioCheckOut]
+    n_cumplidos: int
+    n_medibles: int
+    veredicto: str
+    cualitativo: str
+    target_categoria: str | None = None
+    cubre_target: bool | None = None
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _cartera(db: Session) -> models.Cartera:
@@ -129,7 +157,16 @@ def _cartera(db: Session) -> models.Cartera:
 @router.get("", response_model=DistribucionOut,
             summary="Distribución actual de la cartera por bloque")
 def get_distribucion(db: Session = Depends(get_db)) -> DistribucionOut:
-    r = svc.calcular_distribucion(db, _cartera(db).id)
+    from app.services.estimaciones import agregado_por_bloque
+
+    cid = _cartera(db).id
+    r = svc.calcular_distribucion(db, cid)
+    # CAGR4+Div proyectado por bloque (posiciones sin clasificar → clave None).
+    aggs = agregado_por_bloque(db, cid)
+
+    def _agg(bloque_id: str):  # type: ignore[no-untyped-def]
+        return aggs.get(None if bloque_id == svc.SIN_CLASIFICAR_ID else bloque_id)
+
     return DistribucionOut(
         total_eur=_q2(r.total_eur),
         liquidez_disponible_eur=_q2(r.liquidez_disponible_eur),
@@ -149,6 +186,9 @@ def get_distribucion(db: Session = Depends(get_db)) -> DistribucionOut:
                 tolerancia=_q4(b.tolerancia),
                 desviacion=(_q4(b.desviacion) if b.desviacion is not None else None),
                 fuera_tolerancia=b.fuera_tolerancia,
+                cagr4_div_pct=(_q4(a.cagr4_div_pct) if (a := _agg(b.id)) and a.cagr4_div_pct is not None else None),
+                cobertura_estimacion=(_q4(a.cobertura) if (a := _agg(b.id)) and a.cobertura is not None else None),
+                n_con_estimacion=((a := _agg(b.id)) and a.n_con_estimacion) or 0,
             )
             for b in r.bloques
         ],
@@ -195,6 +235,32 @@ def sugerir(payload: SugerirIn, db: Session = Depends(get_db)) -> SugerenciaBloq
     except NotImplementedError as e:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(e))
     return _sug_out(s)
+
+
+@router.get("/evaluar/{isin}", response_model=EvaluacionOut,
+            summary="Evaluar un candidato: ¿en qué bloque encaja y cumple sus criterios? "
+                    "(target opcional = el bloque cuyo déficit quieres llenar)")
+def evaluar(isin: str, target: str | None = None,
+            db: Session = Depends(get_db)) -> EvaluacionOut:
+    try:
+        ev = clasif_svc.evaluar_candidato(db, _cartera(db).id, isin, target)
+    except ClasificadorError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Clasificador IA: {e}")
+    except NotImplementedError as e:
+        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(e))
+    return EvaluacionOut(
+        isin=ev.isin, nombre=ev.nombre, categoria_sugerida=ev.categoria_sugerida,
+        confianza=ev.confianza, razonamiento=ev.razonamiento,
+        criterios_texto=ev.criterios_texto,
+        checks=[
+            CriterioCheckOut(etiqueta=c.etiqueta, valor=c.valor, valor_txt=c.valor_txt,
+                             objetivo_txt=c.objetivo_txt, cumple=c.cumple)
+            for c in ev.checks
+        ],
+        n_cumplidos=ev.n_cumplidos, n_medibles=ev.n_medibles, veredicto=ev.veredicto,
+        cualitativo=ev.cualitativo, target_categoria=ev.target_categoria,
+        cubre_target=ev.cubre_target,
+    )
 
 
 @router.post("/autoclasificar", response_model=list[SugerenciaBloqueOut],

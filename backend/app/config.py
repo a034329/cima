@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     # constructor de prompt (adapters/ia/prompt.py).
     ia_provider: Literal["claude_cli", "anthropic", "mock"] = "claude_cli"
     ia_cli_path: str = "claude"        # binario del CLI de Claude Code
-    ia_timeout_s: int = 90             # timeout por llamada (subproceso CLI / API)
+    ia_timeout_s: int = 150            # timeout por llamada (clasificación; rápido)
+    ia_chat_timeout_s: int = 300       # asesor/onboarding: generaciones largas (plan multi-paso) sin web
+    ia_web_timeout_s: int = 600        # timeout para PASO 0/one-pager/valoración/comps (búsqueda web: hasta 10 min)
     ia_lote_chunk: int = 12            # empresas por llamada en autoclasificar (trocea
     #                                    el lote para que cada generación quede acotada)
     # Modelo del autoclasificar en lote. Experimento 2026-05-24 (n=31): opus en

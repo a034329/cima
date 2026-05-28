@@ -160,6 +160,7 @@ def crear_paso(
     db: Session, cartera_id: str, isin: str, decision: str, prioridad: str,
     *, razon: str | None = None, capital_objetivo_eur: Decimal | None = None,
     fecha_objetivo: date | None = None, notas: str | None = None,
+    reemplazar: bool = True,
 ) -> models.PlanPaso:
     _validar_enums(decision, prioridad, None)
     # El paso puede ser sobre una posición (cartera) o sobre una empresa del
@@ -178,6 +179,20 @@ def crear_paso(
         if not es_seguimiento:
             raise HTTPException(status.HTTP_404_NOT_FOUND,
                                 f"No tienes ni sigues {isin}")
+    # Un valor tiene UNA decisión vigente: el paso nuevo REEMPLAZA a los activos
+    # anteriores del mismo ISIN (se cancelan) para que no convivan decisiones
+    # contradictorias (p.ej. VENDER viejo + MANTENER tras re-evaluar). El histórico
+    # queda como CANCELADO, no se borra.
+    if reemplazar:
+        previos = db.execute(
+            select(models.PlanPaso)
+            .where(models.PlanPaso.cartera_id == cartera_id)
+            .where(models.PlanPaso.isin == isin)
+            .where(models.PlanPaso.estado.in_(ESTADOS_ACTIVOS))
+        ).scalars().all()
+        for p in previos:
+            p.estado = "CANCELADO"
+            p.notas = ((p.notas + " · ") if p.notas else "") + f"Reemplazado por nuevo paso {decision}"
     orden = (db.execute(
         select(models.PlanPaso).where(models.PlanPaso.cartera_id == cartera_id)
     ).scalars().all())
@@ -236,6 +251,7 @@ class HuecoBloque:
     valor_actual_eur: Decimal
     planeado_eur: Decimal
     deficit_eur: Decimal | None
+    criterios: str = ""                      # requisitos del bloque (ficha) para la guía de compra
 
 
 @dataclass
@@ -252,6 +268,7 @@ def hueco_asignacion(db: Session, cartera_id: str) -> HuecoResultado:
     las compras ya PLANEADAS. déficit = objetivo% − proyectado% (proyectado =
     actual + planeado). El tamaño del tramo no sale de aquí (lo da el régimen macro);
     el déficit marca DÓNDE y en qué prioridad. Bloques sin peso_objetivo → déficit None."""
+    from app.adapters.ia.prompt import FICHAS
     from app.services import bloques as bloques_svc
 
     dist = bloques_svc.calcular_distribucion(db, cartera_id)
@@ -315,6 +332,7 @@ def hueco_asignacion(db: Session, cartera_id: str) -> HuecoResultado:
             objetivo_pct=objetivo, actual_pct=pct(valor), planeado_pct=pct(plan),
             proyectado_pct=pct(proy), deficit_pct=deficit_pct,
             valor_actual_eur=valor, planeado_eur=plan, deficit_eur=deficit_eur,
+            criterios=(FICHAS[b.categoria_base].criterios if b.categoria_base in FICHAS else ""),
         ))
     # Mayor déficit primero (los sin objetivo, al final).
     out.sort(key=lambda h: (h.deficit_pct is None, -(h.deficit_pct or Decimal("0"))))

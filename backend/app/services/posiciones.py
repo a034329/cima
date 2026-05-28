@@ -54,6 +54,8 @@ class PosicionMetricas:
     umbral_rotacion_2y_pct: Decimal | None = None
     umbral_rotacion_3y_pct: Decimal | None = None
     umbral_rotacion_4y_pct: Decimal | None = None
+    # CAGR4+Div proyectado a 4 años (retorno total esperado de Estimaciones).
+    cagr4_div_pct: Decimal | None = None
     # Precio de mercado en DIVISA LOCAL (la del broker), como referencia.
     precio_actual_local: Decimal | None = None
     divisa_cotizacion: str | None = None
@@ -284,6 +286,7 @@ def calcular_metricas_posiciones(
             umbral_rotacion_2y_pct=getattr(rot.get(isin), "umbral_2y_pct", None),
             umbral_rotacion_3y_pct=getattr(rot.get(isin), "umbral_3y_pct", None),
             umbral_rotacion_4y_pct=getattr(rot.get(isin), "umbral_4y_pct", None),
+            cagr4_div_pct=getattr(rot.get(isin), "cagr4_div_origen_pct", None),
         ))
 
     resultado.sort(key=lambda p: -float(p.pm_real * p.cantidad))

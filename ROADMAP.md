@@ -21,7 +21,7 @@
 - ✅ **Clasificador IA puntual + lote** (1.6): compuertas deterministas + IA (Claude Max vía CLI) con distribución de probabilidad, razonamiento y few-shot de overrides del usuario.
 - ✅ **Plan por valor** (PlanPaso, decisión por ISIN) + **plan de compra top-down** (hueco de asignación: objetivo/actual/planeado/déficit por bloque; watchlist-first para empresas nuevas). NO estaba en el roadmap original.
 - ✅ UI: dashboard, posiciones, página de posición, Estrategia (Bloques/Plan/Estimaciones/Seguimiento/Rotación), hub Fiscalidad (7 sub-pestañas), Config.
-- ⬜ Onboarding IA (1.5) — bloqueado por no cablear API key. 🔵 friction popups (1.7) pendientes. ⬜ integración Cuádrate (1.9). ⬜ beta cerrada (1.10).
+- ✅ **Onboarding IA (1.5)** — wizard perfil→propuesta IA→firma; produce `PlanFirmado` (contrato de Ulises) + fija objetivos. Corre sobre Max (prod necesita adaptador anthropic). ✅ friction popups (1.7, Fase D "avisa/rebate 2/te deja"). ⬜ integración Cuádrate (1.9). ⬜ beta cerrada (1.10).
 
 **Fase 2 — Estimaciones: el núcleo hecho.**
 - ✅ Métricas valoración multi-método (PER/P_FCF/P_BV/P_FRE), CAGR4+Div, consenso analistas FMP, umbrales fiscales R-U.
@@ -159,12 +159,21 @@ Reutilizar parsers de Cuádrate (`/app/720/irpf/generar_irpf.py`). Orden:
 - [x] Catálogo con **fichas** (descripción + criterios medibles + frontera `no_es`) como fuente única.
 - [x] 6 base (Compounders/Dividend Growth/Estable/High Yield/Satélite/Colchón) + 4 opcionales (Índice/Renta Fija/Cripto/Materias primas). Tope 12. Saco "Sin clasificar".
 - [x] Objetivos de peso + tolerancia + **déficit/hueco de asignación** (plan de compra top-down).
+- [x] **CAGR4+Div proyectado por bloque** (ponderado por valor de mercado) + cobertura de estimación — para estudiar rotaciones dentro de un bloque. Atenuado si no todas las posiciones tienen estimación.
+- [x] **ETF/índice sin BPA**: CAGR proxy = revalorización de precio HISTÓRICA (máx. ~20a, yfinance, cacheado) + yield actual = retorno total. Así los bloques Índice/Satélite-ETF aportan al CAGR. (Renta fija se deja en su yield; el tipo BCE se descartó.)
 - [x] **Flag `en_estrategia`**: cualquier bloque dentro/fuera de la IF (generaliza el colchón). Fuera → no cuenta para progreso IF ni para el déficit.
 - [x] Colchón especial: efectivo asignado + rendimiento. CheckConstraint eliminado (validación en servicio).
 - [x] UI agrupada: Estrategia IF / Fuera de estrategia / Disponibles (vacíos compactos).
 - [ ] Drag & drop (se usa selector/asignación, no DnD — opcional).
 
-### 1.5 Onboarding IA co-construido 🔴 3-4w ⬜
+### 1.5 Onboarding IA co-construido 🔴 3-4w ✅ (v1 wizard; prod necesita adaptador anthropic)
+
+- [x] Wizard de 3 pasos: perfil → la IA propone reparto de bloques con objetivos % + razón → firma.
+- [x] Output: `PlanFirmado` versionado (contrato de Ulises) + aplica `peso_objetivo` a los bloques.
+- [x] Modo SaaS: disclaimer MiFID en la propuesta. Corre sobre Claude Max (dev).
+- [x] **Viabilidad**: calcula el capital actual (en estrategia) + el RETORNO ANUAL REQUERIDO para el objetivo/horizonte; lo pasa a la IA y muestra veredicto (no usa "horizonte corto → conservador"; flag si el objetivo es poco realista).
+- [x] **Guía de compra desde el déficit** (a nivel de bloque + criterios + chequeo de encaje del candidato; ver 1.6b). El usuario crea el paso COMPRAR — la IA no nombra valores.
+- [ ] Simuladores históricos (2008/2020/2022) + chat conversacional — v1.1.
 
 - [ ] Diseño conversacional paso a paso (6 etapas).
 - [ ] Integración con Claude API + prompt caching.
@@ -186,6 +195,8 @@ Reutilizar parsers de Cuádrate (`/app/720/irpf/generar_irpf.py`). Orden:
 - [x] `PlanPaso`: cola de decisiones por ISIN (COMPRAR/REFORZAR/MANTENER/…), réplica de la hoja Plan de WG.
 - [x] **Watchlist-first**: empresas nuevas se siguen (Seguimiento), se clasifican y se les crea paso COMPRAR.
 - [x] **Hueco de asignación**: por bloque, objetivo% − proyectado% (actual + planeado) = déficit en %/€. El déficit marca dónde comprar; el régimen macro (Fase 3) dará el ritmo.
+- [x] **Guía de compra (MiFID-safe)**: bajo el déficit de cada bloque infraponderado, sus **criterios** (de la ficha) + "Buscar candidato →" a Seguimiento. La IA no nombra valores.
+- [x] **Chequeo de encaje del candidato**: `evaluar_candidato` (en qué bloque cae + chequeo de los criterios medibles: yield/beta/ROE/crecimiento; payout/cobertura/moat quedan cualitativos). Si vienes del déficit de un bloque, avisa si el candidato no lo cubre. Frontera por modo: prescriptivo (reforzar/rotar valores) solo en Owner.
 
 ### 1.7 Operativa diaria 🔴 2w 🔵 (añadir op + reconciliación ✅; friction popups y WebSocket ⬜)
 
@@ -239,7 +250,7 @@ Objetivo: pasar de tracker a "decidir mejor". Catálogo top 1.000 mantenido, edi
 
 ### 2.2 Métricas de valoración 🔴 2w ✅
 
-- [ ] Multi-método: PER, P/FCF, P/BV, P/FRE.
+- [x] Multi-método: PER, P/FCF, P/BV, P/FRE, **SOTP** (suma de partes: P/NAV × NAV/acción, para conglomerados/holdings — CK Hutchison). Migración de CHECK en SQLite vía rebuild idempotente.
 - [ ] CAGR4 + Yield neto por posición.
 - [ ] Switching cost 1Y, 2Y, 3Y, 4Y.
 - [ ] Rentabilidad potencial agregada (C10 del Excel).
@@ -261,39 +272,50 @@ Objetivo: pasar de tracker a "decidir mejor". Catálogo top 1.000 mantenido, edi
 
 Objetivo: el agente IA continuo con régimen macro, comandos profundos y los 9 filtros.
 
-### 3.1 Régimen macro automático 🔴 2w ⬜
+### 3.1 Régimen macro 🔴 2w 🔵 (calibración MANUAL hecha; ingesta automática ⬜)
 
-- [ ] Ingesta: 4 indicadores (ciclo, inflación/tipos, geopolítica, mercado).
-- [ ] Clasificador VERDE/AMARILLO/ROJO.
-- [ ] Calibración DCA: tamaño + espaciado.
-- [ ] Regla -14% S&P500.
+- [x] **4 indicadores MANUALES** (ciclo, inflación/tipos, geopolítica, mercado) que fija el usuario — fiable, sin auto-fetch.
+- [x] **Clasificador VERDE/AMARILLO/ROJO** por mayoría (empate → el más cauto).
+- [x] **Calibración DCA**: régimen → tamaño de tramo + espaciado; integrado en la guía de compra (≈ N tramos por bloque según déficit). `RegimenPanel` en Estrategia.
+- [x] **Regla −14% S&P500**: auto-fetch del drawdown del S&P (vs máx. 52s) + VIX (yfinance, cacheado); escala el tramo si caída −10/−20% + ciclo no recesivo + VIX<28; bloquea si ciclo ROJA (bear market), VIX>35 o caída >20%. Ofrece el tramo escalado en la guía con la salvedad COYUNTURAL (no auto-clasifica).
+- [ ] Ingesta AUTOMÁTICA de los 4 indicadores subjetivos (auto-fetch) — pendiente.
 
-### 3.2 Comandos profundos 🔴 3w ⬜
+### 3.2 Comandos profundos 🔴 3w 🔵 (/one-pager hecho; pestaña Análisis)
 
-- [ ] `/comps` (comparables sector).
-- [ ] `/dcf` (validación valoración).
-- [ ] `/earnings` (impacto resultados).
-- [ ] `/one-pager` (estudio inicial).
-- [ ] `/edgar` (filings SEC).
+**Pestaña Análisis** (`/estrategia/analisis`) + `services/one_pager.py` + `GET/POST /api/analisis/{isin}/one-pager`.
+- [x] `/one-pager` (estudio inicial): IA + búsqueda web → tesis por secciones (qué hace/tesis/riesgos/valoración/encaje/veredicto) + clasificación + fuentes. **Persistido** (`AnalisisGuardado`): se guarda y solo se regenera a petición.
+- [x] **Valoración asistida** (`services/valoracion.py` + `/api/analisis/{isin}/valoracion`): la IA propone 3 escenarios (múltiplo + métrica 4Y) **ligados a la tesis del one-pager**; el backend calcula precio objetivo + CAGR; el usuario edita y **traslada a Estimaciones** (`PUT /api/estimaciones/{isin}` → el modelo recalcula). Persistido. **Multi-método**: PER (ancla en consenso/PER histórico real, sin falsa precisión) y no-PER (P/FCF, P/BV, P/FRE — la IA investiga el múltiplo sectorial de comparables y proyecta la métrica por acción; etiquetas dinámicas en UI).
+- [x] **Comparables /comps** (`services/comps.py` + `/api/analisis/{isin}/comps` + sección en Análisis): la IA busca (web) 4-6 pares del sector y arma una **tabla de múltiplos** (PER/EV-EBITDA/P-FCF/yield/crecimiento/ROIC) con la empresa objetivo marcada (anclada en datos reales de Cima) + lectura de prima/descuento vs pares + fuentes. Job en segundo plano + polling. Cierra el ciclo hueco de bloque → elegir candidato → watchlist. Falta de WG: `/earnings` y `/edgar` (este último US-only, bajo valor para cartera EU).
+- [x] **Recomendación FISCALMENTE CONSCIENTE** (`services/fiscal_contexto.py`): conecta el motor fiscal al cerebro que recomienda. Resume base YTD + **pérdidas pendientes** y cuánto **caduca este año** (úsalo-o-piérdelo) + **buffer** que absorbe la próxima plusvalía + **cosecha latente** (tax-loss harvesting) + avisos **regla 2M**. Lo consume el **asesor** (contexto + doctrina del prompt), la **auditoría de venta** (chequeos: buffer cubre la plusvalía → switching cost ~0, emparejar con pérdidas, caducidad, 2M) y la **hoja de ruta**. Además se arregló el agujero del **filtro de rotación**: la plusvalía nueva se resta contra el buffer de pérdidas pendientes (antes sobrestimaba el impuesto). **Regla 2M = DIFIERE la pérdida hasta la transmisión total sin recompra (Art. 33.5.f), NO la anula.**
+- [x] **Jobs en segundo plano** (`services/jobs.py` + `AnalisisJob`): one-pager, valoración y comps (búsqueda web de minutos) corren en un hilo; POST lanza (202 `en_curso`), la UI hace **polling** del GET hasta `ok`/`error`. Robusto frente a timeouts de petición. (Dev/owner: hilo en 1 proceso; SaaS multi-worker → cola real, p.ej. RQ/Celery.)
+- [ ] `/dcf` (validación valoración) — solo-US (cash-flow FMP).
+- [ ] `/earnings` (impacto resultados) — vía web; solapa con PASO 0.
+- [ ] `/edgar` (filings SEC) — API pública, solo-US.
+- [ ] `/comps` (comparables sector) — **bloqueado**: necesita el catálogo (FMP 402).
 
-### 3.3 9 filtros automáticos 🔴 2w ⬜
+### 3.3 9 filtros automáticos 🔴 2w 🔵 (auditoría de COMPRA hecha; lado VENTA vía fricción/Rotación)
 
-- [ ] Auditoría de bloque.
-- [ ] Filtro de fase.
-- [ ] Criterio 15/15.
-- [ ] Filtro fiscal rotación.
-- [ ] Filtro de calidad rotación (4 checks).
-- [ ] Abogado del diablo.
-- [ ] Filtro macro.
-- [ ] Anti-churn.
-- [ ] Verificación umbrales R-U.
+**Auditoría pre-operación de COMPRA** (`services/auditoria.py` + `GET /api/auditoria/{isin}`, panel en FormCompra): sintetiza los filtros aplicables a comprar en un veredicto con luz verde / reservas.
+- [x] Auditoría de bloque (reusa `evaluar_candidato`).
+- [x] Filtro de fase (acumulación → cuestiona High Yield).
+- [x] Criterio 15/15 (cláusula de oro para Bloque A).
+- [x] Abogado del diablo (yield>7% en acumulación).
+- [x] Filtro macro (régimen + ventana −14%).
+- [x] Plan activo (pasos críticos pendientes) + tamaño de posición vs rango doctrina.
+- [x] Calidad cualitativa → marcada como VERIFICAR (no se finge: cobertura/deuda/moat = juicio del usuario).
+- [x] **Auditoría de VENTA** (`auditar_venta` + `GET /api/auditoria/{isin}?decision=VENDER`, panel en `NuevoPaso` del Plan): filtro fiscal de rotación (umbrales R-U), anti-churn (>10% → no rotar por <2%), regla del colchón (Bloque F intocable) y calidad de rotación (VERIFICAR). Complementa la fricción. **Cierra los 9 filtros.** `AuditoriaVista` extraído a componente compartido (compra+venta).
 
-### 3.4 PASO 0/0A/0B/0C 🔴 2w ⬜
+### 3.4 PASO 0/0A/0B/0C 🔴 2w 🔵 (contexto web + coyuntural/estructural HECHO en dev sobre Max)
 
-- [ ] Búsqueda contextual web automática.
-- [ ] Disección del negocio.
-- [ ] Test coyuntural vs estructural.
-- [ ] Regla del moat intangible.
+**Desbloqueo clave**: el puerto IA gana `investigar()` (web). En dev corre sobre Claude Max con
+`--allowedTools "WebSearch"` (read-only, sin bypass, sin FS/Bash). `services/paso0.py` +
+`GET /api/contexto/{isin}` + botón "contexto" en Seguimiento (panel con clasificación/resumen/5
+preguntas/fuentes/disclaimer). Smoke real: clasificó Emaar como COYUNTURAL con 12 fuentes.
+- [x] Búsqueda contextual web automática (vía Max CLI; sin API key).
+- [x] Test coyuntural vs estructural (5 preguntas) + clasificación con fuentes.
+- [x] Regla del moat intangible (la aplica la IA en el prompt, no hardcodeada).
+- [~] Disección del negocio (0A): la IA la hace en el resumen; no hay desglose por segmento/% estructurado.
+- [ ] 0B (2ª búsqueda dirigida a causa raíz) y **adaptador anthropic** (`web_search` de la API) para SaaS.
 
 ### 3.5 Sistema de créditos 🟠 1w ⬜
 
@@ -313,6 +335,13 @@ Objetivo: el agente IA continuo con régimen macro, comandos profundos y los 9 f
 - [ ] Aplicar al sandbox financiero (Ley 7/2020).
 - [ ] 12-18 meses bajo supervisión.
 - [ ] Validación oficial del modelo.
+
+### 3.8 Asesor conversacional + Vigilancia 🔵 (asesor hecho; vigilancia ⬜)
+
+- [x] **Chat asesor IA** (`services/asesor.py` + `adapters/ia/asesor.py` + `/api/asesor` + pestaña **Asesor**): conversa con tu cartera + estrategia firmada + plan + régimen + doctrina en contexto (vía `completar`, rápido, sin web por mensaje; contexto = top 20 posiciones + resumen); persistido por cartera (`MensajeAsesor`). Frontera MiFID por modo (Owner prescriptivo, SaaS análisis+disclaimer). Para análisis profundo con noticias remite a Análisis.
+- [x] **Asesor con ACCIONES** (Owner): propone acciones whitelisteadas (`ajustar_estimacion`, `crear_paso`) como bloque JSON → el frontend las muestra como **tarjetas Aplicar/Descartar** → al confirmar ejecuta el endpoint conocido (`editarEstimacion`/`crearPaso`). La IA nunca ejecuta libremente; el humano es el gate. `ajustar_estimacion` cubre **método (tipo_val), múltiplo+métrica y/o dividendo** (cualquier subconjunto). Anclado en consenso/comparables; "Investigar →" enlaza a la valoración (web). El asesor vive como **widget de chat global** (esquina inf. derecha, persistente al cerrar) + página `/asesor`.
+- [x] **Vigilancia de cartera** (`services/vigilancia.py` + `SnapshotPrecio` + `/api/vigilancia` + panel en Dashboard): alertas de movimiento de precio vs el último "visto" (≥5% ALERTA, ≥10% CRÍTICA); "marcar visto" resetea el baseline; cada mover enlaza a Análisis para el "por qué". Alimenta el contexto del asesor. Sin cron (compara acumulado). Earnings/noticias por mover = futuro (datos US-only/web).
+- [x] **Hoja de ruta al firmar** (`services/hoja_ruta.py` + `/api/hoja-ruta` job + `HojaRutaReview` como paso final del onboarding): HÍBRIDO — el **déficit € por bloque** es determinista (`calcular_distribucion`), la **IA solo ordena/razona** los pasos (anti-churn, 15/15, fase, tramo del régimen) sobre ISINs reales (cartera ∪ watchlist; descarta inventados). Se genera en segundo plano tras firmar; el usuario **aprueba cada paso** (reusa `AccionCard` → `crear_paso`). Bloques con déficit y sin instrumento → "huecos" con enlace a Análisis/watchlist. Regenerable. Cierra el hueco estrategia→plan.
 
 ---
 

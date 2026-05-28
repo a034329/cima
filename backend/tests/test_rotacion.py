@@ -162,6 +162,30 @@ def test_perdida_baja_el_umbral_y_sube_con_n(db: Session, cartera, monkeypatch) 
     assert it.umbral_4y_pct < it.cagr4_div_origen_pct
 
 
+def test_buffer_de_perdidas_pendientes_anula_el_coste(db: Session, cartera, monkeypatch) -> None:
+    """Pérdidas pendientes de años anteriores absorben la plusvalía nueva → coste
+    fiscal 0 y el umbral cae a r_origen (el switching cost desaparece). Es el
+    agujero que se arregló: antes sobrestimaba el impuesto ignorando el buffer."""
+    ej = date.today().year
+    g = _pos(db, cartera, "US_G", "Ganadora"); _lote(db, g, 10, 500)   # V=1000, G=500
+    _est(db, cartera, "US_G", 20, 10)
+    # 1.000 € de pérdidas pendientes de un ejercicio reciente (no caducadas).
+    db.add(models.PerdidaPendienteManual(
+        cartera_id=cartera.id, ejercicio_origen=ej - 1, importe_eur=Decimal("1000")))
+    db.commit()
+
+    monkeypatch.setattr(precios, "precios_nativos",
+                        lambda db, cid: {"US_G": (Decimal("100"), "EUR")})
+    r = calcular_rotacion(db, cartera.id, ej, precios={"US_G": Decimal("100")})
+
+    assert r.buffer_perdidas_eur >= Decimal("1000.00")     # buffer disponible expuesto
+    gan = [x for x in r.items if x.isin == "US_G"][0]
+    assert gan.gp_latente_eur == Decimal("500.00")
+    assert gan.coste_fiscal_eur == Decimal("0.00")          # el buffer (1000) cubre los 500
+    # Sin ancla fiscal → umbral plano = r_origen en todos los horizontes.
+    assert gan.umbral_1y_pct == gan.umbral_4y_pct == gan.cagr4_div_origen_pct
+
+
 def test_sin_estimacion_no_calcula_umbral(db: Session, cartera, monkeypatch) -> None:
     g = _pos(db, cartera, "US_X", "Sin estimación"); _lote(db, g, 10, 500)
     db.commit()  # sin fila Estimacion

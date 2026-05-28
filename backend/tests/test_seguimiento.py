@@ -25,7 +25,7 @@ def test_calcular_seguimiento_usa_ticker(db: Session, cartera, monkeypatch) -> N
 
     import app.services.precios as precios
     monkeypatch.setattr(precios, "precio_nativo_simbolo",
-                        lambda sim: (Decimal("100"), "USD") if sim == "WLCO" else None)
+                        lambda sim, *a, **k: (Decimal("100"), "USD") if sim == "WLCO" else None)
 
     calcs = svc.calcular_estimaciones_seguimiento(db, cartera.id)
     c = [x for x in calcs if x.isin == "US_WL"][0]
@@ -63,7 +63,7 @@ def test_endpoint_seguimiento_e2e(monkeypatch) -> None:
     })
     monkeypatch.setattr(precios, "fundamentales_simbolo",
                         lambda sim: {"eps": 4.0, "dividend": 2.0})
-    monkeypatch.setattr(precios, "precio_nativo_simbolo", lambda sim: (Decimal("100"), "USD"))
+    monkeypatch.setattr(precios, "precio_nativo_simbolo", lambda sim, *a, **k: (Decimal("100"), "USD"))
 
     app.dependency_overrides[get_db] = override
     try:
@@ -160,7 +160,7 @@ def test_seguimiento_permite_posicion_cerrada(monkeypatch) -> None:
     })
     monkeypatch.setattr(precios, "consenso_simbolo", lambda sim: None)
     monkeypatch.setattr(precios, "fundamentales_simbolo", lambda sim: {})
-    monkeypatch.setattr(precios, "precio_nativo_simbolo", lambda sim: (Decimal("50"), "USD"))
+    monkeypatch.setattr(precios, "precio_nativo_simbolo", lambda sim, *a, **k: (Decimal("50"), "USD"))
 
     app.dependency_overrides[get_db] = override
     try:

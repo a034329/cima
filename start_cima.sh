@@ -13,7 +13,7 @@
 #   5. Al parar el frontend, mata también el backend.
 #
 # Variables de entorno opcionales:
-#   CIMA_MODE         saas|owner  (default saas)
+#   CIMA_MODE         saas|owner  (default owner — uso personal; el SaaS lo pone explícito)
 #   CIMA_BACKEND_PORT default 8000
 #   CIMA_FRONTEND_PORT default 3000
 # ──────────────────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ BACKEND_DIR="${CIMA_DIR}/backend"
 FRONTEND_DIR="${CIMA_DIR}/frontend"
 BACKEND_PORT="${CIMA_BACKEND_PORT:-8000}"
 FRONTEND_PORT="${CIMA_FRONTEND_PORT:-3000}"
-export CIMA_MODE="${CIMA_MODE:-saas}"
+export CIMA_MODE="${CIMA_MODE:-owner}"
 
 echo ""
 echo "  =================================================="

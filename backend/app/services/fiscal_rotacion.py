@@ -107,6 +107,7 @@ class RotacionResultado:
     ejercicio: int
     fecha_calculo: date
     base_ahorro_actual_eur: Decimal     # base del ahorro YTD sobre la que se aplica el marginal
+    buffer_perdidas_eur: Decimal = Decimal("0")  # pérdidas pendientes que absorben la plusvalía (compartido)
     items: list[RotacionItem] = field(default_factory=list)
     sin_estimacion: list[str] = field(default_factory=list)
 
@@ -132,6 +133,14 @@ def calcular_rotacion(
     base_actual = (
         Decimal(str(comp.base_ahorro_gp)) + Decimal(str(comp.base_ahorro_rcm))
     )
+    # Buffer de pérdidas que absorbe la PRÓXIMA plusvalía realizada (sin coste
+    # fiscal hasta ese importe): pendientes de años anteriores + arrastre del año.
+    # Es COMPARTIDO entre posiciones; aquí se aplica por-posición como "¿y si
+    # vendo SOLO esta?" — se expone para señalar el límite común.
+    buffer = (
+        sum((Decimal(str(p.pendiente_eur)) for p in comp.perdidas_actualizadas), Decimal("0"))
+        + Decimal(str(abs(comp.nuevo_saldo_negativo)))
+    )
 
     est = {e.isin: e for e in calcular_estimaciones(db, cartera_id)}
 
@@ -143,8 +152,11 @@ def calcular_rotacion(
         v = Decimal(str(lat.valor_actual_eur))
         g = Decimal(str(lat.gp_latente_eur))
         # Efecto fiscal CON SIGNO: ganancia → coste (+, resta capital); pérdida
-        # → crédito (−, suma capital reinvertible).
-        efecto = efecto_fiscal_incremental(base_actual, g)
+        # → crédito (−, suma capital reinvertible). Una ganancia se absorbe primero
+        # con el buffer de pérdidas pendientes (tributa solo el exceso) → si el
+        # buffer la cubre, el coste fiscal es 0 y el switching cost desaparece.
+        g_imponible = max(Decimal("0"), g - buffer) if g > 0 else g
+        efecto = efecto_fiscal_incremental(base_actual, g_imponible)
 
         e = est.get(lat.isin)
         r_o = (
@@ -189,6 +201,7 @@ def calcular_rotacion(
         ejercicio=ejercicio,
         fecha_calculo=date.today(),
         base_ahorro_actual_eur=base_actual.quantize(_CENT, ROUND_HALF_UP),
+        buffer_perdidas_eur=buffer.quantize(_CENT, ROUND_HALF_UP),
         items=items,
         sin_estimacion=sin_est,
     )

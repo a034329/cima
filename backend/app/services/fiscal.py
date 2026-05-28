@@ -31,8 +31,9 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as _SASession
 
 from app.adapters.cuadrate import (
     get_compensacion_perdidas,
@@ -226,6 +227,33 @@ class FiscalResultado:
 # ── Entry point ───────────────────────────────────────────────────────────
 
 def calcular_fiscal(
+    db: Session, cartera_id: str, ejercicio: int | None,
+    extras: "FiscalExtras | None" = None,
+) -> FiscalResultado:
+    """Resultado fiscal MEMOIZADO por petición (se llama varias veces por carga:
+    dashboard directo + optimizador + rotación…). Solo cachea el caso común
+    (`extras=None`); se invalida en cualquier flush/rollback. Tratar como solo
+    lectura (no mutar el resultado)."""
+    if extras is not None:
+        return _calcular_fiscal_impl(db, cartera_id, ejercicio, extras)
+    cache = db.info.setdefault("_fiscal_cache", {})
+    key = (cartera_id, ejercicio)
+    if key not in cache:
+        cache[key] = _calcular_fiscal_impl(db, cartera_id, ejercicio, None)
+    return cache[key]
+
+
+@event.listens_for(_SASession, "after_flush")
+def _invalidar_fiscal_cache(session: Session, flush_context: object) -> None:  # noqa: ARG001
+    session.info.pop("_fiscal_cache", None)
+
+
+@event.listens_for(_SASession, "after_rollback")
+def _invalidar_fiscal_cache_rb(session: Session) -> None:
+    session.info.pop("_fiscal_cache", None)
+
+
+def _calcular_fiscal_impl(
     db: Session, cartera_id: str, ejercicio: int | None,
     extras: "FiscalExtras | None" = None,
 ) -> FiscalResultado:

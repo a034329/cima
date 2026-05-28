@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Fraunces, Inter, IBM_Plex_Mono } from 'next/font/google';
+import { ChatWidget } from '@/components/ChatWidget';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Wordmark } from '@/components/Wordmark';
 import './globals.css';
@@ -97,6 +98,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </a>
           </div>
         </footer>
+        <ChatWidget />
       </body>
     </html>
   );

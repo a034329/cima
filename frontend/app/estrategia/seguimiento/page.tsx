@@ -1,12 +1,15 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import {
   anadirSeguimiento,
   asignarBloque,
+  auditarCompra,
   crearBloque,
   crearPaso,
   editarEstimacion,
+  evaluarCandidato,
   fetchDistribucionBloques,
   fetchSeguimiento,
   fmtEUR,
@@ -15,12 +18,15 @@ import {
   quitarSeguimiento,
   sugerirBloque,
 } from '@/lib/api';
+import { AuditoriaVista } from '@/components/AuditoriaVista';
 import { CAT_COLOR, CAT_LABEL } from '@/lib/categorias';
 import { PRIORIDADES, PRIORIDAD_LABEL } from '@/lib/decisiones';
 import { notificarDatosActualizados } from '@/lib/refetch';
 import type {
+  Auditoria,
   BloqueDist,
   CategoriaBase,
+  EvaluacionCandidato,
   PrioridadPlan,
   SeguimientoItem,
   SugerenciaBloque,
@@ -35,6 +41,14 @@ export default function SeguimientoPage() {
   const [sugerencias, setSugerencias] = useState<Record<string, SugerenciaBloque>>({});
   const [sugiriendo, setSugiriendo] = useState<Record<string, boolean>>({});
   const [compraIsin, setCompraIsin] = useState<string | null>(null);
+  const [evaluaciones, setEvaluaciones] = useState<Record<string, EvaluacionCandidato>>({});
+  const [evaluando, setEvaluando] = useState<Record<string, boolean>>({});
+  // Bloque-objetivo: si llegas desde el déficit de un bloque (Bloques → "Buscar
+  // candidato"), evaluamos contra él y avisamos si el candidato no lo cubre.
+  const [target, setTarget] = useState<string | null>(null);
+  useEffect(() => {
+    setTarget(new URLSearchParams(window.location.search).get('bloque'));
+  }, []);
 
   const cargar = useCallback(async () => {
     try {
@@ -127,6 +141,22 @@ export default function SeguimientoPage() {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
+  const evaluar = async (isin: string) => {
+    if (evaluaciones[isin]) {            // ya mostrada → toggle (cerrar)
+      setEvaluaciones((prev) => { const n = { ...prev }; delete n[isin]; return n; });
+      return;
+    }
+    setEvaluando((prev) => ({ ...prev, [isin]: true }));
+    try {
+      const ev = await evaluarCandidato(isin, target);
+      setEvaluaciones((prev) => ({ ...prev, [isin]: ev }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEvaluando((prev) => ({ ...prev, [isin]: false }));
+    }
+  };
+
   const planear = async (isin: string, capital: string, prioridad: PrioridadPlan) => {
     try {
       await crearPaso({
@@ -145,6 +175,14 @@ export default function SeguimientoPage() {
         un bloque (la IA puede sugerirlo) y <strong>planea su compra</strong> — aparecerá en el
         plan y en el hueco de asignación.
       </p>
+
+      {target && (
+        <div className="rounded-lg border border-brand-200 bg-brand-50/60 dark:bg-brand-900/15 dark:border-brand-800 p-3 text-sm">
+          Buscando candidato para{' '}
+          <span className="font-medium">{CAT_LABEL[target as CategoriaBase] ?? target}</span>.
+          Pulsa <strong>evaluar</strong> en un valor para ver si encaja y cumple sus criterios.
+        </div>
+      )}
 
       <div className="flex items-center gap-2 flex-wrap">
         <input
@@ -203,6 +241,9 @@ export default function SeguimientoPage() {
                   cargandoSug={!!sugiriendo[s.isin]}
                   bloqueSugId={sugerencias[s.isin] ? bloqueDeSugerencia(sugerencias[s.isin]) : undefined}
                   compraAbierta={compraIsin === s.isin}
+                  target={target}
+                  evaluacion={evaluaciones[s.isin]}
+                  evaluando={!!evaluando[s.isin]}
                   onQuitar={quitar}
                   onGuardar={guardar}
                   onAsignar={asignar}
@@ -210,6 +251,7 @@ export default function SeguimientoPage() {
                   onAplicarSugerencia={aplicarSugerencia}
                   onCrearYAsignar={crearYAsignar}
                   onToggleCompra={() => setCompraIsin(compraIsin === s.isin ? null : s.isin)}
+                  onEvaluar={evaluar}
                   onPlanear={planear}
                 />
               ))}
@@ -225,9 +267,10 @@ const TH = 'sticky top-0 z-10 bg-[rgb(var(--card))] border-b border-[rgb(var(--b
   'shadow-[0_1px_0_rgb(var(--border))]';
 
 function Fila({
-  s, bloques, catDeBloque, sugerencia, cargandoSug, bloqueSugId, compraAbierta,
+  s, bloques, catDeBloque, sugerencia, cargandoSug, bloqueSugId, compraAbierta, target,
+  evaluacion, evaluando,
   onQuitar, onGuardar, onAsignar, onSugerir, onAplicarSugerencia, onCrearYAsignar,
-  onToggleCompra, onPlanear,
+  onToggleCompra, onEvaluar, onPlanear,
 }: {
   s: SeguimientoItem;
   bloques: BloqueDist[];
@@ -236,6 +279,9 @@ function Fila({
   cargandoSug: boolean;
   bloqueSugId?: string;
   compraAbierta: boolean;
+  target: string | null;
+  evaluacion?: EvaluacionCandidato;
+  evaluando: boolean;
   onQuitar: (isin: string) => Promise<void>;
   onGuardar: (isin: string, campos: Record<string, unknown>) => Promise<void>;
   onAsignar: (isin: string, bloqueId: string | null) => Promise<void>;
@@ -243,6 +289,7 @@ function Fila({
   onAplicarSugerencia: (isin: string) => Promise<void>;
   onCrearYAsignar: (isin: string) => Promise<void>;
   onToggleCompra: () => void;
+  onEvaluar: (isin: string) => Promise<void>;
   onPlanear: (isin: string, capital: string, prioridad: PrioridadPlan) => Promise<void>;
 }) {
   const e = s.estimacion;
@@ -330,6 +377,21 @@ function Fila({
         <td className={`px-2 text-right font-semibold ${colorPct(e.cagr4_div_pct)}`}>{pct(e.cagr4_div_pct)}</td>
         <td className="px-2 text-right whitespace-nowrap font-sans">
           <button
+            onClick={() => onEvaluar(s.isin)}
+            disabled={evaluando}
+            title="¿Encaja en su bloque y cumple sus criterios? (IA + métricas)"
+            className="text-[11px] text-brand-600 dark:text-brand-400 hover:underline mr-2 disabled:opacity-50"
+          >
+            {evaluando ? '·· IA ··' : evaluacion ? 'ocultar' : 'evaluar'}
+          </button>
+          <Link
+            href={`/estrategia/analisis?isin=${encodeURIComponent(s.isin)}`}
+            title="Estudio a fondo: one-pager + valoración (pestaña Análisis)"
+            className="text-[11px] text-brand-600 dark:text-brand-400 hover:underline mr-2"
+          >
+            analizar →
+          </Link>
+          <button
             onClick={onToggleCompra}
             className="text-[11px] text-brand-600 dark:text-brand-400 hover:underline mr-2"
           >
@@ -344,10 +406,17 @@ function Fila({
           </button>
         </td>
       </tr>
+      {evaluacion && (
+        <tr className="bg-[rgb(var(--bg))]">
+          <td colSpan={10} className="px-3 py-2 font-sans">
+            <EvaluacionPanel ev={evaluacion} />
+          </td>
+        </tr>
+      )}
       {compraAbierta && (
         <tr className="bg-brand-50/40 dark:bg-brand-900/10">
           <td colSpan={10} className="px-3 py-2 font-sans">
-            <FormCompra nombre={s.nombre || s.ticker}
+            <FormCompra isin={s.isin} nombre={s.nombre || s.ticker} target={target}
               onPlanear={(capital, prioridad) => onPlanear(s.isin, capital, prioridad)} />
           </td>
         </tr>
@@ -356,14 +425,27 @@ function Fila({
   );
 }
 
-function FormCompra({ nombre, onPlanear }: {
+function FormCompra({ isin, nombre, target, onPlanear }: {
+  isin: string;
   nombre: string;
+  target: string | null;
   onPlanear: (capital: string, prioridad: PrioridadPlan) => Promise<void>;
 }) {
   const [capital, setCapital] = useState('');
   const [prioridad, setPrioridad] = useState<PrioridadPlan>('MEDIA');
+  const [audit, setAudit] = useState<Auditoria | null>(null);
+  const [auditando, setAuditando] = useState(true);
+  useEffect(() => {
+    setAuditando(true);
+    auditarCompra(isin, target)
+      .then(setAudit).catch(() => setAudit(null)).finally(() => setAuditando(false));
+  }, [isin, target]);
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm">
+    <div className="space-y-3">
+      {auditando ? (
+        <div className="text-xs text-[rgb(var(--muted))] animate-pulse">auditando la compra…</div>
+      ) : audit && <AuditoriaVista a={audit} />}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
       <span className="text-[rgb(var(--muted))]">Planificar compra de <strong>{nombre}</strong>:</span>
       <input
         value={capital}
@@ -387,6 +469,49 @@ function FormCompra({ nombre, onPlanear }: {
       >
         Planificar compra
       </button>
+      </div>
+    </div>
+  );
+}
+
+
+function EvaluacionPanel({ ev }: { ev: EvaluacionCandidato }) {
+  const noCubre = ev.cubre_target === false;
+  return (
+    <div className="text-xs space-y-1.5 max-w-2xl">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[rgb(var(--muted))]">Encaja en:</span>
+        <span className={`px-1.5 py-0.5 rounded ${CAT_COLOR[ev.categoria_sugerida]}`}>
+          {CAT_LABEL[ev.categoria_sugerida]}
+        </span>
+        <span className="text-[rgb(var(--muted))]">conf. {Math.round(ev.confianza * 100)}%</span>
+      </div>
+      {ev.razonamiento && <div className="italic text-[rgb(var(--muted))]">{ev.razonamiento}</div>}
+      {ev.checks.length > 0 ? (
+        <ul className="space-y-0.5 font-mono">
+          {ev.checks.map((c) => (
+            <li key={c.etiqueta} className="flex items-center gap-2">
+              <span
+                className={
+                  c.cumple === true ? 'text-emerald-600 dark:text-emerald-400'
+                    : c.cumple === false ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-[rgb(var(--muted))]'
+                }
+              >
+                {c.cumple === true ? '✓' : c.cumple === false ? '✗' : '·'}
+              </span>
+              <span>{c.etiqueta}: <strong>{c.valor_txt}</strong></span>
+              <span className="text-[rgb(var(--muted))]">(obj. {c.objetivo_txt})</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-[rgb(var(--muted))]">Sin criterios medibles para este bloque.</div>
+      )}
+      <div className="italic text-[rgb(var(--muted))]">{ev.cualitativo}</div>
+      <div className={`font-medium ${noCubre ? 'text-amber-700 dark:text-amber-400' : ''}`}>
+        {noCubre && '⚠ '}{ev.veredicto}
+      </div>
     </div>
   );
 }

@@ -386,6 +386,13 @@ export async function sugerirBloque(
   });
 }
 
+export async function evaluarCandidato(
+  isin: string, target?: string | null,
+): Promise<import('./types').EvaluacionCandidato> {
+  const qs = target ? `?target=${encodeURIComponent(target)}` : '';
+  return fetchJson(`/api/bloques/evaluar/${encodeURIComponent(isin)}${qs}`);
+}
+
 export async function autoclasificarCartera(
   opts: { soloSinClasificar?: boolean; isines?: string[] } = {},
 ): Promise<import('./types').SugerenciaBloque[]> {
@@ -453,6 +460,144 @@ export async function fetchPosicionesPlan(): Promise<
 
 export async function fetchHueco(): Promise<import('./types').HuecoAsignacion> {
   return fetchJson('/api/plan/hueco');
+}
+
+export async function evaluarFriccion(
+  isin: string, decision: string,
+): Promise<import('./types').FriccionResultado | null> {
+  return fetchJson('/api/plan/evaluar-friccion', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ isin, decision }),
+  });
+}
+
+// ── Onboarding ─────────────────────────────────────────────────────────
+
+export async function proponerEstrategia(
+  perfil: import('./types').PerfilOnboarding,
+): Promise<import('./types').PropuestaEstrategia> {
+  return fetchJson('/api/onboarding/proponer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(perfil),
+  });
+}
+
+export async function firmarPlan(
+  perfil: import('./types').PerfilOnboarding,
+  objetivos: Record<string, number>,
+): Promise<import('./types').PlanFirmado> {
+  return fetchJson('/api/onboarding/firmar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ perfil, objetivos }),
+  });
+}
+
+export async function fetchPlanFirmado(): Promise<import('./types').PlanFirmado | null> {
+  return fetchJson('/api/onboarding/plan');
+}
+
+export async function fetchVigilancia(): Promise<import('./types').Vigilancia> {
+  return fetchJson('/api/vigilancia');
+}
+
+export async function marcarVistoVigilancia(): Promise<void> {
+  await fetch(`${API_BASE}/api/vigilancia/visto`, { method: 'POST' });
+}
+
+export async function fetchHistorialAsesor(): Promise<import('./types').MensajeAsesor[]> {
+  return fetchJson('/api/asesor');
+}
+
+export async function enviarMensajeAsesor(
+  mensaje: string, porVoz = false,
+): Promise<import('./types').RespuestaAsesor> {
+  return fetchJson('/api/asesor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mensaje, por_voz: porVoz }),
+  });
+}
+
+export async function limpiarAsesor(): Promise<void> {
+  await fetch(`${API_BASE}/api/asesor`, { method: 'DELETE' });
+}
+
+export async function fetchRegimen(): Promise<import('./types').RegimenEstado> {
+  return fetchJson('/api/regimen');
+}
+
+export async function auditarCompra(
+  isin: string, bloque?: string | null,
+): Promise<import('./types').Auditoria> {
+  const qs = `?decision=COMPRAR${bloque ? `&bloque=${encodeURIComponent(bloque)}` : ''}`;
+  return fetchJson(`/api/auditoria/${encodeURIComponent(isin)}${qs}`);
+}
+
+export async function auditarVenta(
+  isin: string,
+): Promise<import('./types').Auditoria> {
+  return fetchJson(`/api/auditoria/${encodeURIComponent(isin)}?decision=VENDER`);
+}
+
+export async function analizarContexto(
+  isin: string,
+): Promise<import('./types').AnalisisContexto> {
+  return fetchJson(`/api/contexto/${encodeURIComponent(isin)}`);
+}
+
+// One-pager y valoración corren en segundo plano (búsqueda web de minutos):
+// GET devuelve el estado + resultado guardado (para polling); POST lanza el job.
+export async function fetchOnePagerEstado(
+  isin: string,
+): Promise<import('./types').OnePagerEstado> {
+  return fetchJson(`/api/analisis/${encodeURIComponent(isin)}/one-pager`);
+}
+
+export async function lanzarOnePager(
+  isin: string,
+): Promise<import('./types').OnePagerEstado> {
+  return fetchJson(`/api/analisis/${encodeURIComponent(isin)}/one-pager`, { method: 'POST' });
+}
+
+export async function fetchValoracionEstado(
+  isin: string,
+): Promise<import('./types').ValoracionEstado> {
+  return fetchJson(`/api/analisis/${encodeURIComponent(isin)}/valoracion`);
+}
+
+export async function lanzarValoracion(
+  isin: string,
+): Promise<import('./types').ValoracionEstado> {
+  return fetchJson(`/api/analisis/${encodeURIComponent(isin)}/valoracion`, { method: 'POST' });
+}
+
+export async function fetchCompsEstado(isin: string): Promise<import('./types').CompsEstado> {
+  return fetchJson(`/api/analisis/${encodeURIComponent(isin)}/comps`);
+}
+
+export async function lanzarComps(isin: string): Promise<import('./types').CompsEstado> {
+  return fetchJson(`/api/analisis/${encodeURIComponent(isin)}/comps`, { method: 'POST' });
+}
+
+export async function fetchHojaRuta(): Promise<import('./types').HojaRutaEstado> {
+  return fetchJson('/api/hoja-ruta');
+}
+
+export async function generarHojaRuta(): Promise<import('./types').HojaRutaEstado> {
+  return fetchJson('/api/hoja-ruta/generar', { method: 'POST' });
+}
+
+export async function guardarRegimen(
+  indicadores: import('./types').RegimenEstado['indicadores'],
+): Promise<import('./types').RegimenEstado> {
+  return fetchJson('/api/regimen', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(indicadores),
+  });
 }
 
 export async function crearPaso(

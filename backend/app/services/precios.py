@@ -13,6 +13,7 @@ Best-effort: ISIN que no resuelven (cripto, mercados raros) → `no_resueltos`.
 from __future__ import annotations
 
 import json
+import re
 import time
 import warnings
 from decimal import Decimal
@@ -171,7 +172,10 @@ def _precio_fmp_us(simbolo: str) -> tuple[float, str] | None:
     return None
 
 
-def _precio_y_divisa(simbolo: str) -> tuple[float, str] | None:
+def _precio_y_divisa(simbolo: str, usar_ia: bool = False) -> tuple[float, str] | None:
+    """Yahoo → FMP (US). `usar_ia=True` añade el fallback IA (lento, minutos).
+    Por defecto SIN IA — para no colgar las lecturas si Yahoo/FMP fallan. El
+    refresco explícito (prefill / `forzar`) sí pasa `usar_ia=True`."""
     try:
         import yfinance as yf  # type: ignore[import-not-found]
         with warnings.catch_warnings():
@@ -183,7 +187,38 @@ def _precio_y_divisa(simbolo: str) -> tuple[float, str] | None:
                 return float(serie.iloc[-1]), cur
     except Exception:
         pass
-    return _precio_fmp_us(simbolo)   # fallback determinista (US)
+    r = _precio_fmp_us(simbolo)      # fallback determinista (FMP plan gratuito: US)
+    if r is not None:
+        return r
+    if usar_ia:
+        return _precio_via_ia(simbolo)   # último recurso (lento): web search vía IA
+    return None
+
+
+def _precio_via_ia(simbolo: str) -> tuple[float, str] | None:
+    """Fallback de precio vía IA + web cuando Yahoo y FMP no lo dan (p.ej. símbolos
+    no-US fuera del plan gratuito de FMP). Lento; el caller cachea el resultado en
+    `px:<sim>` → solo se llama una vez por símbolo. Best-effort: cualquier error → None."""
+    try:
+        from app.adapters.ia import get_clasificador
+        system = (
+            "Eres un asistente de cotizaciones. Busca en la web EL ÚLTIMO PRECIO DE CIERRE "
+            "del símbolo dado y la DIVISA en la que cotiza (código ISO, o 'GBp'/'GBX' para "
+            "peniques). Si no lo encuentras con seguridad, devuelve null en precio. NO inventes.\n"
+            'Responde EXCLUSIVAMENTE con JSON: {"precio": <num o null>, "divisa": "<ISO o GBp>"}'
+        )
+        texto = get_clasificador().investigar(system, f"Símbolo: {simbolo}")
+        m = re.search(r"\{.*\}", (texto or "").strip(), re.DOTALL)
+        if not m:
+            return None
+        d = json.loads(m.group(0), strict=False)
+        p = d.get("precio")
+        c = d.get("divisa")
+        if not isinstance(p, (int, float)) or p <= 0 or not c:
+            return None
+        return float(p), str(c).strip()
+    except Exception:
+        return None
 
 
 # ── 4. FX a EUR ─────────────────────────────────────────────────────────────
@@ -221,7 +256,12 @@ def obtener_precios_eur(
     db: Session, cartera_id: str, forzar: bool = False
 ) -> tuple[dict[str, Decimal], list[str]]:
     """Precio actual en EUR por ISIN de las posiciones abiertas.
-    Devuelve (precios_por_isin, isines_sin_precio)."""
+    Devuelve (precios_por_isin, isines_sin_precio).
+
+    RENDIMIENTO: por defecto NO refresca por antigüedad — usa la caché tal cual y
+    solo baja de la red el precio que FALTE (posición nueva). Así las lecturas
+    (dashboard, cartera, resumen) no bloquean en Yahoo en cada carga. El refresco
+    de mercado es explícito: `forzar=True` (lo hace el prefill / "Actualizar")."""
     posiciones = [
         pos for pos in db.execute(
             select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
@@ -250,13 +290,19 @@ def obtener_precios_eur(
             no_resueltos.append(pos.isin)
             continue
         entry = cache.get(f"px:{sim}", {})
-        if forzar or not _fresco(entry, _TTL_PX):
-            pv = _precio_y_divisa(sim)
+        # Fetch si (a) refresco explícito (`forzar` → con IA fallback) o (b) FALTA
+        # el precio cacheado (rápido: solo Yahoo+FMP, sin IA → no cuelga la lectura).
+        # La antigüedad NO dispara fetch — para eso está "Actualizar desde el feed".
+        if forzar or entry.get("precio") is None:
+            pv = _precio_y_divisa(sim, usar_ia=forzar)
             if pv is None:
                 no_resueltos.append(pos.isin)
                 continue
             entry = {"precio": pv[0], "divisa": pv[1], "ts": ahora}
             cache[f"px:{sim}"] = entry
+        if entry.get("precio") is None:                # sin caché y sin forzar → no_resuelto, no romper
+            no_resueltos.append(pos.isin)
+            continue
         fac = _fx_eur(entry.get("divisa", "EUR"), cache)
         if fac is None:
             no_resueltos.append(pos.isin)
@@ -315,16 +361,21 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             "currency": cur,
             "eps_hist": eps_hist,        # BPA real por año fiscal (oldest→newest)
             "eps_fiscal": eps_fiscal,    # BPA del último ejercicio cerrado
+            "beta": info.get("beta"),    # beta 5y (unitless) — señal de volatilidad
+            # ROE como proxy de calidad: ROIC no está en .info; returnOnEquity sí
+            # (fracción, p.ej. 0.37 = 37%). Apalancado, pero útil para el corte.
+            "roe": info.get("returnOnEquity"),
         }
     except Exception:
         return None
 
 
-def sector_por_isin(db: Session, cartera_id: str) -> dict[str, str]:
-    """{isin: sector} de las posiciones abiertas, vía yfinance .info (cacheado
-    con los fundamentales). Best-effort: los que no resuelven se omiten (el
-    llamador los agrupa en 'Sin clasificar')."""
-    obtener_precios_eur(db, cartera_id)   # asegura resolución figi
+def sector_por_isin(db: Session, cartera_id: str, refrescar: bool = False) -> dict[str, str]:
+    """{isin: sector} de las posiciones abiertas (cacheado con los fundamentales).
+    Por defecto SOLO LEE la caché `fund:` (la calienta el prefill) → no bloquea las
+    lecturas (dashboard→dividendos). `refrescar=True` baja del feed lo que falte."""
+    if refrescar:
+        obtener_precios_eur(db, cartera_id)   # asegura resolución figi
     cache = _leer_cache()
     out: dict[str, str] = {}
     for pos in db.execute(
@@ -338,8 +389,7 @@ def sector_por_isin(db: Session, cartera_id: str) -> dict[str, str]:
             continue
         key = f"fund:{sim}"
         entry = cache.get(key, {})
-        # Re-fetch si caduca O si es una entrada antigua sin el campo 'sector'.
-        if not _fresco(entry, _TTL_FUND) or "sector" not in entry:
+        if refrescar and (not _fresco(entry, _TTL_FUND) or "sector" not in entry):
             f = _fetch_fundamentales(sim)
             if f is not None:
                 entry = {**f, "ts": time.time()}
@@ -347,14 +397,19 @@ def sector_por_isin(db: Session, cartera_id: str) -> dict[str, str]:
         sec = entry.get("sector")
         if sec:
             out[pos.isin] = sec
-    _guardar_cache(cache)
+    if refrescar:
+        _guardar_cache(cache)
     return out
 
 
-def fundamentales_por_isin(db: Session, cartera_id: str) -> dict[str, dict]:
+def fundamentales_por_isin(
+    db: Session, cartera_id: str, refrescar: bool = False
+) -> dict[str, dict]:
     """{isin: {eps, forward_eps, dividend, pe}} vía yfinance .info, cacheado 7d.
-    Best-effort: símbolos sin datos se omiten."""
-    obtener_precios_eur(db, cartera_id)   # asegura resolución figi
+    Por defecto SOLO LEE la caché (no bloquea las lecturas); `refrescar=True`
+    repuebla desde el feed (prefill). Best-effort: símbolos sin datos se omiten."""
+    if refrescar:
+        obtener_precios_eur(db, cartera_id)   # asegura resolución figi
     cache = _leer_cache()
     out: dict[str, dict] = {}
     for pos in db.execute(
@@ -368,22 +423,113 @@ def fundamentales_por_isin(db: Session, cartera_id: str) -> dict[str, dict]:
             continue
         key = f"fund:{sim}"
         entry = cache.get(key, {})
-        # Re-fetch si caduca, o es entrada antigua sin 'currency' (BPA en libras
-        # sin normalizar) o sin 'eps_fiscal' (sin BPA histórico para el CAGR).
-        if (not _fresco(entry, _TTL_FUND) or "currency" not in entry
-                or "eps_fiscal" not in entry or "industry" not in entry):
+        # Re-fetch (solo en refresco) si caduca o le faltan campos clave.
+        if refrescar and (not _fresco(entry, _TTL_FUND) or "currency" not in entry
+                          or "eps_fiscal" not in entry or "industry" not in entry
+                          or "beta" not in entry):
             f = _fetch_fundamentales(sim)
             if f is not None:
                 entry = {**f, "ts": time.time()}
                 cache[key] = entry
         if entry and any(entry.get(k) is not None for k in ("eps", "dividend", "pe")):
             out[pos.isin] = entry
-    _guardar_cache(cache)
+    if refrescar:
+        _guardar_cache(cache)
     return out
 
 
 _FMP_BASE = "https://financialmodelingprep.com/stable"
 _TTL_CONS = 7 * 24 * 3600   # consenso de analistas cambia lento
+_TTL_HIST = 7 * 24 * 3600   # CAGR histórico cambia lento
+
+
+def _fetch_cagr_historico(sim: str, max_anios: int = 20) -> float | None:
+    """CAGR de PRECIO anualizado sobre el histórico disponible (tope `max_anios`).
+    Proxy de retorno de un ETF/índice que no tiene BPA. Best-effort vía yfinance;
+    None si no hay al menos ~1 año de serie."""
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+        import yfinance as yf  # type: ignore[import-not-found]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            serie = yf.Ticker(sim).history(period="max")["Close"].dropna()
+    except Exception:
+        return None
+    if len(serie) < 2:
+        return None
+    corte = serie.index[-1] - pd.Timedelta(days=int(365.25 * max_anios))
+    serie = serie.loc[serie.index >= corte]
+    if len(serie) < 2:
+        return None
+    p0, p1 = float(serie.iloc[0]), float(serie.iloc[-1])
+    anios = (serie.index[-1] - serie.index[0]).days / 365.25
+    if p0 <= 0 or anios < 1:           # menos de 1 año → no anualizar
+        return None
+    return (p1 / p0) ** (1 / anios) - 1
+
+
+def _fetch_mercado() -> dict | None:
+    """S&P 500 (caída desde su máximo de 52 semanas) + VIX, vía yfinance.
+    Para la regla del −14%: distinguir corrección de bear market. Best-effort."""
+    try:
+        import yfinance as yf  # type: ignore[import-not-found]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sp = yf.Ticker("^GSPC").history(period="1y")["Close"].dropna()
+            vix_s = yf.Ticker("^VIX").history(period="5d")["Close"].dropna()
+    except Exception:
+        return None
+    if len(sp) < 2:
+        return None
+    maxv, cur = float(sp.max()), float(sp.iloc[-1])
+    drawdown = (cur - maxv) / maxv if maxv > 0 else 0.0
+    return {"sp_drawdown": drawdown, "vix": float(vix_s.iloc[-1]) if len(vix_s) else None}
+
+
+def mercado_correccion() -> dict | None:
+    """{sp_drawdown: fracción negativa, vix: float|None} cacheado 6h. Datos de
+    mercado globales (no por cartera). None si no hay datos."""
+    cache = _leer_cache()
+    entry = cache.get("mercado:sp_vix", {})
+    if not _fresco(entry, _TTL_PX) or "sp_drawdown" not in entry:
+        m = _fetch_mercado()
+        if m is not None:
+            entry = {**m, "ts": time.time()}
+            cache["mercado:sp_vix"] = entry
+            _guardar_cache(cache)
+    if "sp_drawdown" in entry:
+        return {"sp_drawdown": entry["sp_drawdown"], "vix": entry.get("vix")}
+    return None
+
+
+def cagr_historico_por_isin(
+    db: Session, cartera_id: str, isines: list[str], refrescar: bool = False
+) -> dict[str, Decimal]:
+    """CAGR de precio histórico anualizado por ISIN, SOLO para los `isines`
+    pedidos (p.ej. los ETF). Cacheado 7d. Por defecto SOLO LEE la caché (no
+    bloquea las lecturas); `refrescar=True` baja la serie en vivo (prefill)."""
+    pedidos = set(isines)
+    if not pedidos:
+        return {}
+    if refrescar:
+        obtener_precios_eur(db, cartera_id)   # asegura resolución figi
+    cache = _leer_cache()
+    out: dict[str, Decimal] = {}
+    for isin in pedidos:
+        figi = cache.get(f"figi:{isin}", {})
+        sim = _ISIN_OVERRIDE.get(isin) or _yf_simbolo(figi.get("ticker"), figi.get("exch"))
+        if not sim:
+            continue
+        key = f"histcagr:{sim}"
+        entry = cache.get(key, {})
+        if refrescar and (not _fresco(entry, _TTL_HIST) or "cagr" not in entry):
+            entry = {"cagr": _fetch_cagr_historico(sim), "ts": time.time()}
+            cache[key] = entry
+        if entry.get("cagr") is not None:
+            out[isin] = Decimal(str(entry["cagr"]))
+    if refrescar:
+        _guardar_cache(cache)
+    return out
 
 
 def _fetch_consenso(sim: str) -> dict | None:
@@ -470,17 +616,18 @@ def consenso_por_isin(db: Session, cartera_id: str) -> dict[str, dict]:
 
 # ── Helpers a nivel de SÍMBOLO (reutilizados por watchlist/seguimiento) ──────
 
-def precio_nativo_simbolo(sim: str) -> tuple[Decimal, str] | None:
-    """Precio actual + divisa nativa de un símbolo yfinance, cacheado (px:<sim>)."""
+def precio_nativo_simbolo(sim: str, refrescar: bool = False) -> tuple[Decimal, str] | None:
+    """Precio actual + divisa nativa de un símbolo yfinance, cacheado (px:<sim>).
+    SOLO baja de la red si `refrescar=True` (refresco explícito). Las lecturas
+    nunca tocan la red para evitar colgar el GET con la cascada YF→FMP→IA."""
     cache = _leer_cache()
     entry = cache.get(f"px:{sim}", {})
-    if not _fresco(entry, _TTL_PX):
+    if refrescar:
         pv = _precio_y_divisa(sim)
-        if pv is None:
-            return None
-        entry = {"precio": pv[0], "divisa": pv[1], "ts": time.time()}
-        cache[f"px:{sim}"] = entry
-        _guardar_cache(cache)
+        if pv is not None:
+            entry = {"precio": pv[0], "divisa": pv[1], "ts": time.time()}
+            cache[f"px:{sim}"] = entry
+            _guardar_cache(cache)
     if entry.get("precio") is None:
         return None
     return Decimal(str(entry["precio"])), entry.get("divisa", "EUR")
@@ -565,11 +712,18 @@ def resolver_ticker(ticker: str) -> dict | None:
     return info
 
 
-def precios_nativos(db: Session, cartera_id: str) -> dict[str, tuple[Decimal, str]]:
+def precios_nativos(
+    db: Session, cartera_id: str, refrescar: bool = False
+) -> dict[str, tuple[Decimal, str]]:
     """Precio actual en DIVISA NATIVA + divisa, por ISIN de posiciones abiertas.
     Para valoración: los ratios CAGR/yield son agnósticos a divisa, así que se
-    comparan precio nativo y métricas (EPS/dividendo) en su moneda de reporte."""
-    obtener_precios_eur(db, cartera_id)   # asegura cachés pobladas
+    comparan precio nativo y métricas (EPS/dividendo) en su moneda de reporte.
+
+    Por defecto SOLO LEE la caché (instantáneo): no bloquea recálculos (editar una
+    estimación) con fetch de mercado. `refrescar=True` repuebla precios en vivo —
+    lo hace el prefill / refresco explícito, no cada lectura."""
+    if refrescar:
+        obtener_precios_eur(db, cartera_id, forzar=True)   # repuebla cachés
     cache = _leer_cache()
     out: dict[str, tuple[Decimal, str]] = {}
     for pos in db.execute(

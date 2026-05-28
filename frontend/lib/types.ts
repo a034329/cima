@@ -41,7 +41,7 @@ export interface PosicionResumen {
 
 // ── Estimaciones (Fase 2) ────────────────────────────────────────────────
 
-export type TipoVal = 'PER' | 'P_FCF' | 'P_BV' | 'P_FRE';
+export type TipoVal = 'PER' | 'P_FCF' | 'P_BV' | 'P_FRE' | 'SOTP';
 
 export interface EstimacionItem {
   isin: string;
@@ -99,6 +99,216 @@ export interface CompBloque {
   categoria_base: CategoriaBase;
   valor_eur: string;
   peso: string;
+  cagr4_div_pct: string | null;
+  cobertura: string | null;
+}
+
+export interface PosicionPeso {
+  nombre: string;
+  isin: string;
+  categoria_base: CategoriaBase | null;
+  valor_eur: string;
+  peso: string;
+}
+
+export interface Escenario {
+  nombre: string;
+  multiplo: number;
+  metrica_base_4y: number;
+  precio_objetivo: number;
+  cagr4_pct: number | null;
+  razon: string;
+}
+
+export interface Valoracion {
+  isin: string;
+  nombre: string;
+  tipo_val: string;
+  precio_actual: number | null;
+  anclas: Record<string, number | string | null>;
+  escenarios: Escenario[];
+  fecha: string;
+  proveedor: string;
+  disclaimer: string | null;
+}
+
+export interface AlertaVigilancia {
+  isin: string;
+  nombre: string;
+  precio_anterior: string;
+  precio_actual: string;
+  cambio_pct: string;
+  nivel: 'ALERTA' | 'CRITICA';
+}
+
+export interface Vigilancia {
+  alertas: AlertaVigilancia[];
+  desde: string | null;
+}
+
+export interface MensajeAsesor {
+  rol: 'user' | 'assistant';
+  contenido: string;
+  created_at: string;
+}
+
+export interface AccionPropuesta {
+  tipo: 'crear_paso' | 'ajustar_estimacion';
+  isin: string;
+  descripcion: string;
+  params: Record<string, unknown>;
+}
+
+export interface RespuestaAsesor {
+  mensaje: MensajeAsesor;
+  acciones: AccionPropuesta[];
+}
+
+export type EstadoAnalisis = 'ninguno' | 'en_curso' | 'ok' | 'error';
+
+export interface OnePagerEstado {
+  estado: EstadoAnalisis;
+  error: string | null;
+  resultado: OnePager | null;
+}
+
+export interface ValoracionEstado {
+  estado: EstadoAnalisis;
+  error: string | null;
+  resultado: Valoracion | null;
+}
+
+export interface GapBloque {
+  categoria_base: string;
+  nombre: string;
+  peso_actual: number;
+  peso_objetivo: number;
+  deficit_eur: number;          // >0 = falta invertir; <0 = exceso
+  n_posiciones: number;
+}
+
+export interface PasoPropuesto {
+  isin: string;
+  nombre: string;
+  decision: string;
+  prioridad: string;
+  capital_objetivo_eur: number | null;
+  razon: string;
+  en_cartera: boolean;
+}
+
+export interface HojaRuta {
+  capital_eur: number;
+  liquidez_eur: number;
+  deficit: GapBloque[];
+  pasos: PasoPropuesto[];
+  huecos: string[];
+  resumen: string;
+  fecha: string;
+  proveedor: string;
+  disclaimer: string | null;
+}
+
+export interface HojaRutaEstado {
+  estado: EstadoAnalisis;
+  error: string | null;
+  resultado: HojaRuta | null;
+}
+
+export interface Peer {
+  nombre: string;
+  ticker: string;
+  per: number | null;
+  ev_ebitda: number | null;
+  p_fcf: number | null;
+  yield_pct: number | null;
+  crecimiento_pct: number | null;
+  roic_pct: number | null;
+  es_objetivo: boolean;
+}
+
+export interface Comps {
+  isin: string;
+  nombre: string;
+  sector: string;
+  peers: Peer[];
+  lectura: string;
+  fuentes: string[];
+  fecha: string;
+  proveedor: string;
+  disclaimer: string | null;
+}
+
+export interface CompsEstado {
+  estado: EstadoAnalisis;
+  error: string | null;
+  resultado: Comps | null;
+}
+
+export interface OnePager {
+  isin: string;
+  nombre: string;
+  que_hace: string;
+  tesis: string;
+  riesgos: string;
+  valoracion: string;
+  encaje: string;
+  veredicto: string;
+  clasificacion: string;        // COYUNTURAL | GRIS | ESTRUCTURAL | ''
+  fuentes: string[];
+  fecha: string;
+  proveedor: string;
+  disclaimer: string | null;
+}
+
+export interface AnalisisContexto {
+  isin: string;
+  nombre: string;
+  resumen: string;
+  clasificacion: 'COYUNTURAL' | 'GRIS' | 'ESTRUCTURAL' | 'SIN_DATOS';
+  preguntas: { pregunta: string; respuesta: string; senal?: string }[];
+  riesgo_principal: string;
+  fuentes: string[];
+  fecha: string;
+  proveedor: string;
+  disclaimer: string | null;
+}
+
+export interface Chequeo {
+  filtro: string;
+  estado: 'OK' | 'AVISO' | 'INFO' | 'VERIFICAR';
+  titulo: string;
+  detalle: string;
+}
+
+export interface Auditoria {
+  isin: string;
+  nombre: string;
+  decision: string;
+  bloque_objetivo: string | null;
+  chequeos: Chequeo[];
+  resumen: string;
+}
+
+export type SenalMacro = 'VERDE' | 'AMARILLA' | 'ROJA';
+
+export interface CorreccionVentana {
+  sp_drawdown: number | null;     // fracción negativa
+  vix: number | null;
+  activa: boolean;
+  escalado_min: number | null;
+  escalado_max: number | null;
+  nota: string;
+}
+
+export interface RegimenEstado {
+  indicadores: { ciclo: SenalMacro; inflacion: SenalMacro; geopolitica: SenalMacro; mercado: SenalMacro };
+  regimen: 'VERDE' | 'AMARILLO' | 'ROJO';
+  tramo_min: number;
+  tramo_max: number;
+  espaciado: string;
+  actualizado: string | null;
+  correccion: CorreccionVentana | null;
 }
 
 export interface PasoResumen {
@@ -130,6 +340,7 @@ export interface DashboardData {
   anios_if: string | null;
   retorno_if_pct: string;
   composicion: CompBloque[];
+  posiciones_peso: PosicionPeso[];
   yield_actual_pct: string;
   dividendos_brutos_anio: string;
   yield_estimado_pct: string | null;
@@ -163,6 +374,9 @@ export interface BloqueDist {
   tolerancia: string;
   desviacion: string | null;
   fuera_tolerancia: boolean;
+  cagr4_div_pct: string | null;          // CAGR4+Div proyectado ponderado del bloque
+  cobertura_estimacion: string | null;   // fracción del valor del bloque con estimación
+  n_con_estimacion: number;
 }
 
 export interface DistribucionBloques {
@@ -470,6 +684,7 @@ export interface PosicionMetricas {
   umbral_rotacion_2y_pct: string | null;
   umbral_rotacion_3y_pct: string | null;
   umbral_rotacion_4y_pct: string | null;
+  cagr4_div_pct: string | null;
 }
 
 export interface OpcionAbierta {
@@ -561,6 +776,31 @@ export interface HuecoBloque {
   valor_actual_eur: string;
   planeado_eur: string;
   deficit_eur: string | null;
+  criterios: string;
+}
+
+export interface CriterioCheck {
+  etiqueta: string;
+  valor: number | null;
+  valor_txt: string;
+  objetivo_txt: string;
+  cumple: boolean | null;   // null = dato no disponible
+}
+
+export interface EvaluacionCandidato {
+  isin: string;
+  nombre: string;
+  categoria_sugerida: CategoriaBase;
+  confianza: number;
+  razonamiento: string;
+  criterios_texto: string;
+  checks: CriterioCheck[];
+  n_cumplidos: number;
+  n_medibles: number;
+  veredicto: string;
+  cualitativo: string;
+  target_categoria: CategoriaBase | null;
+  cubre_target: boolean | null;
 }
 
 export interface HuecoAsignacion {
@@ -579,6 +819,57 @@ export interface PasoPlanIn {
   capital_objetivo_eur?: string | null;
   fecha_objetivo?: string | null;
   notas?: string | null;
+  friccion_severidad?: string | null;
+  friccion_motivo?: string | null;
+}
+
+// ── Onboarding IA (diseña tu estrategia y fírmala) ────────────────────────
+
+export interface PerfilOnboarding {
+  objetivo_if_eur?: string | number | null;
+  horizonte_anios?: number | null;
+  aportacion_mensual_eur?: string | number | null;
+  tolerancia?: string | null;     // conservador | moderado | agresivo
+  fase?: string | null;           // acumulacion | preservacion
+}
+
+export interface PropuestaBloque {
+  categoria_base: CategoriaBase;
+  peso_objetivo: number;          // fracción 0..1
+  razon: string;
+}
+
+export interface Viabilidad {
+  capital_actual_eur: number;
+  aportaciones_eur: number;
+  cagr_requerido_pct: number | null;
+  viable: boolean;
+  veredicto: string;
+}
+
+export interface PropuestaEstrategia {
+  bloques: PropuestaBloque[];
+  resumen: string;
+  disclaimer: string | null;
+  viabilidad: Viabilidad | null;
+}
+
+export interface PlanFirmado {
+  version: number;
+  perfil: Record<string, unknown>;
+  objetivos: Record<string, number>;
+  resumen: string | null;
+  fecha: string;
+}
+
+// ── Fricción conductual (avisa, rebate 2 veces, te deja) ──────────────────
+
+export interface FriccionResultado {
+  severidad: 'ALTA' | 'MEDIA';
+  titulo: string;
+  rebate1: string;
+  rebate2: string;
+  etiquetas: string[];
 }
 
 export interface PosicionesResumen {

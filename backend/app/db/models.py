@@ -80,6 +80,9 @@ class Cartera(Base):
     aportacion_mensual_eur: Mapped[Decimal] = mapped_column(
         Numeric(18, 2), nullable=False, default=Decimal("0")
     )
+    # Régimen macro (4 indicadores VERDE/AMARILLA/ROJA + fecha) como JSON. Lo fija
+    # el usuario; calibra el tamaño/ritmo del tramo de compra. None = sin definir.
+    regimen_macro_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -651,13 +654,30 @@ class PerdidaPendienteManual(Base):
 
 # ── estimaciones de valoración (Fase 2, multi-método WG) ────────────────────
 
-TIPOS_VAL = ("PER", "P_FCF", "P_BV", "P_FRE")
+TIPOS_VAL = ("PER", "P_FCF", "P_BV", "P_FRE", "SOTP")
+
+# Etiqueta legible de cada método: (múltiplo, métrica por acción que multiplica).
+# Fuente única para prompts, one-pager y frontend (este último la replica).
+ETIQUETAS_TIPO_VAL: dict[str, tuple[str, str]] = {
+    "PER": ("PER", "EPS (beneficio por acción)"),
+    "P_FCF": ("P/FCF", "FCF por acción"),
+    "P_BV": ("P/BV", "valor contable (NAV) por acción"),
+    "P_FRE": ("P/FRE", "FRE (fee-related earnings) por acción"),
+    # Suma de partes: precio objetivo = (P/NAV objetivo) × (NAV/acción). Para
+    # conglomerados/holdings donde el PER no captura el valor (CK Hutchison…).
+    "SOTP": ("P/NAV", "NAV por acción (suma de partes)"),
+}
+
+
+def etiquetas_tipo_val(tipo_val: str | None) -> tuple[str, str]:
+    return ETIQUETAS_TIPO_VAL.get(tipo_val or "PER", ETIQUETAS_TIPO_VAL["PER"])
 
 
 class Estimacion(Base):
     """Estimación de valoración por posición (per-holding), modelo WG:
     precio objetivo = `multiplo_objetivo` (N) × `metrica_base_4y` (O), según
-    `tipo_val` (PER=EPS, P_FCF=FCF/acción, P_BV=NAV/acción, P_FRE=FRE/acción).
+    `tipo_val` (PER=EPS, P_FCF=FCF/acción, P_BV=NAV/acción, P_FRE=FRE/acción,
+    SOTP=P/NAV × NAV/acción suma de partes).
     De ahí se derivan CAGR4 y CAGR4+Div. Híbrido: campos auto-rellenados desde
     el feed que el usuario puede ajustar. Cifras en divisa nativa (los ratios
     CAGR/yield son agnósticos a divisa)."""
@@ -687,7 +707,7 @@ class Estimacion(Base):
     __table_args__ = (
         UniqueConstraint("cartera_id", "isin", name="uq_estimaciones_cartera_isin"),
         CheckConstraint(
-            "tipo_val IN ('PER','P_FCF','P_BV','P_FRE')", name="ck_estimaciones_tipo",
+            "tipo_val IN ('PER','P_FCF','P_BV','P_FRE','SOTP')", name="ck_estimaciones_tipo",
         ),
     )
 
@@ -750,4 +770,151 @@ class OverrideBloque(Base):
 
     __table_args__ = (
         Index("ix_overrides_bloque_cartera", "cartera_id", "created_at"),
+    )
+
+
+# ── fricción conductual (avisa, rebate 2 veces, te deja, captura) ───────────
+
+class EventoFriccion(Base):
+    """Registro de cuando el usuario procede con una decisión peligrosa (vender en
+    pánico, romper tesis, tocar el colchón) a pesar de la fricción. Es el override
+    conductual hecho dato: auditoría + semilla del 'tu historial' para futuros
+    rebates. Ver `services/friccion.py` y la memoria del pilar psicológico."""
+
+    __tablename__ = "eventos_friccion"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    isin: Mapped[str] = mapped_column(String(12), nullable=False)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    severidad: Mapped[str] = mapped_column(String(10), nullable=False)  # ALTA | MEDIA
+    rebatido: Mapped[bool] = mapped_column(default=True, nullable=False)
+    motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        Index("ix_eventos_friccion_cartera", "cartera_id", "created_at"),
+    )
+
+
+# ── plan firmado (onboarding: el contrato de Ulises) ────────────────────────
+
+class PlanFirmado(Base):
+    """Estrategia que el usuario co-construye con la IA y FIRMA en frío. Snapshot
+    del perfil + objetivos por bloque + resumen, versionado por cartera (re-
+    onboarding = nueva versión). Es el contrato de Ulises que la fricción
+    referencia ('tu propio Plan dice…'). Al firmar se aplican los peso_objetivo."""
+
+    __tablename__ = "planes_firmados"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    perfil_json: Mapped[str] = mapped_column(Text, nullable=False)       # objetivo, horizonte, tolerancia, fase
+    objetivos_json: Mapped[str] = mapped_column(Text, nullable=False)    # {categoria_base: peso_objetivo}
+    resumen: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        Index("ix_planes_firmados_cartera", "cartera_id", "version"),
+    )
+
+
+class AnalisisGuardado(Base):
+    """Análisis IA persistido por empresa (p.ej. one-pager) para no re-generarlo
+    en cada visita; el usuario regenera explícitamente. `payload_json` = el dataclass
+    serializado; `tipo` permite varios análisis por ISIN ('one_pager', 'contexto'…)."""
+
+    __tablename__ = "analisis_guardados"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    isin: Mapped[str] = mapped_column(String(12), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(24), nullable=False)        # one_pager | contexto
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("cartera_id", "isin", "tipo", name="uq_analisis_cartera_isin_tipo"),
+    )
+
+
+class AnalisisJob(Base):
+    """Estado de un análisis IA lanzado en segundo plano (one-pager/valoración son
+    lentos: búsqueda web de minutos). La UI hace polling de `estado`; el resultado
+    se persiste en AnalisisGuardado. Uno por (cartera, isin, tipo)."""
+
+    __tablename__ = "analisis_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    isin: Mapped[str] = mapped_column(String(12), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(24), nullable=False)        # one_pager | valoracion
+    estado: Mapped[str] = mapped_column(String(12), nullable=False)      # en_curso | ok | error
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("cartera_id", "isin", "tipo", name="uq_jobs_cartera_isin_tipo"),
+    )
+
+
+class MensajeAsesor(Base):
+    """Hilo de conversación con el asesor IA (uno por cartera). Persistido para que
+    sobreviva recargas; el contexto (cartera/estrategia/plan) se reensambla en cada turno."""
+
+    __tablename__ = "mensajes_asesor"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    rol: Mapped[str] = mapped_column(String(12), nullable=False)         # user | assistant
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        Index("ix_mensajes_asesor_cartera", "cartera_id", "created_at"),
+    )
+
+
+class SnapshotPrecio(Base):
+    """Precio base por posición = la última vez que el usuario dio por 'visto' la
+    vigilancia. La alerta es el cambio del precio actual frente a este baseline."""
+
+    __tablename__ = "snapshots_precio"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    isin: Mapped[str] = mapped_column(String(12), nullable=False)
+    precio_eur: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("cartera_id", "isin", name="uq_snapshot_cartera_isin"),
     )

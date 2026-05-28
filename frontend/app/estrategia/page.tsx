@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import {
   asignarBloque,
@@ -10,8 +11,10 @@ import {
   fetchDistribucionBloques,
   fetchHueco,
   fetchPosicionesBloque,
+  fetchRegimen,
   fmtEUR,
   fmtPct,
+  guardarRegimen,
   sugerirBloque,
 } from '@/lib/api';
 import type {
@@ -21,14 +24,17 @@ import type {
   HuecoAsignacion,
   HuecoBloque,
   PosicionBloque,
+  RegimenEstado,
   SugerenciaBloque,
 } from '@/lib/types';
 
 import { CAT_ASIGNABLES, CAT_COLOR, CAT_HEX, CAT_LABEL } from '@/lib/categorias';
+import { RegimenPanel } from '@/components/RegimenPanel';
 
 export default function EstrategiaPage() {
   const [dist, setDist] = useState<DistribucionBloques | null>(null);
   const [hueco, setHueco] = useState<HuecoAsignacion | null>(null);
+  const [regimen, setRegimen] = useState<RegimenEstado | null>(null);
   const [posiciones, setPosiciones] = useState<PosicionBloque[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nuevoNombre, setNuevoNombre] = useState('');
@@ -42,12 +48,13 @@ export default function EstrategiaPage() {
 
   const cargar = useCallback(async () => {
     try {
-      const [d, p, h] = await Promise.all([
-        fetchDistribucionBloques(), fetchPosicionesBloque(), fetchHueco(),
+      const [d, p, h, r] = await Promise.all([
+        fetchDistribucionBloques(), fetchPosicionesBloque(), fetchHueco(), fetchRegimen(),
       ]);
       setDist(d);
       setPosiciones(p);
       setHueco(h);
+      setRegimen(r);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -61,6 +68,10 @@ export default function EstrategiaPage() {
   const onAsignar = async (isin: string, bloqueId: string) => {
     await asignarBloque(isin, bloqueId === 'sin_clasificar' ? null : bloqueId);
     await cargar();
+  };
+
+  const onGuardarRegimen = async (ind: RegimenEstado['indicadores']) => {
+    setRegimen(await guardarRegimen(ind));   // recalibra los tramos de la guía de compra
   };
 
   const onSugerir = async (isin: string) => {
@@ -177,6 +188,24 @@ export default function EstrategiaPage() {
               {CAT_LABEL[b.categoria_base]}
             </span>
             <span className="text-xs text-[rgb(var(--muted))]">{b.n_posiciones} pos.</span>
+            {b.cagr4_div_pct != null && (() => {
+              const completa = parseFloat(b.cobertura_estimacion ?? '1') >= 0.999;
+              return (
+                <span
+                  className={`text-xs px-2 py-0.5 rounded ${
+                    completa
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                      : 'bg-[rgb(var(--border))]/50 text-[rgb(var(--muted))]'
+                  }`}
+                  title={completa
+                    ? 'CAGR4+Div proyectado, ponderado por valor del bloque'
+                    : `Solo ${b.n_con_estimacion}/${b.n_posiciones} posiciones tienen estimación — interpreta con cautela`}
+                >
+                  CAGR proy. {fmtPct(b.cagr4_div_pct)}
+                  {!completa && ` · ${b.n_con_estimacion}/${b.n_posiciones}`}
+                </span>
+              );
+            })()}
             {b.fuera_tolerancia && (
               <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
                 fuera de tolerancia
@@ -251,6 +280,40 @@ export default function EstrategiaPage() {
             {def != null && def < -0.5 && <span>{' '}· sobreponderado</span>}
           </div>
         )}
+        {/* Guía de compra: qué criterios buscar para llenar el déficit (a nivel de
+            bloque, sin nombrar valores). El usuario busca el candidato en Seguimiento. */}
+        {h && b.en_estrategia && def != null && def > 0.5 && h.criterios && (
+          <div className="mt-2 rounded-md border border-dashed border-[rgb(var(--border))] bg-[rgb(var(--bg))] p-2 text-[11px] leading-snug">
+            <div className="text-[rgb(var(--muted))]">
+              <span className="font-medium text-[rgb(var(--fg))]">Criterios:</span> {h.criterios}
+            </div>
+            {regimen && def != null && (() => {
+              const nMin = Math.max(1, Math.ceil(def / regimen.tramo_max));
+              const nMax = Math.max(nMin, Math.ceil(def / regimen.tramo_min));
+              const tramos = nMin === nMax ? `${nMin} tramo${nMin > 1 ? 's' : ''}` : `${nMin}–${nMax} tramos`;
+              const corr = regimen.correccion;
+              return (
+                <>
+                  <div className="mt-1 text-[rgb(var(--muted))]">
+                    <span className="font-medium text-[rgb(var(--fg))]">Ritmo ({regimen.regimen}):</span>{' '}
+                    ≈ {tramos} de {fmtEUR(regimen.tramo_min, { maximumFractionDigits: 0 })}–{fmtEUR(regimen.tramo_max, { maximumFractionDigits: 0 })} cada {regimen.espaciado}
+                  </div>
+                  {corr?.activa && corr.escalado_min != null && corr.escalado_max != null && (
+                    <div className="mt-0.5 text-emerald-700 dark:text-emerald-400">
+                      ↑ Ventana −14%: puedes escalar a {fmtEUR(corr.escalado_min, { maximumFractionDigits: 0 })}–{fmtEUR(corr.escalado_max, { maximumFractionDigits: 0 })} si el valor es <strong>coyuntural</strong> y su CAGR no ha empeorado.
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+            <Link
+              href={`/estrategia/seguimiento?bloque=${b.categoria_base}`}
+              className="mt-1 inline-block font-medium text-brand-600 hover:underline dark:text-brand-400"
+            >
+              Buscar candidato →
+            </Link>
+          </div>
+        )}
         {b.id !== 'sin_clasificar' && (
           <ObjetivoEditor
             bloque={b}
@@ -282,8 +345,8 @@ export default function EstrategiaPage() {
       <p className="text-sm text-[rgb(var(--muted))]">
         Reparte tu cartera en bloques y fija un objetivo de peso para cada uno. La barra muestra
         lo actual (sólido) más lo que ya tienes planeado comprar (atenuado) frente al objetivo
-        (marcador); el déficit te dice cuánto falta. El tamaño del tramo lo decides según el
-        régimen macro, no aquí.
+        (marcador); el déficit te dice cuánto falta. El <strong>régimen macro</strong> de abajo
+        calibra el tamaño y ritmo del tramo de compra.
       </p>
 
       {error && (
@@ -291,6 +354,8 @@ export default function EstrategiaPage() {
           {error}
         </div>
       )}
+
+      {regimen && <RegimenPanel estado={regimen} onGuardar={onGuardarRegimen} />}
 
       {/* Distribución */}
       <section>

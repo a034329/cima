@@ -32,8 +32,9 @@ import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as _SASession
 
 from app.db import models
 
@@ -258,8 +259,29 @@ def rebuild_for_posiciones(
     return [rebuild_for_posicion(db, pid) for pid in posicion_ids]
 
 
+_ESTADO_CACHE = "_estado_posicion_cache"
+
+
+@event.listens_for(_SASession, "after_flush")
+def _invalidar_estado_cache(session: Session, flush_context: object) -> None:  # noqa: ARG001
+    session.info.pop(_ESTADO_CACHE, None)
+
+
+@event.listens_for(_SASession, "after_rollback")
+def _invalidar_estado_cache_rb(session: Session) -> None:
+    session.info.pop(_ESTADO_CACHE, None)
+
+
 def estado_posicion(db: Session, posicion_id: str) -> dict[str, Decimal]:
-    """Calcula cantidad y coste agregado actual de una posición desde sus lots."""
+    """Cantidad y coste agregado actual de una posición desde sus lots.
+
+    Memoizado POR SESIÓN (`db.info`): en una petición se llama decenas de veces por
+    posición (dashboard, fiscal, estimaciones…) y el resultado no cambia mientras no
+    haya escrituras. La caché se invalida en cualquier flush/rollback → siempre fresco
+    tras un cambio. Pasó de ~1.500 queries por dashboard a ~1 por posición."""
+    cache = db.info.setdefault(_ESTADO_CACHE, {})
+    if posicion_id in cache:
+        return cache[posicion_id]
     lots = list(db.execute(
         select(models.Lot)
         .where(models.Lot.posicion_id == posicion_id)
@@ -271,9 +293,11 @@ def estado_posicion(db: Session, posicion_id: str) -> dict[str, Decimal]:
         Decimal("0"),
     )
     pm = (coste / cantidad).quantize(Decimal("0.0001")) if cantidad > 0 else Decimal("0")
-    return {
+    resultado = {
         "cantidad": cantidad,
         "coste_total_eur": coste.quantize(Decimal("0.01")),
         "pm_real_eur": pm,
         "n_lots_abiertos": Decimal(len(lots)),
     }
+    cache[posicion_id] = resultado
+    return resultado

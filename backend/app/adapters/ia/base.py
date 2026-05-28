@@ -26,6 +26,8 @@ class ContextoEmpresa:
     cagr4_div_pct: float | None = None        # retorno total anual estimado (fracción)
     market_cap: float | None = None
     tipo_activo: str | None = None            # STOCK | ETF | CRYPTO (para las compuertas)
+    beta: float | None = None                 # volatilidad vs mercado (señal Estable)
+    roe: float | None = None                  # return on equity (fracción) — proxy de calidad
 
 
 @dataclass
@@ -69,4 +71,18 @@ class ClasificadorIA(Protocol):
     ) -> list[SugerenciaBloque]:
         """Clasifica varias empresas. Optimizado para coste: una sola llamada con
         contexto comprimido y salida tersa (menos preciso que `clasificar`)."""
+        ...
+
+    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+        """Transporte genérico: devuelve el texto crudo del modelo para un par
+        (system, user). Lo usan capacidades que arman su propio prompt+parser
+        (p.ej. el onboarding, el asesor). `timeout_s` permite ampliar el límite
+        para generaciones largas (planes multi-paso). El swap de proveedor es
+        transparente."""
+        ...
+
+    def investigar(self, system: str, user: str) -> str:
+        """Como `completar` pero CON búsqueda web (PASO 0: contexto cualitativo).
+        En dev (Max CLI) usa la tool WebSearch pre-aprobada; en la API usará el
+        server-tool `web_search`. Más lento y no determinista que `completar`."""
         ...

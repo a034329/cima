@@ -230,3 +230,27 @@ def test_endpoint_plan_e2e() -> None:
             assert m0["decision"] == "COMPRAR"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_crear_paso_reemplaza_activos_del_mismo_isin(db: Session, cartera) -> None:
+    """Un paso nuevo es la decisión VIGENTE: cancela los activos anteriores del
+    mismo ISIN para que no convivan decisiones contradictorias (VENDER + MANTENER)."""
+    _pos_con_lote(db, cartera, "US_M", "MetaCo", Decimal("1000"))
+    db.commit()
+    viejo = svc.crear_paso(db, cartera.id, "US_M", "VENDER", "MEDIA", razon="estimación mala")
+    nuevo = svc.crear_paso(db, cartera.id, "US_M", "MANTENER", "ALTA", razon="estimación corregida")
+
+    db.refresh(viejo)
+    assert viejo.estado == "CANCELADO" and "Reemplazado" in (viejo.notas or "")
+    assert nuevo.estado == "PENDIENTE"
+    activos = [p for p in svc.listar_pasos(db, cartera.id, "PENDIENTE") if p.isin == "US_M"]
+    assert len(activos) == 1 and activos[0].decision == "MANTENER"   # una sola decisión vigente
+
+
+def test_crear_paso_reemplazar_false_conserva(db: Session, cartera) -> None:
+    _pos_con_lote(db, cartera, "US_N", "NCo", Decimal("1000"))
+    db.commit()
+    a = svc.crear_paso(db, cartera.id, "US_N", "COMPRAR", "MEDIA")
+    b = svc.crear_paso(db, cartera.id, "US_N", "REFORZAR", "MEDIA", reemplazar=False)
+    db.refresh(a)
+    assert a.estado == "PENDIENTE" and b.estado == "PENDIENTE"        # ambos se conservan

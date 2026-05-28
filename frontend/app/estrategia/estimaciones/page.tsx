@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import {
   editarEstimacion,
@@ -20,9 +21,9 @@ function precioNativo(v: string | null, divisa: string | null): string {
 }
 
 const TIPO_LABEL: Record<TipoVal, string> = {
-  PER: 'PER', P_FCF: 'P/FCF', P_BV: 'P/BV', P_FRE: 'P/FRE',
+  PER: 'PER', P_FCF: 'P/FCF', P_BV: 'P/BV', P_FRE: 'P/FRE', SOTP: 'SOTP (P/NAV)',
 };
-const TIPOS: TipoVal[] = ['PER', 'P_FCF', 'P_BV', 'P_FRE'];
+const TIPOS: TipoVal[] = ['PER', 'P_FCF', 'P_BV', 'P_FRE', 'SOTP'];
 
 const TH = 'sticky top-0 z-10 bg-[rgb(var(--card))] border-b border-[rgb(var(--border))] ' +
   'shadow-[0_1px_0_rgb(var(--border))]';
@@ -111,6 +112,7 @@ export default function EstimacionesPage() {
               <th className={`${TH} px-2 text-right`}>CAGR4</th>
               <th className={`${TH} px-2 text-right`}>Yield</th>
               <th className={`${TH} px-2 text-right`}>CAGR4+Div</th>
+              <th className={`${TH} px-2`}></th>
             </tr>
           </thead>
           <tbody className="font-mono">
@@ -159,6 +161,12 @@ function Fila({ e, onGuardar }: {
       <td className={`px-2 text-right ${colorPct(e.cagr4_pct)}`}>{pct(e.cagr4_pct)}</td>
       <td className="px-2 text-right text-[rgb(var(--muted))]">{pct(e.div_yield_pct, 2)}</td>
       <td className={`px-2 text-right font-semibold ${colorPct(e.cagr4_div_pct)}`}>{pct(e.cagr4_div_pct)}</td>
+      <td className="px-2 whitespace-nowrap font-sans">
+        <Link href={`/estrategia/analisis?isin=${encodeURIComponent(e.isin)}`}
+          className="text-[11px] text-brand-600 dark:text-brand-400 hover:underline">
+          analizar →
+        </Link>
+      </td>
     </tr>
   );
 }

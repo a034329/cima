@@ -8,7 +8,7 @@ import type { ColumnaCatalogo, PosicionMetricas, PosicionesResumen } from '@/lib
 // Columnas monetarias por acción (PM/precio) vs importes absolutos (€) vs %.
 const COLS_PM = new Set(['pm_real', 'pm_fiscal_es', 'pm_desc', 'precio_actual_eur']);
 const COLS_PCT = new Set([
-  'gp_no_realizada_pct', 'rentab_total_pct',
+  'gp_no_realizada_pct', 'rentab_total_pct', 'cagr4_div_pct',
   'umbral_rotacion_1y_pct', 'umbral_rotacion_2y_pct',
   'umbral_rotacion_3y_pct', 'umbral_rotacion_4y_pct',
 ]);

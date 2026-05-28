@@ -44,3 +44,33 @@ class MockClasificador:
         self, empresas: list[ContextoEmpresa], catalogo: list[BloqueOpcion]
     ) -> list[SugerenciaBloque]:
         return [self.clasificar(e, catalogo) for e in empresas]
+
+    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+        """Propuesta de onboarding canónica (offline): reparto de acumulación."""
+        return (
+            '{"bloques": ['
+            '{"categoria_base": "growth", "peso_objetivo": 0.40, "razon": "Núcleo de '
+            'crecimiento para componer hasta la IF."},'
+            '{"categoria_base": "income", "peso_objetivo": 0.20, "razon": "Dividendos '
+            'crecientes que suben cada año."},'
+            '{"categoria_base": "defensivo", "peso_objetivo": 0.20, "razon": "Estabilidad '
+            'y baja volatilidad."},'
+            '{"categoria_base": "aggressive", "peso_objetivo": 0.20, "razon": "Rentas '
+            'altas para flujo de caja."}'
+            '], "resumen": "Cartera de acumulación equilibrada hacia el crecimiento."}'
+        )
+
+    def investigar(self, system: str, user: str) -> str:
+        """PASO 0 canónico (offline): contexto + clasificación coyuntural."""
+        return (
+            '{"resumen": "Sin noticias estructurales recientes; ruido de mercado de corto plazo.",'
+            ' "clasificacion": "COYUNTURAL",'
+            ' "preguntas": ['
+            '{"pregunta": "¿Sigue generando caja?", "respuesta": "Sí", "senal": "coyuntural"},'
+            '{"pregunta": "¿Afecta a toda la industria?", "respuesta": "Headwind sectorial", "senal": "coyuntural"},'
+            '{"pregunta": "¿Horizonte temporal claro?", "respuesta": "Evento puntual", "senal": "coyuntural"},'
+            '{"pregunta": "¿Management creíble?", "respuesta": "Sí", "senal": "coyuntural"},'
+            '{"pregunta": "¿Mismo negocio en 3-4 años?", "respuesta": "Sí", "senal": "coyuntural"}'
+            '], "riesgo_principal": "Compresión de márgenes temporal.",'
+            ' "fuentes": ["https://example.com/noticia"]}'
+        )

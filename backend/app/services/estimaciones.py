@@ -177,8 +177,60 @@ def calcular_estimaciones(db: Session, cartera_id: str) -> list[EstimacionCalc]:
         precio, divisa = natives.get(pos.isin, (None, None))
         out.append(_calc_item(pos.isin, pos.nombre or pos.isin,
                               filas.get(pos.isin), precio, divisa))
+    _enriquecer_etfs_historico(db, cartera_id, out)
     out.sort(key=lambda x: x.nombre.lower())
     return out
+
+
+# Fondos/ETF que `classify_isin` no reconoce por ISIN (algunos UCITS irlandeses:
+# Aristocrats, Min Volatility, Equity Premium Income) → fallback por nombre. NO se
+# valoran por PER: su retorno = CAGR de precio histórico (ventana máxima) + yield.
+_FONDO_KW = ("UCITS", "ETF", "ARISTOCRAT", "MIN VOLATILITY", "MINIMUM VOLATILITY",
+             "EQUITY PREMIUM INCOME")
+
+
+def _es_fondo(isin: str | None, nombre: str | None) -> bool:
+    from app.services.posiciones import _tipo_activo
+    if _tipo_activo(isin, nombre) == "ETF":
+        return True
+    n = (nombre or "").upper()
+    return any(k in n for k in _FONDO_KW)
+
+
+def _enriquecer_etfs_historico(db: Session, cartera_id: str,
+                               calcs: list[EstimacionCalc]) -> None:
+    """ETF/índice no tienen BPA → el modelo no les da CAGR. Como proxy de retorno
+    total usamos el CAGR de PRECIO histórico (máx. ~20a) + el yield actual. Muta
+    los calcs en sitio. Best-effort: si falla la red, los deja como estaban."""
+    from app.services import precios as precios_svc
+
+    etf = [c for c in calcs
+           if c.cagr4_div_pct is None and _es_fondo(c.isin, c.nombre)]
+    if not etf:
+        return
+    try:
+        hist = precios_svc.cagr_historico_por_isin(db, cartera_id, [c.isin for c in etf])
+    except Exception:
+        return
+    if not hist:
+        return
+    try:
+        funds = precios_svc.fundamentales_por_isin(db, cartera_id)
+    except Exception:
+        funds = {}
+    for c in etf:
+        cagr_precio = hist.get(c.isin)
+        if cagr_precio is None:
+            continue
+        yld = c.div_yield_pct
+        if yld is None:                                   # ETF de reparto: yield = div/precio
+            div = funds.get(c.isin, {}).get("dividend")
+            if div is not None and c.precio_actual and c.precio_actual > 0:
+                yld = Decimal(str(div)) / c.precio_actual
+        c.cagr4_pct = cagr_precio
+        c.div_yield_pct = yld
+        c.cagr4_div_pct = cagr_precio + (yld or Decimal("0"))
+        c.notas = ((c.notas + " · ") if c.notas else "") + "CAGR histórico (precio) + yield"
 
 
 def calcular_estimaciones_seguimiento(db: Session, cartera_id: str) -> list[EstimacionCalc]:
@@ -210,9 +262,14 @@ def prefill_estimaciones(db: Session, cartera_id: str) -> int:
     Si no hay consenso (no-US en plan gratuito) → respaldo: múltiplo = forwardPE,
     métrica 4A = EPS·(1+g)⁴. Guarda el consenso como referencia (consenso_json).
     Devuelve nº de posiciones tocadas. Híbrido: el usuario ajusta libremente."""
-    from app.services.precios import consenso_por_isin, fundamentales_por_isin
+    from app.services.precios import (
+        cagr_historico_por_isin, consenso_por_isin, fundamentales_por_isin, obtener_precios_eur,
+    )
 
-    funds = fundamentales_por_isin(db, cartera_id)
+    # El prefill ES el refresco de mercado explícito: repuebla precios + fundamentales
+    # en vivo (con refrescar=True). El resto de lecturas usan solo la caché → instantáneas.
+    obtener_precios_eur(db, cartera_id, forzar=True)
+    funds = fundamentales_por_isin(db, cartera_id, refrescar=True)
     cons = consenso_por_isin(db, cartera_id)
     existentes = _filas_estimacion(db, cartera_id)
     n = 0
@@ -226,6 +283,14 @@ def prefill_estimaciones(db: Session, cartera_id: str) -> int:
             db.add(e)
         n += 1
     db.commit()
+
+    # Calienta el CAGR histórico de los fondos/ETF para que las lecturas (cache-only)
+    # lo tengan disponible (su valoración no es por PER).
+    fondos = [p.isin for p in db.execute(
+        select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)).scalars()
+        if _es_fondo(p.isin, p.nombre)]
+    if fondos:
+        cagr_historico_por_isin(db, cartera_id, fondos, refrescar=True)
     return n
 
 
@@ -274,6 +339,9 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
         except ValueError:
             prev = {}
     confirmado = bool(prev.get("tipo_confirmado"))
+    # Los fondos/ETF no se valoran por PER (su retorno = CAGR histórico, ver
+    # `_enriquecer_etfs_historico`): nunca sembrar múltiplo/EPS sobre ellos.
+    es_fondo_flag = bool(prev.get("es_fondo"))
 
     # Familia de métrica contable: el feed no distingue P/BV/P/FRE/PER dentro de
     # ella, así que frenamos el sembrado-como-PER en vez de plantar EPS donde va
@@ -294,7 +362,7 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
     if e.eps_actual is None and base_eps is not None:
         e.eps_actual = Decimal(str(base_eps)).quantize(Decimal("0.0001"))
 
-    if e.tipo_val == "PER" and not contable:
+    if e.tipo_val == "PER" and not contable and not es_fondo_flag:
         # Múltiplo objetivo NORMALIZADO: min(forward de consenso, histórico mediano),
         # acotado a [5,45]. Respaldo no-US: forwardPE acotado.
         if e.multiplo_objetivo is None:
@@ -328,6 +396,8 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
         payload["industria"] = f.get("industry")
     if confirmado:
         payload["tipo_confirmado"] = True
+    if es_fondo_flag:
+        payload["es_fondo"] = True
     if contable and e.tipo_val == "PER":
         payload["revisar_tipo_val"] = "P/BV·P/FRE"
     e.consenso_json = json.dumps(payload) if payload else None
@@ -335,8 +405,11 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
 
 def prefill_seguimiento(db: Session, cartera_id: str, isin: str, ticker: str) -> None:
     """Autorrellena la estimación de una empresa en seguimiento, por ticker
-    (consenso + fundamentales del símbolo directamente)."""
-    from app.services.precios import consenso_simbolo, fundamentales_simbolo
+    (consenso + fundamentales del símbolo directamente). También CALIENTA el
+    precio: sin precio cacheado las lecturas (cache-only) no pueden calcular CAGR."""
+    from app.services.precios import (
+        consenso_simbolo, fundamentales_simbolo, precio_nativo_simbolo,
+    )
 
     e = db.execute(
         select(models.Estimacion)
@@ -350,6 +423,9 @@ def prefill_seguimiento(db: Session, cartera_id: str, isin: str, ticker: str) ->
     if nueva:
         db.add(e)
     db.commit()
+    # Refresca el precio del símbolo (con fallback IA si Yahoo/FMP fallan) →
+    # la próxima lectura sí tendrá precio y por tanto CAGR.
+    precio_nativo_simbolo(ticker, refrescar=True)
 
 
 @dataclass
@@ -393,3 +469,50 @@ def agregado_cartera(db: Session, cartera_id: str) -> AgregadoEstimaciones:
     cagr_pond = (valor_cagr / base_cagr) if base_cagr > 0 else None
     cobertura = (base_cagr / total_valor) if total_valor > 0 else Decimal("0")
     return AgregadoEstimaciones(yield_est, cagr_pond, cobertura)
+
+
+@dataclass
+class BloqueAgg:
+    cagr4_div_pct: Decimal | None       # CAGR4+Div ponderado por valor del bloque
+    cobertura: Decimal | None           # fracción del valor del bloque con estimación válida
+    n_con_estimacion: int               # posiciones del bloque con CAGR estimado
+
+
+def agregado_por_bloque(db: Session, cartera_id: str) -> dict[str | None, BloqueAgg]:
+    """CAGR4+Div ponderado por valor de mercado, AGRUPADO por bloque (misma
+    ponderación que `agregado_cartera`). Clave = bloque_id (None = sin clasificar).
+    Sirve para que el usuario vea qué bloque tira del retorno y estudie rotaciones
+    dentro del bloque. La cobertura avisa si el CAGR se apoya en pocas estimaciones."""
+    from app.services.precios import obtener_precios_eur
+
+    precios_eur, _ = obtener_precios_eur(db, cartera_id)
+    calcs = {c.isin: c for c in calcular_estimaciones(db, cartera_id)}
+
+    valor_total: dict[str | None, Decimal] = {}
+    valor_cagr: dict[str | None, Decimal] = {}
+    base_cagr: dict[str | None, Decimal] = {}
+    n_con: dict[str | None, int] = {}
+    for pos in db.execute(
+        select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
+    ).scalars():
+        est = estado_posicion(db, pos.id)
+        cant = est["cantidad"]
+        if cant <= 0:
+            continue
+        bid = pos.bloque_id
+        px = precios_eur.get(pos.isin)
+        valor = (Decimal(str(px)) * cant) if px is not None else Decimal(str(est["coste_total_eur"]))
+        valor_total[bid] = valor_total.get(bid, Decimal("0")) + valor
+        c = calcs.get(pos.isin)
+        if c and c.cagr4_div_pct is not None:
+            valor_cagr[bid] = valor_cagr.get(bid, Decimal("0")) + valor * c.cagr4_div_pct
+            base_cagr[bid] = base_cagr.get(bid, Decimal("0")) + valor
+            n_con[bid] = n_con.get(bid, 0) + 1
+
+    out: dict[str | None, BloqueAgg] = {}
+    for bid, total in valor_total.items():
+        bc = base_cagr.get(bid, Decimal("0"))
+        cagr = (valor_cagr[bid] / bc) if bc > 0 else None
+        cobertura = (bc / total) if total > 0 else None
+        out[bid] = BloqueAgg(cagr, cobertura, n_con.get(bid, 0))
+    return out

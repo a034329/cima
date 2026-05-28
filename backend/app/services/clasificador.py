@@ -6,6 +6,7 @@ de IA configurado. NO asigna: devuelve una sugerencia que el usuario aprueba.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 from fastapi import HTTPException, status
@@ -18,9 +19,10 @@ from app.adapters.ia import (
     SugerenciaBloque,
     get_clasificador,
 )
-from app.adapters.ia.prompt import ROLES_CATEGORIA
+from app.adapters.ia.prompt import FICHAS, ROLES_CATEGORIA
 from app.db import models
 from app.services import creditos
+from app.services.criterios import CriterioCheck, evaluar_criterios
 
 
 def _f(v) -> float | None:  # type: ignore[no-untyped-def]
@@ -59,6 +61,8 @@ def _contexto(pos, fund: dict, e) -> ContextoEmpresa:  # type: ignore[no-untyped
         crecimiento_eps_pct=_f(e.crecimiento_pct) if e else None,
         cagr4_div_pct=_f(e.cagr4_div_pct) if e else None,
         tipo_activo=_tipo_activo(pos.isin, pos.nombre),
+        beta=_f(fund.get("beta")),
+        roe=_f(fund.get("roe")),
     )
 
 
@@ -136,6 +140,8 @@ def _contexto_seg(seg, fund: dict, e) -> ContextoEmpresa:  # type: ignore[no-unt
         crecimiento_eps_pct=_f(e.crecimiento_pct) if e else None,
         cagr4_div_pct=_f(e.cagr4_div_pct) if e else None,
         tipo_activo=_tipo_activo(seg.isin, seg.nombre),
+        beta=_f(fund.get("beta")),
+        roe=_f(fund.get("roe")),
     )
 
 
@@ -192,6 +198,75 @@ def sugerir(db: Session, cartera_id: str, isin: str) -> SugerenciaBloque:
     s.isin = isin
     creditos.registrar_uso_ia(db, cartera_id, "puntual", 1)
     return s
+
+
+# ── evaluación de encaje (¿está en el bloque y cumple sus criterios?) ────────
+
+@dataclass
+class EvaluacionCandidato:
+    """Resultado de evaluar un valor que el usuario ELIGIÓ: en qué bloque encaja
+    (juicio de la IA) y si cumple los criterios medibles de ese bloque. No nombra
+    valores ni empuja a comprar — analiza el que el usuario trajo."""
+    isin: str
+    nombre: str
+    categoria_sugerida: str
+    confianza: float
+    razonamiento: str
+    criterios_texto: str             # texto humano de la ficha del bloque
+    checks: list[CriterioCheck]
+    n_cumplidos: int
+    n_medibles: int
+    veredicto: str
+    cualitativo: str                 # lo que el dato no cubre, a verificar tú
+    target_categoria: str | None     # bloque-objetivo si vienes de un déficit
+    cubre_target: bool | None        # ¿el bloque sugerido == el que querías llenar?
+
+
+_CUALITATIVO = (
+    "Verifica tú lo que el dato no cubre: payout y cobertura del dividendo "
+    "(FCF/OCF), ROIC exacto, deuda próxima y la solidez del moat."
+)
+
+
+def evaluar_candidato(
+    db: Session, cartera_id: str, isin: str, target_categoria: str | None = None,
+) -> EvaluacionCandidato:
+    """Evalúa el encaje de un candidato: usa `sugerir` para el bloque (qué ES) y
+    `evaluar_criterios` para el chequeo medible de ese bloque. Si vienes del
+    déficit de un bloque concreto (`target_categoria`), avisa si no lo cubre."""
+    ctx = construir_contexto(db, cartera_id, isin)
+    s = sugerir(db, cartera_id, isin)
+    cat = s.categoria_base
+    nombre_cat = FICHAS[cat].nombre if cat in FICHAS else cat
+    criterios_texto = FICHAS[cat].criterios if cat in FICHAS else ""
+
+    checks = evaluar_criterios(ctx, cat)
+    medibles = [c for c in checks if c.cumple is not None]
+    n_medibles = len(medibles)
+    n_cumplidos = sum(1 for c in medibles if c.cumple)
+
+    if n_medibles == 0:
+        veredicto = (f"Encaja en {nombre_cat}, pero no hay criterios medibles con "
+                     "los datos disponibles: júzgalo de forma cualitativa.")
+    elif n_cumplidos == n_medibles:
+        veredicto = f"Ejemplo limpio de {nombre_cat}: cumple los {n_medibles} criterios medibles."
+    elif n_cumplidos == 0:
+        veredicto = f"No cumple los criterios medibles de {nombre_cat} (0/{n_medibles})."
+    else:
+        veredicto = (f"Encaja parcialmente en {nombre_cat}: cumple "
+                     f"{n_cumplidos}/{n_medibles} criterios medibles.")
+
+    cubre_target = (cat == target_categoria) if target_categoria else None
+    if cubre_target is False:
+        objetivo_nombre = FICHAS[target_categoria].nombre if target_categoria in FICHAS else target_categoria
+        veredicto += f" Ojo: NO cubre tu déficit de {objetivo_nombre} (la IA lo ve como {nombre_cat})."
+
+    return EvaluacionCandidato(
+        isin=isin, nombre=ctx.nombre, categoria_sugerida=cat, confianza=s.confianza,
+        razonamiento=s.razonamiento, criterios_texto=criterios_texto, checks=checks,
+        n_cumplidos=n_cumplidos, n_medibles=n_medibles, veredicto=veredicto,
+        cualitativo=_CUALITATIVO, target_categoria=target_categoria, cubre_target=cubre_target,
+    )
 
 
 def isines_autoclasificables(

@@ -26,6 +26,7 @@ COLUMNAS = [
     {"id": "gp_no_realizada_eur", "label": "G/P no realizada", "default": True, "fija": False},
     {"id": "gp_no_realizada_pct", "label": "G/P no realizada %", "default": True, "fija": False},
     {"id": "rentab_total_pct", "label": "Rentab. total % (+div+opc)", "default": True, "fija": False},
+    {"id": "cagr4_div_pct", "label": "CAGR4+Div proyectado (4A)", "default": False, "fija": False},
     {"id": "pm_fiscal_es", "label": "PM fiscal ES", "default": False, "fija": False},
     {"id": "opciones_ejercidas_anio", "label": "Opciones ejercidas (año)", "default": True, "fija": False},
     {"id": "opciones_ejercidas_hist", "label": "Opciones ejercidas (histórico)", "default": False, "fija": False},
@@ -70,6 +71,7 @@ class PosicionMetricasOut(BaseModel):
     umbral_rotacion_2y_pct: Decimal | None = Field(default=None, decimal_places=4)
     umbral_rotacion_3y_pct: Decimal | None = Field(default=None, decimal_places=4)
     umbral_rotacion_4y_pct: Decimal | None = Field(default=None, decimal_places=4)
+    cagr4_div_pct: Decimal | None = Field(default=None, decimal_places=4)
 
 
 class PosicionesResumen(BaseModel):

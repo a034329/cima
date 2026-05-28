@@ -152,6 +152,8 @@ _SYSTEM = (
     "Reglas de juicio:\n"
     "- Juzga el NEGOCIO (moat, durabilidad, calidad del modelo), no la forma de "
     "la gráfica: una cotización 'perfecta' suele significar CARA, no segura.\n"
+    "- Señales (no reglas; pésalas con sector y moat): beta < 0,9 apunta a Estable "
+    "(baja volatilidad); ROE alto + yield bajo + crecimiento apunta a Compounder.\n"
     "- 'colchon' es designación MANUAL del usuario: NUNCA la sugieras tú.\n"
     "- Si tu veredicto objetivo contradice un sesgo emocional típico (p.ej. una "
     "marca de calidad que 'se siente' defensiva pero es un compounder), DILO en "
@@ -213,6 +215,8 @@ def build_mensajes(
         f"- Dividend yield: {_fmt_pct(ctx.yield_pct)}\n"
         f"- Dividendo/acción: {_fmt_num(ctx.dividendo_share)}\n"
         f"- PER: {_fmt_num(ctx.per)}\n"
+        f"- Beta (volatilidad vs mercado): {_fmt_num(ctx.beta)}\n"
+        f"- ROE (proxy de calidad/ROIC): {_fmt_pct(ctx.roe)}\n"
         f"- Crecimiento BPA estimado (CAGR): {_fmt_pct(ctx.crecimiento_eps_pct)}\n"
         f"- Retorno total anual estimado (CAGR4+Div): {_fmt_pct(ctx.cagr4_div_pct)}\n"
     )
@@ -248,8 +252,8 @@ def build_mensajes_lote(
     empresa) y salida tersa → menos tokens, menos preciso que `build_mensajes`."""
     filas = "\n".join(
         f"- {e.isin} | {e.nombre} | sector={e.sector or '—'} | "
-        f"yield={_fmt_pct(e.yield_pct)} | crecBPA={_fmt_pct(e.crecimiento_eps_pct)} | "
-        f"CAGR4+Div={_fmt_pct(e.cagr4_div_pct)}"
+        f"yield={_fmt_pct(e.yield_pct)} | beta={_fmt_num(e.beta)} | ROE={_fmt_pct(e.roe)} | "
+        f"crecBPA={_fmt_pct(e.crecimiento_eps_pct)} | CAGR4+Div={_fmt_pct(e.cagr4_div_pct)}"
         for e in empresas
     )
     bloques = "BLOQUES DE LA CARTERA (categorías disponibles):\n" + (

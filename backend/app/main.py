@@ -19,10 +19,10 @@ from app import __version__
 from app.config import settings
 from app.db import init_db
 from app.routers import (
-    aportaciones, bills, bloques, bootstrap, cartera, complejos, config,
-    dashboard, dividendos, estimaciones, fiscal, forex, health, importar,
-    intereses, liquidez, mantenimiento, opciones, plan, posiciones,
-    seguimiento, transacciones,
+    analisis, aportaciones, asesor, auditoria, bills, bloques, bootstrap, cartera, complejos, config,
+    dashboard, dividendos, estimaciones, fiscal, forex, health, hoja_ruta, importar,
+    intereses, liquidez, mantenimiento, onboarding, opciones, paso0, plan, posiciones,
+    regimen, seguimiento, transacciones, vigilancia,
 )
 
 
@@ -84,6 +84,14 @@ app.include_router(config.router, prefix="/api")
 app.include_router(estimaciones.router, prefix="/api")
 app.include_router(seguimiento.router, prefix="/api")
 app.include_router(mantenimiento.router, prefix="/api")
+app.include_router(onboarding.router, prefix="/api")
+app.include_router(regimen.router, prefix="/api")
+app.include_router(auditoria.router, prefix="/api")
+app.include_router(paso0.router, prefix="/api")
+app.include_router(analisis.router, prefix="/api")
+app.include_router(asesor.router, prefix="/api")
+app.include_router(vigilancia.router, prefix="/api")
+app.include_router(hoja_ruta.router, prefix="/api")
 
 
 @app.get("/", include_in_schema=False)

@@ -2,21 +2,27 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { fetchDashboard, fmtEUR, fmtPct } from '@/lib/api';
+import { fetchDashboard, fetchPlanFirmado, fmtEUR, fmtPct } from '@/lib/api';
 import { onDatosActualizados } from '@/lib/refetch';
 import { DividendosChart } from '@/components/DividendosChart';
 import { DECISION_COLOR, DECISION_LABEL } from '@/lib/decisiones';
 import { CAT_HEX, CAT_LABEL } from '@/lib/categorias';
-import type { DashboardData } from '@/lib/types';
+import { fetchVigilancia, marcarVistoVigilancia } from '@/lib/api';
+import { notificarDatosActualizados } from '@/lib/refetch';
+import type { DashboardData, PosicionPeso, Vigilancia } from '@/lib/types';
 
 export function Dashboard() {
   const [d, setD] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sinPlan, setSinPlan] = useState(false);
+  const [vig, setVig] = useState<Vigilancia | null>(null);
 
   const cargar = useCallback(() => {
     fetchDashboard()
       .then((data) => { setD(data); setError(null); })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    fetchPlanFirmado().then((p) => setSinPlan(p === null)).catch(() => {});
+    fetchVigilancia().then(setVig).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -40,6 +46,53 @@ export function Dashboard() {
 
   return (
     <div className="space-y-8">
+      {sinPlan && (
+        <Link href="/onboarding"
+          className="block rounded-lg border border-brand-300 dark:border-brand-700 bg-brand-50/60 dark:bg-brand-900/15 p-4 hover:bg-brand-50 dark:hover:bg-brand-900/25">
+          <div className="font-medium">Diseña tu estrategia con la IA →</div>
+          <div className="text-sm text-[rgb(var(--muted))]">
+            Define tu perfil, deja que la IA proponga un reparto por bloques y fírmalo. Guía tus compras.
+          </div>
+        </Link>
+      )}
+
+      {vig && vig.alertas.length > 0 && (
+        <section className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/15 p-4">
+          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+              Vigilancia · {vig.alertas.length} movimiento(s){vig.desde ? ` desde ${vig.desde}` : ''}
+            </h3>
+            <button
+              onClick={async () => { await marcarVistoVigilancia(); notificarDatosActualizados(); }}
+              className="text-xs text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))]"
+            >
+              marcar visto
+            </button>
+          </div>
+          <ul className="space-y-1">
+            {vig.alertas.map((a) => {
+              const ch = parseFloat(a.cambio_pct);
+              return (
+                <li key={a.isin} className="flex items-center gap-2 text-sm">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    a.nivel === 'CRITICA'
+                      ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                  }`}>{a.nivel}</span>
+                  <span className="truncate">{a.nombre}</span>
+                  <span className={`font-mono ${ch >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    {ch >= 0 ? '+' : ''}{(ch * 100).toFixed(1)}%
+                  </span>
+                  <Link href={`/estrategia/analisis?isin=${encodeURIComponent(a.isin)}`}
+                    className="ml-auto text-xs text-brand-600 dark:text-brand-400 hover:underline">
+                    analizar →
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
       {/* ── ¿Cómo voy? ── */}
       <Grupo titulo="¿Cómo voy?">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -64,7 +117,10 @@ export function Dashboard() {
 
       {/* ── ¿Cómo está compuesta? ── */}
       <Grupo titulo="¿Cómo está compuesta?" href="/estrategia" cta="Ver bloques →">
-        <Composicion comp={d.composicion} />
+        <div className="space-y-3">
+          <Composicion comp={d.composicion} />
+          <TopPosiciones posiciones={d.posiciones_peso} />
+        </div>
       </Grupo>
 
       {/* ── ¿Qué rinde? ── */}
@@ -171,9 +227,10 @@ export function Dashboard() {
                 <span className="truncate">{c.nombre}</span>
                 <span className="text-xs text-[rgb(var(--muted))]">{CAT_LABEL[c.categoria_base]}</span>
                 <span className="ml-auto font-mono">{fmtEUR(c.valor_eur, { maximumFractionDigits: 0 })}</span>
-                <span className="w-12 text-right text-[rgb(var(--muted))]">
+                <span className="w-10 text-right text-[rgb(var(--muted))]">
                   {total > 0 ? `${((parseFloat(c.valor_eur) / total) * 100).toFixed(0)}%` : '—'}
                 </span>
+                <CagrBloque cagr={c.cagr4_div_pct} cobertura={c.cobertura} />
               </div>
             ))}
         </div>
@@ -211,6 +268,67 @@ function Donut({ segmentos }: { segmentos: { valor: number; color: string }[] })
         })}
       </g>
     </svg>
+  );
+}
+
+function TopPosiciones({ posiciones }: { posiciones: PosicionPeso[] }) {
+  if (posiciones.length === 0) return null;
+  const N = 8;
+  const top = posiciones.slice(0, N);
+  const resto = posiciones.slice(N);
+  const restoPeso = resto.reduce((s, p) => s + parseFloat(p.peso), 0);
+  const maxPeso = Math.max(...top.map((p) => parseFloat(p.peso)), 0.0001);
+  return (
+    <div className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-4">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[rgb(var(--muted))]">
+        Por posición
+      </div>
+      <div className="space-y-1">
+        {top.map((p) => {
+          const peso = parseFloat(p.peso);
+          const color = p.categoria_base ? CAT_HEX[p.categoria_base] : 'rgb(var(--muted))';
+          return (
+            <div key={p.isin} className="flex items-center gap-2 text-sm">
+              <span className="w-32 shrink-0 truncate" title={p.nombre}>{p.nombre}</span>
+              <div className="h-2 flex-1 overflow-hidden rounded bg-[rgb(var(--border))]/40">
+                <div className="h-full rounded" style={{ width: `${(peso / maxPeso) * 100}%`, background: color }} />
+              </div>
+              <span className="w-10 text-right font-mono text-xs text-[rgb(var(--muted))]">
+                {(peso * 100).toFixed(0)}%
+              </span>
+            </div>
+          );
+        })}
+        {resto.length > 0 && (
+          <div className="flex items-center gap-2 pt-0.5 text-xs text-[rgb(var(--muted))]">
+            <span className="w-32 shrink-0">resto ({resto.length})</span>
+            <div className="flex-1" />
+            <span className="w-10 text-right font-mono">{(restoPeso * 100).toFixed(0)}%</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CagrBloque({ cagr, cobertura }: { cagr: string | null; cobertura: string | null }) {
+  if (cagr == null) {
+    return <span className="w-16 text-right text-xs text-[rgb(var(--muted))]">—</span>;
+  }
+  const cob = cobertura != null ? parseFloat(cobertura) : 1;
+  const completa = cob >= 0.999;
+  const color = parseFloat(cagr) >= 0
+    ? 'text-emerald-600 dark:text-emerald-400'
+    : 'text-rose-600 dark:text-rose-400';
+  return (
+    <span
+      className={`w-16 text-right text-xs font-mono ${color} ${completa ? '' : 'opacity-50'}`}
+      title={completa
+        ? 'CAGR4+Div proyectado del bloque'
+        : `CAGR4+Div proyectado · solo ${Math.round(cob * 100)}% del bloque tiene estimación`}
+    >
+      {fmtPct(cagr, 0)}
+    </span>
   );
 }
 

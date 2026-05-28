@@ -100,12 +100,13 @@ def test_parse_respuesta_categoria_invalida_o_no_json() -> None:
 
 def test_build_mensajes_incluye_contexto_y_catalogo() -> None:
     ctx = ContextoEmpresa(isin="US1", nombre="Acme", sector="Tech",
-                          yield_pct=0.012, cagr4_div_pct=0.18)
+                          yield_pct=0.012, cagr4_div_pct=0.18, beta=0.85, roe=0.31)
     cat = [BloqueOpcion(id="B-GROW", nombre="Growth", categoria_base="growth", rol="")]
     system, user = build_mensajes(ctx, cat)
     assert "growth" in system and "JSON" in system
     assert "Acme" in user and "Tech" in user and "B-GROW" in user
     assert "1.2%" in user                  # yield formateado
+    assert "0.85" in user and "31.0%" in user   # beta + ROE en el contexto
 
 
 # ── mock + factory ────────────────────────────────────────────────────────
@@ -137,7 +138,8 @@ def _mock_feed(monkeypatch, isin, precio, sector="Technology") -> None:
     import app.services.precios as precios
     monkeypatch.setattr(precios, "fundamentales_por_isin",
                         lambda db, cid: {isin: {"sector": sector, "industry": "Software",
-                                                "pe": 30.0, "dividend": 0.0}})
+                                                "pe": 30.0, "dividend": 0.0,
+                                                "beta": 1.1, "roe": 0.42}})
     monkeypatch.setattr(precios, "precios_nativos",
                         lambda db, cid: {isin: (Decimal(str(precio)), "USD")})
 
@@ -154,6 +156,7 @@ def test_construir_contexto_desde_feed(db: Session, cartera, monkeypatch) -> Non
     assert ctx.nombre == "Microsoft"
     assert ctx.sector == "Technology"
     assert ctx.per == 30.0
+    assert ctx.beta == 1.1 and ctx.roe == 0.42       # beta + ROE llegan al contexto
     assert ctx.cagr4_div_pct is not None and ctx.cagr4_div_pct > 0   # 30×10=300 vs 100
 
 

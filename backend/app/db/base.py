@@ -80,6 +80,7 @@ def init_db() -> None:
         ("estimaciones", "consenso_json", "TEXT"),
         ("carteras", "objetivo_if_eur", "NUMERIC(18,2) DEFAULT 300000"),
         ("carteras", "aportacion_mensual_eur", "NUMERIC(18,2) DEFAULT 0"),
+        ("carteras", "regimen_macro_json", "TEXT"),
     ]
     if engine.dialect.name == "sqlite":
         insp = inspect(engine)
@@ -93,3 +94,21 @@ def init_db() -> None:
                     conn.execute(text(
                         f"ALTER TABLE {tabla} ADD COLUMN {col} {definicion}"
                     ))
+
+            # CHECK de `estimaciones.tipo_val`: añadir métodos nuevos (p.ej. SOTP)
+            # exige RECONSTRUIR la tabla — SQLite no admite ALTER de un CHECK.
+            # Idempotente: solo reconstruye si el CHECK aún no incluye el método.
+            if "estimaciones" in tablas:
+                sql = conn.execute(text(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='estimaciones'"
+                )).scalar() or ""
+                if "'SOTP'" not in sql:
+                    cols = [r[1] for r in conn.execute(
+                        text("PRAGMA table_info(estimaciones)")).fetchall()]
+                    lista = ", ".join(cols)
+                    conn.execute(text("ALTER TABLE estimaciones RENAME TO _estimaciones_old"))
+                    models.Estimacion.__table__.create(bind=conn)         # nuevo CHECK
+                    conn.execute(text(
+                        f"INSERT INTO estimaciones ({lista}) SELECT {lista} FROM _estimaciones_old"
+                    ))
+                    conn.execute(text("DROP TABLE _estimaciones_old"))

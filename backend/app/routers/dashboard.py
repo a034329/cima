@@ -29,6 +29,16 @@ class CompBloqueOut(BaseModel):
     categoria_base: str
     valor_eur: Decimal = Field(decimal_places=2)
     peso: Decimal = Field(decimal_places=4)
+    cagr4_div_pct: Decimal | None = None
+    cobertura: Decimal | None = None
+
+
+class PosicionPesoOut(BaseModel):
+    nombre: str
+    isin: str
+    categoria_base: str | None = None
+    valor_eur: Decimal = Field(decimal_places=2)
+    peso: Decimal = Field(decimal_places=4)
 
 
 class PasoResumenOut(BaseModel):
@@ -60,6 +70,7 @@ class DashboardOut(BaseModel):
     anios_if: Decimal | None
     retorno_if_pct: Decimal = Field(decimal_places=4)
     composicion: list[CompBloqueOut]
+    posiciones_peso: list[PosicionPesoOut]
     yield_actual_pct: Decimal = Field(decimal_places=4)
     dividendos_brutos_anio: Decimal = Field(decimal_places=2)
     yield_estimado_pct: Decimal | None
@@ -96,8 +107,15 @@ def get_dashboard(db: Session = Depends(get_db)) -> DashboardOut:
         retorno_if_pct=_q4(r.retorno_if_pct),
         composicion=[
             CompBloqueOut(nombre=c.nombre, categoria_base=c.categoria_base,
-                          valor_eur=_q2(c.valor_eur), peso=_q4(c.peso))
+                          valor_eur=_q2(c.valor_eur), peso=_q4(c.peso),
+                          cagr4_div_pct=(_q4(c.cagr4_div_pct) if c.cagr4_div_pct is not None else None),
+                          cobertura=(_q4(c.cobertura) if c.cobertura is not None else None))
             for c in r.composicion
+        ],
+        posiciones_peso=[
+            PosicionPesoOut(nombre=p.nombre, isin=p.isin, categoria_base=p.categoria_base,
+                            valor_eur=_q2(p.valor_eur), peso=_q4(p.peso))
+            for p in r.posiciones_peso
         ],
         yield_actual_pct=_q4(r.yield_actual_pct),
         dividendos_brutos_anio=_q2(r.dividendos_brutos_anio),

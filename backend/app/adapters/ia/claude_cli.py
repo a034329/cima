@@ -69,33 +69,49 @@ class ClaudeCliClasificador:
                 continue
         return out
 
-    def _run(self, system: str, user: str, modelo: str | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+        """Transporte genérico (onboarding, asesor, etc.): texto crudo del modelo."""
+        return self._run(system, user, timeout=timeout_s)
+
+    def investigar(self, system: str, user: str) -> str:
+        """PASO 0: texto del modelo CON búsqueda web. Pre-aprueba SOLO `WebSearch`
+        (read-only, mediada por Anthropic) — sin bypass, sin FS/Bash. Timeout más
+        largo porque la búsqueda es lenta."""
+        return self._run(system, user, tools="WebSearch", allowed="WebSearch",
+                         timeout=settings.ia_web_timeout_s)
+
+    def _run(self, system: str, user: str, modelo: str | None = None,
+             tools: str = "", allowed: str | None = None,
+             timeout: int | None = None) -> str:
         """Una llamada headless a `claude -p`; devuelve el texto del resultado.
-        Arranque ligero: sin MCP (`--strict-mcp-config` sin configs) y solo
-        settings de usuario, para minimizar latencia de cold start."""
+        `tools`/`allowed` controlan el sandbox: por defecto SIN herramientas. El
+        clasificador y `completar` no las tocan; solo `investigar` abre WebSearch."""
         cmd = [
             self.cli_path, "-p",
             "--system-prompt", system,
             "--output-format", "json",
             "--model", modelo or self.modelo,
-            "--tools", "",                  # sin herramientas: sandbox por diseño
+            "--tools", tools,               # "" = sandbox; "WebSearch" = solo búsqueda
             "--strict-mcp-config",          # ignora servidores MCP del entorno
             "--setting-sources", "user",    # ignora hooks/settings de proyecto/local
             "--permission-mode", "default",
             "--no-session-persistence",
         ]
+        if allowed:                          # pre-aprueba SOLO las tools nombradas (sin bypass)
+            cmd += ["--allowedTools", allowed]
+        efectivo = timeout or self.timeout_s
         try:
             with tempfile.TemporaryDirectory(prefix="cima-ia-") as cwd:
                 proc = subprocess.run(
                     cmd, input=user, capture_output=True, text=True,
-                    timeout=self.timeout_s, cwd=cwd,
+                    timeout=efectivo, cwd=cwd,
                 )
         except FileNotFoundError as e:
             raise ClasificadorError(
                 f"CLI de Claude no encontrado en {self.cli_path!r}"
             ) from e
         except subprocess.TimeoutExpired as e:
-            raise ClasificadorError(f"Timeout del CLI tras {self.timeout_s}s") from e
+            raise ClasificadorError(f"Timeout del CLI tras {efectivo}s") from e
 
         if proc.returncode != 0:
             raise ClasificadorError(

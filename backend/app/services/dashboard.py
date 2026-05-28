@@ -30,6 +30,17 @@ class CompBloque:
     categoria_base: str
     valor_eur: Decimal
     peso: Decimal
+    cagr4_div_pct: Decimal | None = None    # CAGR4+Div proyectado del bloque
+    cobertura: Decimal | None = None        # fracción del valor del bloque con estimación
+
+
+@dataclass
+class PosicionPeso:
+    nombre: str
+    isin: str
+    categoria_base: str | None       # bloque al que pertenece (para colorear la barra)
+    valor_eur: Decimal               # valor de mercado
+    peso: Decimal                    # fracción sobre el total invertido (mercado)
 
 
 @dataclass
@@ -66,6 +77,7 @@ class DashboardResultado:
     retorno_if_pct: Decimal = Decimal("0.07")    # rentabilidad supuesta en la proyección
     # ¿Cómo está compuesta?
     composicion: list[CompBloque] = field(default_factory=list)
+    posiciones_peso: list[PosicionPeso] = field(default_factory=list)   # por acción/ETF, peso desc
     # ¿Qué rinde?
     yield_actual_pct: Decimal = Decimal("0")
     dividendos_brutos_anio: Decimal = Decimal("0")
@@ -87,21 +99,36 @@ def _anios_a_if(
     capital: Decimal, aportacion_anual: Decimal,
     objetivo: Decimal = _TARGET_IF, retorno: Decimal | None = None,
 ) -> Decimal | None:
-    """Años (FRACCIONADOS) hasta el objetivo, con capitalización e ingreso
-    MENSUAL (la aportación es mensual). Devuelve None si no se alcanza en 50
-    años. Fraccionar (no redondear al año) iguala el método del Excel."""
-    if capital >= objetivo:
-        return Decimal("0")
+    """Años (FRACCIONADOS) hasta el objetivo. Delega en `proyeccion.anios_hasta`
+    (fuente única compartida con el retorno requerido del onboarding)."""
+    from app.services import proyeccion
     r = float(retorno if retorno is not None else _RETORNO_IF)
-    r_m = (1 + r) ** (1 / 12) - 1
-    ap_m = float(aportacion_anual) / 12
-    cap = float(capital)
-    obj = float(objetivo)
-    for m in range(1, 50 * 12 + 1):
-        cap = cap * (1 + r_m) + ap_m
-        if cap >= obj:
-            return Decimal(str(m / 12)).quantize(Decimal("0.1"), ROUND_HALF_UP)
-    return None   # no alcanzable en 50 años con estos supuestos
+    return proyeccion.anios_hasta(capital, aportacion_anual, objetivo, r)
+
+
+def capital_en_estrategia_eur(db: Session, cartera_id: str) -> Decimal:
+    """Valor de MERCADO de las posiciones abiertas DENTRO de la estrategia IF
+    (excluye colchón y bloques fuera de estrategia). Misma base que `capital_if`
+    de la proyección del dashboard — la usa el onboarding para el retorno
+    requerido, de modo que ambas cuentas parten del mismo capital."""
+    from app.services.precios import obtener_precios_eur
+
+    precios, _ = obtener_precios_eur(db, cartera_id)
+    en_estrat = {b.id: b.en_estrategia for b in db.execute(
+        select(models.Bloque).where(models.Bloque.cartera_id == cartera_id)).scalars()}
+    total = Decimal("0")
+    for pos in db.execute(
+        select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
+    ).scalars():
+        est = estado_posicion(db, pos.id)
+        cant = est["cantidad"]
+        if cant <= 0:
+            continue
+        px = precios.get(pos.isin)
+        valor = (px * cant) if px is not None else Decimal(str(est["coste_total_eur"]))
+        if pos.bloque_id is None or en_estrat.get(pos.bloque_id, True):
+            total += valor
+    return total
 
 
 def _venc_to_date(venc: str) -> date | None:
@@ -134,14 +161,15 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
     # usuario saque, p.ej. cripto a largo): NO entran en el progreso hacia la IF.
     # El KPI "Invertido" (capital_mercado) sí los incluye; el "capital IF" no.
     # Una posición sin bloque (None) cuenta como en estrategia.
-    en_estrat_por_bloque = {
-        b.id: b.en_estrategia for b in db.execute(
-            select(models.Bloque).where(models.Bloque.cartera_id == cartera_id)
-        ).scalars()
-    }
+    bloques_cartera = list(db.execute(
+        select(models.Bloque).where(models.Bloque.cartera_id == cartera_id)
+    ).scalars())
+    en_estrat_por_bloque = {b.id: b.en_estrategia for b in bloques_cartera}
+    cat_por_bloque = {b.id: b.categoria_base for b in bloques_cartera}
     capital_coste = Decimal("0")
     capital_mercado = Decimal("0")
     capital_if = Decimal("0")   # invertido en estrategia (excluye colchón y liquidez)
+    pos_valores: list[tuple[str, str, str | None, Decimal]] = []   # (nombre, isin, cat, valor)
     for pos in db.execute(
         select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
     ).scalars():
@@ -154,6 +182,8 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
         valor = (px * cant) if px is not None else coste
         capital_coste += coste
         capital_mercado += valor
+        pos_valores.append((pos.nombre or pos.isin, pos.isin,
+                            cat_por_bloque.get(pos.bloque_id), valor))
         if pos.bloque_id is None or en_estrat_por_bloque.get(pos.bloque_id, True):
             capital_if += valor
     gp_no_real = capital_mercado - capital_coste
@@ -188,11 +218,27 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
     anios = _anios_a_if(capital_if, aportacion, objetivo_if, retorno_if)
 
     # ── ¿Cómo está compuesta? ───────────────────────────────────────────
+    from app.services import bloques as bloques_svc
+    from app.services.estimaciones import agregado_por_bloque
+
     dist = calcular_distribucion(db, cartera_id)
+    aggs = agregado_por_bloque(db, cartera_id)   # CAGR4+Div proyectado por bloque
+
+    def _agg(bloque_id: str):  # type: ignore[no-untyped-def]
+        return aggs.get(None if bloque_id == bloques_svc.SIN_CLASIFICAR_ID else bloque_id)
+
     composicion = [
-        CompBloque(b.nombre, b.categoria_base, b.valor_eur, b.peso_actual)
+        CompBloque(b.nombre, b.categoria_base, b.valor_eur, b.peso_actual,
+                   cagr4_div_pct=(a.cagr4_div_pct if (a := _agg(b.id)) else None),
+                   cobertura=(a.cobertura if (a := _agg(b.id)) else None))
         for b in dist.bloques
     ]
+    posiciones_peso = sorted(
+        (PosicionPeso(n, i, cat, v,
+                      (v / capital_mercado) if capital_mercado > 0 else Decimal("0"))
+         for (n, i, cat, v) in pos_valores),
+        key=lambda p: p.valor_eur, reverse=True,
+    )
 
     # ── ¿Qué rinde? ─────────────────────────────────────────────────────
     dv = calcular_dividendos(db, cartera_id, anio)
@@ -281,6 +327,7 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
         gp_no_realizada_pct=gp_no_real_pct, liquidez_eur=liquidez,
         progreso_if_pct=progreso, anios_if=anios, retorno_if_pct=retorno_if,
         composicion=composicion,
+        posiciones_peso=posiciones_peso,
         yield_actual_pct=yield_actual, dividendos_brutos_anio=dv.bruto_total,
         yield_estimado_pct=agg.yield_estimado_pct,
         cagr_anual_pct=cagr_anual, retorno_5y_pct=retorno_5y,
