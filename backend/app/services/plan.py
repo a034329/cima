@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -341,3 +341,112 @@ def hueco_asignacion(db: Session, cartera_id: str) -> HuecoResultado:
         total_proyectado_eur=total_proy, sin_clasificar_planeado_eur=sin_clasif,
         bloques=out,
     )
+
+
+# ── Aplicar transacción confirmada a los pasos del plan ─────────────────────
+# Decisiones que "consume" una transacción: una BUY avanza COMPRAR/REFORZAR; una
+# SELL avanza VENDER/RECORTAR. MANTENER/MONITORIZAR/ESPERAR no se ven afectadas.
+_AVANZA_BUY = {"COMPRAR", "REFORZAR"}
+_AVANZA_SELL = {"VENDER", "RECORTAR"}
+_TOLERANCIA_COMPLETADO = Decimal("0.05")   # ±5 % del objetivo = completado
+
+
+def aplicar_transaccion(db: Session, cartera_id: str, isin: str) -> int:
+    """Actualiza los pasos activos del ISIN tras una transacción confirmada.
+
+    Para cada paso PENDIENTE/EN_CURSO cuya `decision` se vea afectada por
+    transacciones del ISIN:
+      - Suma el desplegado: Σ `importe_eur` de las txs confirmadas del ISIN del
+        tipo correspondiente (BUY o SELL) desde `created_at` del paso.
+      - Decide nuevo estado:
+        · sin desplegado → sigue PENDIENTE.
+        · desplegado y posición a 0 (solo en VENDER total) → COMPLETADO.
+        · desplegado ≥ objetivo·(1−tolerancia) → COMPLETADO.
+        · desplegado entre objetivo·tolerancia y casi-objetivo → EN_CURSO.
+        · sin `capital_objetivo_eur` → al primer movimiento pasa a EN_CURSO
+          (queda a criterio del usuario marcar COMPLETADO).
+      - Actualiza `notas` con el progreso ("desplegado X € / objetivo Y €").
+    Devuelve el nº de pasos actualizados. Idempotente.
+    """
+    from app.services.fifo import estado_posicion
+    activos = list(db.execute(
+        select(models.PlanPaso)
+        .where(models.PlanPaso.cartera_id == cartera_id)
+        .where(models.PlanPaso.isin == isin)
+        .where(models.PlanPaso.estado.in_(ESTADOS_ACTIVOS))
+    ).scalars())
+    if not activos:
+        return 0
+    n = 0
+    for paso in activos:
+        if paso.decision in _AVANZA_BUY:
+            tipos = ["BUY"]
+        elif paso.decision in _AVANZA_SELL:
+            tipos = ["SELL"]
+        else:
+            continue                       # MANTENER/MONITORIZAR/ESPERAR no avanzan
+        # Suma de importes EUR de las txs confirmadas del ISIN posteriores a
+        # la creación del paso. Sin join explícito: filtro por posicion.isin.
+        pos_ids = [
+            p.id for p in db.execute(
+                select(models.Posicion)
+                .where(models.Posicion.cartera_id == cartera_id)
+                .where(models.Posicion.isin == isin)
+            ).scalars()
+        ]
+        if not pos_ids:
+            continue
+        desplegado = db.execute(
+            select(func.coalesce(func.sum(models.Transaccion.importe_eur), 0))
+            .where(models.Transaccion.cartera_id == cartera_id)
+            .where(models.Transaccion.posicion_id.in_(pos_ids))
+            .where(models.Transaccion.estado == "confirmada")
+            .where(models.Transaccion.tipo.in_(tipos))
+            .where(models.Transaccion.fecha >= paso.created_at.date())
+        ).scalar() or 0
+        desplegado = Decimal(str(desplegado))
+        # Caso especial: VENDER y la posición ha quedado a 0 → COMPLETADO total.
+        cant_actual = Decimal("0")
+        if paso.decision in _AVANZA_SELL:
+            pos = db.execute(
+                select(models.Posicion)
+                .where(models.Posicion.cartera_id == cartera_id)
+                .where(models.Posicion.isin == isin)
+            ).scalars().first()
+            if pos is not None:
+                cant_actual = estado_posicion(db, pos.id)["cantidad"]
+
+        nuevo_estado = paso.estado
+        nota_progreso: str | None = None
+        if desplegado <= 0:
+            continue                                       # sin cambios reales
+        if paso.decision in _AVANZA_SELL and cant_actual <= 0:
+            nuevo_estado = "COMPLETADO"
+            nota_progreso = f"Cerrada por completo (vendido {_eur(desplegado)})."
+        elif paso.capital_objetivo_eur and paso.capital_objetivo_eur > 0:
+            obj = Decimal(str(paso.capital_objetivo_eur))
+            ratio = desplegado / obj
+            restante = max(obj - desplegado, Decimal("0"))
+            if ratio >= (Decimal("1") - _TOLERANCIA_COMPLETADO):
+                nuevo_estado = "COMPLETADO"
+                nota_progreso = f"Completado: {_eur(desplegado)} / objetivo {_eur(obj)}."
+            else:
+                nuevo_estado = "EN_CURSO"
+                nota_progreso = (f"En curso: {_eur(desplegado)} / objetivo {_eur(obj)} "
+                                 f"({float(ratio) * 100:.0f} %). Restan {_eur(restante)}.")
+        else:
+            # Sin objetivo de capital: el primer movimiento lo deja en curso.
+            nuevo_estado = "EN_CURSO"
+            nota_progreso = f"En curso: {_eur(desplegado)} desplegados (sin objetivo)."
+
+        if nuevo_estado != paso.estado or nota_progreso:
+            paso.estado = nuevo_estado
+            paso.notas = nota_progreso
+            n += 1
+    if n:
+        db.commit()
+    return n
+
+
+def _eur(v: Decimal) -> str:
+    return f"{float(v):,.0f} €".replace(",", ".")

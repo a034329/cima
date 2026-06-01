@@ -190,6 +190,24 @@ def evaluar_friccion(payload: FriccionIn, db: Session = Depends(get_db)) -> Fric
                        rebate2=r.rebate2, etiquetas=r.etiquetas)
 
 
+class RegistrarFriccionIn(BaseModel):
+    isin: str
+    decision: str
+    severidad: str           # "ALTA" o "MEDIA" (devueltas por evaluar_friccion)
+    motivo: str | None = None
+    rebatido: bool = True    # True = el usuario continuó tras los rebates
+
+
+@router.post("/registrar-friccion", status_code=status.HTTP_204_NO_CONTENT,
+             summary="Registrar un evento de fricción (override del usuario)")
+def registrar_friccion(payload: RegistrarFriccionIn, db: Session = Depends(get_db)) -> None:
+    """Captura el override cuando el usuario continúa con la operación tras la
+    fricción (no se ata a un paso del plan; lo usa el alta de transacciones)."""
+    from app.services import friccion
+    friccion.registrar_evento(db, _cartera(db).id, payload.isin, payload.decision,
+                              payload.severidad, payload.motivo, payload.rebatido)
+
+
 @router.post("", response_model=PasoOut, status_code=status.HTTP_201_CREATED,
              summary="Crear un paso del plan para una posición")
 def crear(payload: CrearPasoIn, db: Session = Depends(get_db)) -> PasoOut:

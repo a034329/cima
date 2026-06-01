@@ -3,15 +3,16 @@
 > Documento operativo. Vive, se actualiza, se commitea. No es marketing —
 > es la lista de lo que hay que hacer y en qué orden.
 
-**Última actualización**: 2026-05-25.
+**Última actualización**: 2026-06-01.
 
 ---
 
-## Estado real (resumen al 2026-05-25)
+## Estado real (resumen al 2026-06-01)
 
 > Lo construido va MUY por delante de los checkboxes de abajo (que se mantenían en ⬜).
 > Backend FastAPI + SQLAlchemy (SQLite dev, micro-migraciones sin Alembic aún) + frontend
-> Next 14 funcional. **224 tests backend en verde.** Sin git todavía (repo aparte pendiente).
+> Next 14 funcional. **312 tests backend en verde.** Repo git inicializado (commit base
+> `2850de1`); push diferido al usuario.
 
 **Fase 1 — Base: casi completa.**
 - ✅ Modelo de datos multi-broker + triple PM (real/fiscal-ES/opciones). PM display = media ponderada.
@@ -21,7 +22,7 @@
 - ✅ **Clasificador IA puntual + lote** (1.6): compuertas deterministas + IA (Claude Max vía CLI) con distribución de probabilidad, razonamiento y few-shot de overrides del usuario.
 - ✅ **Plan por valor** (PlanPaso, decisión por ISIN) + **plan de compra top-down** (hueco de asignación: objetivo/actual/planeado/déficit por bloque; watchlist-first para empresas nuevas). NO estaba en el roadmap original.
 - ✅ UI: dashboard, posiciones, página de posición, Estrategia (Bloques/Plan/Estimaciones/Seguimiento/Rotación), hub Fiscalidad (7 sub-pestañas), Config.
-- ✅ **Onboarding IA (1.5)** — wizard perfil→propuesta IA→firma; produce `PlanFirmado` (contrato de Ulises) + fija objetivos. Corre sobre Max (prod necesita adaptador anthropic). ✅ friction popups (1.7, Fase D "avisa/rebate 2/te deja"). ⬜ integración Cuádrate (1.9). ⬜ beta cerrada (1.10).
+- ✅ **Onboarding IA (1.5)** — wizard perfil→propuesta IA→firma; produce `PlanFirmado` (contrato de Ulises) + fija objetivos. Corre sobre Max (prod necesita adaptador anthropic). ✅ friction popups en **ambos flujos** (creación de paso del Plan + alta real de transacción contra Colchón/compounders, captura el override). ✅ vigilancia de cartera (alertas precio + panel Dashboard + contexto del asesor). ⬜ integración Cuádrate (1.9). ⬜ beta cerrada (1.10).
 
 **Fase 2 — Estimaciones: el núcleo hecho.**
 - ✅ Métricas valoración multi-método (PER/P_FCF/P_BV/P_FRE), CAGR4+Div, consenso analistas FMP, umbrales fiscales R-U.
@@ -198,12 +199,12 @@ Reutilizar parsers de Cuádrate (`/app/720/irpf/generar_irpf.py`). Orden:
 - [x] **Guía de compra (MiFID-safe)**: bajo el déficit de cada bloque infraponderado, sus **criterios** (de la ficha) + "Buscar candidato →" a Seguimiento. La IA no nombra valores.
 - [x] **Chequeo de encaje del candidato**: `evaluar_candidato` (en qué bloque cae + chequeo de los criterios medibles: yield/beta/ROE/crecimiento; payout/cobertura/moat quedan cualitativos). Si vienes del déficit de un bloque, avisa si el candidato no lo cubre. Frontera por modo: prescriptivo (reforzar/rotar valores) solo en Owner.
 
-### 1.7 Operativa diaria 🔴 2w 🔵 (añadir op + reconciliación ✅; friction popups y WebSocket ⬜)
+### 1.7 Operativa diaria 🔴 2w 🔵 (añadir op + reconciliación + friction ✅; WebSocket ⬜)
 
-- [ ] Botón "Añadir operación" (modal 5 campos, 15 segundos).
-- [ ] Reconciliación al importar extractos (matching ±2 días, ±0,5% precio).
-- [ ] Friction popups cuando se rompe regla del plan firmado.
-- [ ] Recálculo en cascada <500 ms.
+- [x] Botón "Añadir operación" (modal, selector de posición existente, autocompleta isin/nombre/divisa).
+- [x] Reconciliación al importar extractos (matching ±2 días, ±0,5% precio) + aplica el plan por ISIN tocado.
+- [x] **Friction popups en alta real** (vender/comprar): `evaluar_friccion` antes del INSERT, `FriccionDialog` reutilizado de la creación de pasos, `POST /api/plan/registrar-friccion` captura el override. La operación entra confirmada (`confirmar_directo=True`) y dispara rebuild FIFO + `aplicar_transaccion` al plan.
+- [x] Recálculo en cascada sub-segundo: `estado_posicion` + `calcular_fiscal` memoizados por sesión (dashboard 3,5s → 0,28s) y APIs financieras solo refetchan en prefill/forzar.
 - [ ] WebSocket para refresh en tiempo real.
 
 ### 1.8 UI básica 🔴 4w ✅ (dashboard, posiciones, Estrategia, hub Fiscalidad, Config)
@@ -336,10 +337,11 @@ preguntas/fuentes/disclaimer). Smoke real: clasificó Emaar como COYUNTURAL con 
 - [ ] 12-18 meses bajo supervisión.
 - [ ] Validación oficial del modelo.
 
-### 3.8 Asesor conversacional + Vigilancia 🔵 (asesor hecho; vigilancia ⬜)
+### 3.8 Asesor conversacional + Vigilancia ✅ (asesor + acciones + voz + vigilancia + hoja de ruta)
 
-- [x] **Chat asesor IA** (`services/asesor.py` + `adapters/ia/asesor.py` + `/api/asesor` + pestaña **Asesor**): conversa con tu cartera + estrategia firmada + plan + régimen + doctrina en contexto (vía `completar`, rápido, sin web por mensaje; contexto = top 20 posiciones + resumen); persistido por cartera (`MensajeAsesor`). Frontera MiFID por modo (Owner prescriptivo, SaaS análisis+disclaimer). Para análisis profundo con noticias remite a Análisis.
-- [x] **Asesor con ACCIONES** (Owner): propone acciones whitelisteadas (`ajustar_estimacion`, `crear_paso`) como bloque JSON → el frontend las muestra como **tarjetas Aplicar/Descartar** → al confirmar ejecuta el endpoint conocido (`editarEstimacion`/`crearPaso`). La IA nunca ejecuta libremente; el humano es el gate. `ajustar_estimacion` cubre **método (tipo_val), múltiplo+métrica y/o dividendo** (cualquier subconjunto). Anclado en consenso/comparables; "Investigar →" enlaza a la valoración (web). El asesor vive como **widget de chat global** (esquina inf. derecha, persistente al cerrar) + página `/asesor`.
+- [x] **Chat asesor IA** (`services/asesor.py` + `adapters/ia/asesor.py` + `/api/asesor` + pestaña **Asesor**): conversa con TODA la cartera + estrategia firmada + plan + régimen + alertas de vigilancia + doctrina en contexto; persistido por cartera (`MensajeAsesor`). Dual-rail: `completar` (rápido, sin web) por defecto; `investigar` (web search) cuando la pregunta es de actualidad (`_requiere_web`: "hoy", "noticias", "por qué sube"…). Frontera MiFID por modo (Owner prescriptivo, SaaS análisis+disclaimer).
+- [x] **Asesor con ACCIONES** (Owner): propone acciones whitelisteadas (`ajustar_estimacion`, `crear_paso`) como bloque JSON → el frontend las muestra como **tarjetas Aplicar/Descartar** → al confirmar ejecuta el endpoint conocido. La IA nunca ejecuta libremente; el humano es el gate. `ajustar_estimacion` cubre **método (tipo_val), múltiplo+métrica y/o dividendo** (cualquier subconjunto). Anclado en consenso/comparables; "Investigar →" enlaza a la valoración (web). El asesor vive como **widget de chat global** (esquina inf. derecha, persistente al cerrar) + página `/asesor`.
+- [x] **Voz → voz** (`SpeechRecognition` + `SpeechSynthesisUtterance`, `lang='es-ES'`): si la pregunta entró por micro, el asesor responde **leído automáticamente** y limpia URLs/markdown del texto hablado (natural). Útil en el día a día sin teclado.
 - [x] **Vigilancia de cartera** (`services/vigilancia.py` + `SnapshotPrecio` + `/api/vigilancia` + panel en Dashboard): alertas de movimiento de precio vs el último "visto" (≥5% ALERTA, ≥10% CRÍTICA); "marcar visto" resetea el baseline; cada mover enlaza a Análisis para el "por qué". Alimenta el contexto del asesor. Sin cron (compara acumulado). Earnings/noticias por mover = futuro (datos US-only/web).
 - [x] **Hoja de ruta al firmar** (`services/hoja_ruta.py` + `/api/hoja-ruta` job + `HojaRutaReview` como paso final del onboarding): HÍBRIDO — el **déficit € por bloque** es determinista (`calcular_distribucion`), la **IA solo ordena/razona** los pasos (anti-churn, 15/15, fase, tramo del régimen) sobre ISINs reales (cartera ∪ watchlist; descarta inventados). Se genera en segundo plano tras firmar; el usuario **aprueba cada paso** (reusa `AccionCard` → `crear_paso`). Bloques con déficit y sin instrumento → "huecos" con enlace a Análisis/watchlist. Regenerable. Cierra el hueco estrategia→plan.
 
@@ -413,13 +415,24 @@ Objetivo: que el fundador pueda usar Cima en su día a día como sustituto del E
 
 ---
 
-## Próximos pasos inmediatos (al 2026-05-25)
+## Próximos pasos inmediatos (al 2026-06-01)
 
-Lo nuclear de Fase 1 y el núcleo de Fase 2 están hechos. Lo siguiente, por valor:
+Cerrados desde la revisión anterior: friction popups en alta real (1.7), vigilancia de cartera (3.8),
+voz↔voz del asesor, asesor con TODA la cartera, búsqueda web condicional, confirmación directa de
+tx + rebuild FIFO + aplicar plan al instante, filtros por nombre en posiciones/estimaciones,
+columnas opcionales (CAGR4+Div proyectado, rentab histórica con realizadas, primas opciones),
+SOTP para conglomerados, opciones por subyacente con fallback FIGI. **Suite: 312 tests verdes.**
 
-1. 🔴 **Cablear ANTHROPIC_API_KEY** → desbloquea onboarding IA (1.5) y deja la IA lista para producción (hoy va por Claude Max/CLI en dev).
-2. 🔴 **Fricción "avisa, rebate 2 veces, te deja"** (pilar psicológico) — friction popups de 1.7 + captura de override al ejecutar.
-3. 🟠 **Refinar clasificador**: añadir beta + ROIC a los fundamentales para endurecer los cortes Estable/Compounder (hoy los hace la IA por conocimiento).
-4. 🟠 **Importadores** Trading212/ING/MyInvestor (1.2) + integración Cuádrate (1.9).
-5. 🟠 **git + CI** (repo propio, .gitignore, GitHub Actions) — sigue sin versionar.
-6. 🟡 Decisión fundador: registrar `cima.app`, validación legal, esquema mercantil, branding.
+Lo siguiente, por valor:
+
+1. 🔴 **Cablear ANTHROPIC_API_KEY** → desbloquea onboarding IA y deja la IA lista para producción (hoy va por Claude Max/CLI en dev). Bloqueador del SaaS.
+2. 🟠 **Importadores** Trading 212 / ING / MyInvestor (1.2) + integración Cuádrate (1.9, SSO + descuento).
+3. 🟠 **WebSocket** (1.7) para refresh tras tx — hoy es buen polling y memoización, pero el último 1% de UX vive ahí.
+4. 🟠 **Catálogo top-1000 mantenido** (2.1) — hoy es feed on-demand con caché.
+5. 🟠 **Régimen macro automático** (3.1) — ingesta auto de los 4 indicadores subjetivos; la regla −14% ya auto-fetchea.
+6. 🟠 **Refinar clasificador**: añadir beta + ROIC a los fundamentales para endurecer cortes Estable/Compounder (hoy los hace la IA por conocimiento).
+7. 🟠 **Push del repo** a GitHub (a tu mano) + Actions: hoy es repo local con commit base `2850de1` y ~12-15 archivos no commiteados de la última sesión.
+8. 🟠 **Beta cerrada** (1.10) — apertura a 100-300 usuarios de Cuádrate.
+9. 🟡 **3.5 Créditos** + **3.6 AI Act** — antes del SaaS.
+10. 🟡 **0.2 Validación legal** + **0.4 Entrevistas ICP** — antes de cobrar.
+11. 🟡 Decisión fundador: registrar `cima.app`, esquema mercantil, branding.

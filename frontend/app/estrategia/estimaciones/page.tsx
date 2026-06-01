@@ -32,6 +32,7 @@ export default function EstimacionesPage() {
   const [data, setData] = useState<EstimacionesResumen | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
+  const [filtro, setFiltro] = useState('');
 
   const cargar = useCallback(async () => {
     try {
@@ -96,6 +97,23 @@ export default function EstimacionesPage() {
         </div>
       )}
 
+      <div className="flex items-center gap-2 mt-2">
+        <input
+          type="search"
+          value={filtro}
+          onChange={(e) => setFiltro(e.target.value)}
+          placeholder="Filtrar por nombre…"
+          className="w-full max-w-md px-3 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]"
+        />
+        {filtro && (
+          <span className="text-xs text-[rgb(var(--muted))]">
+            {data?.estimaciones.filter((e) => e.nombre.toLowerCase().includes(filtro.toLowerCase())).length ?? 0}
+            {' / '}
+            {data?.estimaciones.length ?? 0}
+          </span>
+        )}
+      </div>
+
       <div className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] overflow-auto max-h-[72vh]">
         <table className="w-full text-xs">
           <thead className="text-[rgb(var(--muted))]">
@@ -116,7 +134,9 @@ export default function EstimacionesPage() {
             </tr>
           </thead>
           <tbody className="font-mono">
-            {data?.estimaciones.map((e) => <Fila key={e.isin} e={e} onGuardar={guardar} />)}
+            {data?.estimaciones
+              .filter((e) => !filtro || e.nombre.toLowerCase().includes(filtro.toLowerCase()))
+              .map((e) => <Fila key={e.isin} e={e} onGuardar={guardar} />)}
           </tbody>
         </table>
       </div>

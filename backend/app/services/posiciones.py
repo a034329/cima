@@ -36,7 +36,7 @@ class PosicionMetricas:
     precio_actual_eur: Decimal
     gp_no_realizada_eur: Decimal
     gp_no_realizada_pct: Decimal
-    rentab_total_pct: Decimal     # incl. dividendos + opciones cobradas
+    rentab_total_pct: Decimal     # incl. dividendos + opciones cobradas (holding actual)
     pm_fiscal_es: Decimal
     opciones_ejercidas_anio: Decimal
     opciones_ejercidas_hist: Decimal
@@ -56,6 +56,13 @@ class PosicionMetricas:
     umbral_rotacion_4y_pct: Decimal | None = None
     # CAGR4+Div proyectado a 4 años (retorno total esperado de Estimaciones).
     cagr4_div_pct: Decimal | None = None
+    # Rentab. histórica del ISIN: + G/P realizada en cierres anteriores, sobre Σ
+    # todas las compras. Para posiciones nunca cerradas = rentab_total_pct.
+    rentab_total_hist_pct: Decimal = Decimal("0")
+    # Primas NETAS de TODAS las opciones (venta cobrada − compra pagada), no solo
+    # ejercidas — refleja lo que ganas/pierdes haciendo wheel/income sobre el ISIN.
+    primas_opc_anio: Decimal = Decimal("0")
+    primas_opc_hist: Decimal = Decimal("0")
     # Precio de mercado en DIVISA LOCAL (la del broker), como referencia.
     precio_actual_local: Decimal | None = None
     divisa_cotizacion: str | None = None
@@ -141,27 +148,67 @@ def calcular_metricas_posiciones(
         tx_por_pos.setdefault(t.posicion_id, []).append(t)
 
     # ── Primas de opciones EJERCIDAS por subyacente_isin ───────────────
-    # neta = cobradas (venta) - pagadas (compra)
+    # neta = cobradas (venta) - pagadas (compra). Para opciones que vienen del
+    # importer sin `subyacente_isin` poblado, intenta un FALLBACK por ticker:
+    # busca en la caché FIGI un ISIN cuyo ticker coincida con `subyacente` y, si
+    # ese ISIN está en cartera, lo asocia. Si hay ambigüedad o no se encuentra,
+    # la opción se ignora (mejor omitir que mapearla a la posición incorrecta).
+    isines_cartera = {p.isin for p in posiciones}
+    ticker_a_isin: dict[str, str] = {}
+    try:
+        from app.services.precios import _leer_cache       # type: ignore[attr-defined]
+        cache = _leer_cache()
+        candidatos: dict[str, list[str]] = {}
+        for k, v in cache.items():
+            if not k.startswith("figi:"):
+                continue
+            isin_k = k[5:]
+            if isin_k not in isines_cartera:
+                continue
+            tkr = (v or {}).get("ticker")
+            if not tkr:
+                continue
+            candidatos.setdefault(tkr.upper(), []).append(isin_k)
+        # Solo mapea cuando el ticker apunta a UN único ISIN en cartera.
+        ticker_a_isin = {t: ls[0] for t, ls in candidatos.items() if len(ls) == 1}
+    except Exception:
+        ticker_a_isin = {}
+
     opt_anio: dict[str, Decimal] = {}
     opt_hist: dict[str, Decimal] = {}
-    opts = db.execute(
+    # Primas NETAS de TODAS las opciones (no solo ejercidas): ventas cobradas
+    # menos compras pagadas. Es lo que has ganado/perdido vendiendo opciones
+    # sobre el subyacente. Para PM fiscal sigue valiendo solo lo ejercido (arriba).
+    primas_anio: dict[str, Decimal] = {}
+    primas_hist: dict[str, Decimal] = {}
+    opts_todas = list(db.execute(
         select(models.Opcion)
         .where(models.Opcion.cartera_id == cartera_id)
         .where(models.Opcion.estado == "confirmada")
-        .where(models.Opcion.ejercida.is_(True))
-    ).scalars()
-    for o in opts:
+    ).scalars())
+    for o in opts_todas:
         sub = o.subyacente_isin
+        if not sub and o.subyacente:
+            sub = ticker_a_isin.get(o.subyacente.upper())   # fallback por ticker
         if not sub:
             continue
         prima = Decimal(str(o.importe_eur))
         signed = prima if o.accion == "venta" else -prima
-        opt_hist[sub] = opt_hist.get(sub, Decimal("0")) + signed
+        primas_hist[sub] = primas_hist.get(sub, Decimal("0")) + signed
         if o.fecha.year == anio:
-            opt_anio[sub] = opt_anio.get(sub, Decimal("0")) + signed
+            primas_anio[sub] = primas_anio.get(sub, Decimal("0")) + signed
+        # Sub-conjunto solo ejercidas (semántica fiscal, alimenta pm_fiscal_es).
+        if o.ejercida:
+            opt_hist[sub] = opt_hist.get(sub, Decimal("0")) + signed
+            if o.fecha.year == anio:
+                opt_anio[sub] = opt_anio.get(sub, Decimal("0")) + signed
 
-    # ── Pérdidas diferidas 2M por ISIN (acumulado) + G/P realizada (año) ─
+    # ── Pérdidas diferidas 2M por ISIN (acumulado) + G/P realizada histórica
+    # por ISIN (acumulado: todas las matches FIFO de todos los años; entra en
+    # la "Rentab. total %" para reflejar también lo ganado/perdido en cierres
+    # anteriores, no solo el holding actual) + G/P realizada (año) ─────────
     diferido_2m: dict[str, Decimal] = {}
+    gp_real_hist: dict[str, Decimal] = {}
     gp_real_anio: dict[str, Decimal] = {}
     try:
         fiscal = calcular_fiscal(db, cartera_id, None)  # acumulado
@@ -169,8 +216,13 @@ def calcular_metricas_posiciones(
             diferido_2m[pd.isin] = diferido_2m.get(pd.isin, Decimal("0")) + Decimal(
                 str(pd.importe_eur)
             )
+        for m in fiscal.matches:
+            gp_real_hist[m.isin] = gp_real_hist.get(m.isin, Decimal("0")) + Decimal(
+                str(m.ganancia_perdida)
+            )
     except Exception:
         diferido_2m = {}
+        gp_real_hist = {}
     try:
         fiscal_anio = calcular_fiscal(db, cartera_id, anio)
         for m in fiscal_anio.matches:
@@ -237,11 +289,31 @@ def calcular_metricas_posiciones(
             precio_actual = Decimal(str(precio_actual))
         gp_raw = (precio_actual - Decimal(str(pm_real))) * cantidad
         gp_no_real_pct = (gp_raw / coste_total) if coste_total > 0 else Decimal("0")
-        # Rentabilidad total real = G/P latente + dividendos cobrados (hist) +
-        # primas de opciones cobradas (ejercidas hist), sobre el coste.
+        # Rentabilidad total del HOLDING ACTUAL = G/P latente + dividendos cobrados
+        # (hist del ISIN) + primas de opciones ejercidas (hist del ISIN), sobre el
+        # coste del holding actual. No incluye G/P realizadas de cierres anteriores
+        # (eso lo hace `rentab_total_hist_pct`, ver más abajo).
         rentab_total_pct = (
             ((gp_raw + d_hist + o_hist) / coste_total) if coste_total > 0 else Decimal("0")
         )
+        # Rentabilidad total HISTÓRICA del valor: TODO lo ganado/perdido con este
+        # ISIN, incluyendo cierres anteriores. Numerador = lo de arriba + G/P
+        # realizada histórica. Denominador = capital TOTAL desplegado (Σ compras).
+        # Para posiciones nunca cerradas: idéntico a `rentab_total_pct`.
+        total_invertido = Decimal("0")
+        for t in tx_por_pos.get(pos.id, []):
+            if t.tipo == "BUY":
+                total_invertido += (Decimal(str(t.importe_eur))
+                                    + Decimal(str(t.gastos_eur))
+                                    + Decimal(str(t.tasas_externas_eur)))
+        if total_invertido <= 0:
+            total_invertido = coste_total                          # respaldo defensivo
+        gp_real_hist_isin = gp_real_hist.get(isin, Decimal("0"))
+        rentab_total_hist_pct = (
+            ((gp_raw + d_hist + o_hist + gp_real_hist_isin) / total_invertido)
+            if total_invertido > 0 else Decimal("0")
+        )
+        rentab_total_hist_pct = rentab_total_hist_pct.quantize(Decimal("0.0001"))
         precio_actual = precio_actual.quantize(Decimal("0.0001"))
         gp_no_real = gp_raw.quantize(Decimal("0.01"))
         gp_no_real_pct = gp_no_real_pct.quantize(Decimal("0.0001"))
@@ -267,6 +339,9 @@ def calcular_metricas_posiciones(
             gp_no_realizada_eur=gp_no_real,
             gp_no_realizada_pct=gp_no_real_pct,
             rentab_total_pct=rentab_total_pct,
+            rentab_total_hist_pct=rentab_total_hist_pct,
+            primas_opc_anio=primas_anio.get(isin, Decimal("0")).quantize(Decimal("0.01")),
+            primas_opc_hist=primas_hist.get(isin, Decimal("0")).quantize(Decimal("0.01")),
             pm_fiscal_es=pm_fiscal,
             opciones_ejercidas_anio=o_anio,
             opciones_ejercidas_hist=o_hist,

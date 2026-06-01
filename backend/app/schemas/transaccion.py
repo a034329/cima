@@ -20,7 +20,11 @@ EstadoTransaccion = Literal["pendiente_confirmar", "confirmada", "descartada"]
 class TransaccionIn(BaseModel):
     """Payload para POST /api/transacciones (operación manual)."""
 
-    isin: str = Field(min_length=12, max_length=12)
+    # Para flexibilizar el alta: si pasas `posicion_id` (selector de cartera),
+    # `isin`/`nombre`/`divisa_local` se autocompletan desde esa posición y son
+    # opcionales en el payload. Si no, `isin` es obligatorio (alta nueva).
+    posicion_id: str | None = None
+    isin: str | None = Field(default=None, min_length=12, max_length=12)
     ticker: str | None = None
     nombre: str | None = None
     broker_id: str | None = None
@@ -28,7 +32,7 @@ class TransaccionIn(BaseModel):
     tipo: TipoTransaccion
     cantidad: Decimal = Field(gt=0)
     precio_local: Decimal = Field(ge=0)
-    divisa_local: str = Field(default="EUR", min_length=3, max_length=3)
+    divisa_local: str | None = Field(default=None, min_length=3, max_length=3)
     importe_local: Decimal = Field(ge=0)
     fx_rate: Decimal = Field(default=Decimal("1"), gt=0)
     importe_eur: Decimal = Field(ge=0)
@@ -37,6 +41,10 @@ class TransaccionIn(BaseModel):
     retencion_eur: Decimal = Field(default=Decimal("0"), ge=0)
     retencion_pais: str | None = Field(default=None, max_length=2)
     notas: str | None = None
+    # Default `True` = el alta manual se aplica AL INSTANTE (estado confirmada +
+    # rebuild FIFO). Pasa `false` si quieres dejarla como borrador esperando al
+    # extracto del broker.
+    confirmar_directo: bool = True
 
 
 class TransaccionOut(BaseModel):

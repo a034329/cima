@@ -26,10 +26,13 @@ COLUMNAS = [
     {"id": "gp_no_realizada_eur", "label": "G/P no realizada", "default": True, "fija": False},
     {"id": "gp_no_realizada_pct", "label": "G/P no realizada %", "default": True, "fija": False},
     {"id": "rentab_total_pct", "label": "Rentab. total % (+div+opc)", "default": True, "fija": False},
+    {"id": "rentab_total_hist_pct", "label": "Rentab. histórica del valor (+cierres)", "default": False, "fija": False},
     {"id": "cagr4_div_pct", "label": "CAGR4+Div proyectado (4A)", "default": False, "fija": False},
     {"id": "pm_fiscal_es", "label": "PM fiscal ES", "default": False, "fija": False},
     {"id": "opciones_ejercidas_anio", "label": "Opciones ejercidas (año)", "default": True, "fija": False},
     {"id": "opciones_ejercidas_hist", "label": "Opciones ejercidas (histórico)", "default": False, "fija": False},
+    {"id": "primas_opc_anio", "label": "Primas opciones netas (año)", "default": False, "fija": False},
+    {"id": "primas_opc_hist", "label": "Primas opciones netas (histórico)", "default": False, "fija": False},
     {"id": "dividendos_anio", "label": "Dividendos (año)", "default": True, "fija": False},
     {"id": "dividendos_hist", "label": "Dividendos (histórico)", "default": False, "fija": False},
     {"id": "pm_desc", "label": "PM desc. div+primas", "default": False, "fija": False},
@@ -55,6 +58,9 @@ class PosicionMetricasOut(BaseModel):
     gp_no_realizada_eur: Decimal = Field(decimal_places=2)
     gp_no_realizada_pct: Decimal = Field(decimal_places=4)
     rentab_total_pct: Decimal = Field(decimal_places=4)
+    rentab_total_hist_pct: Decimal = Field(decimal_places=4)
+    primas_opc_anio: Decimal = Field(decimal_places=2)
+    primas_opc_hist: Decimal = Field(decimal_places=2)
     pm_fiscal_es: Decimal = Field(decimal_places=4)
     opciones_ejercidas_anio: Decimal = Field(decimal_places=2)
     opciones_ejercidas_hist: Decimal = Field(decimal_places=2)

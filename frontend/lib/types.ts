@@ -472,6 +472,8 @@ export interface TransaccionOut {
 }
 
 export interface TransaccionIn {
+  posicion_id?: string;
+  confirmar_directo?: boolean;
   isin: string;
   ticker?: string;
   nombre?: string;
@@ -685,6 +687,9 @@ export interface PosicionMetricas {
   umbral_rotacion_3y_pct: string | null;
   umbral_rotacion_4y_pct: string | null;
   cagr4_div_pct: string | null;
+  rentab_total_hist_pct: string;
+  primas_opc_anio: string;
+  primas_opc_hist: string;
 }
 
 export interface OpcionAbierta {

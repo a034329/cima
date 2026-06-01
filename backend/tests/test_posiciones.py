@@ -268,3 +268,29 @@ def test_tipo_activo_clasifica_stock_etf_crypto() -> None:
     assert _tipo_activo("XF000SOL0012", "Solana") == "CRYPTO"
     assert _tipo_activo("IE00B4L5Y983", "iShares Core MSCI World") == "ETF"
     assert _tipo_activo("US5949181045", "Microsoft Corp") == "STOCK"
+
+
+def test_rentab_total_incluye_realizada_historica(db, cartera, broker_degiro, pos, monkeypatch) -> None:
+    """La 'Rentab. total histórica' incluye TODA la P&L del ISIN: latente +
+    dividendos + opciones + REALIZADA en cierres anteriores. Sobre el capital
+    TOTAL desplegado (Σ compras). Vender en pérdidas debe tirar del número."""
+    # Compras a 100, vendes todo a 50 (pérdida 500), recompras a 50, precio actual 60.
+    db.add(_buy(cartera=cartera, broker=broker_degiro, posicion=pos,
+                fecha=date(2024, 1, 10), cantidad=10, precio=100))   # 1000 €
+    db.add(_sell(cartera=cartera, broker=broker_degiro, posicion=pos,
+                 fecha=date(2024, 6, 1), cantidad=10, precio=50))     # realiza -500
+    db.add(_buy(cartera=cartera, broker=broker_degiro, posicion=pos,
+                fecha=date(2024, 9, 1), cantidad=10, precio=50))     # 500 €
+    db.commit()
+    _rebuild_todas(db, cartera.id)
+    from app.services import precios
+    monkeypatch.setattr(precios, "obtener_precios_eur",
+                        lambda db, cid, *a, **k: ({pos.isin: Decimal("60")}, []))
+    m = calcular_metricas_posiciones(db, cartera.id)[0]
+    # rentab_total_pct (holding actual) NO incluye la realizada anterior:
+    #   numerador = latente (60-50)*10 = 100, denominador coste_total = 500 → +20%
+    assert m.rentab_total_pct == Decimal("0.2000")
+    # rentab_total_hist_pct (TODA la historia del ISIN) SÍ la incluye:
+    #   numerador = 100 + realizada hist (-500) = -400
+    #   denominador = Σ compras = 1000 + 500 = 1500 → -400/1500 ≈ -26,67%
+    assert m.rentab_total_hist_pct == Decimal("-0.2667")

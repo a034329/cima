@@ -472,6 +472,17 @@ export async function evaluarFriccion(
   });
 }
 
+export async function registrarFriccion(
+  isin: string, decision: string, severidad: string, motivo: string | null,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/plan/registrar-friccion`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ isin, decision, severidad, motivo, rebatido: true }),
+  });
+  if (!res.ok && res.status !== 204) throw await apiError(res);
+}
+
 // ── Onboarding ─────────────────────────────────────────────────────────
 
 export async function proponerEstrategia(

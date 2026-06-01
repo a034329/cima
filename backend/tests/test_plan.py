@@ -254,3 +254,58 @@ def test_crear_paso_reemplazar_false_conserva(db: Session, cartera) -> None:
     b = svc.crear_paso(db, cartera.id, "US_N", "REFORZAR", "MEDIA", reemplazar=False)
     db.refresh(a)
     assert a.estado == "PENDIENTE" and b.estado == "PENDIENTE"        # ambos se conservan
+
+
+def test_aplicar_transaccion_avanza_completa_y_cierra_venta_total(db: Session, cartera) -> None:
+    """Tras transacciones confirmadas, los pasos del plan avanzan:
+       - COMPRAR/REFORZAR: EN_CURSO mientras desplegado < objetivo; COMPLETADO al alcanzar el objetivo.
+       - VENDER: COMPLETADO si la cantidad de la posición queda a 0."""
+    from datetime import date, datetime, UTC
+    p = _pos_con_lote(db, cartera, "US_K", "Kappa", Decimal("1000"))
+    db.commit()
+
+    # 1) Paso COMPRAR DCA con objetivo 1.000 € (creado HOY).
+    paso = svc.crear_paso(db, cartera.id, "US_K", "COMPRAR", "ALTA",
+                          capital_objetivo_eur=Decimal("1000"))
+    # Tx confirmada de 300 €.
+    db.add(models.Transaccion(
+        cartera_id=cartera.id, broker_id=None, posicion_id=p.id, fecha=date.today(),
+        tipo="BUY", cantidad=Decimal("3"), precio_local=Decimal("100"), divisa_local="EUR",
+        importe_local=Decimal("300"), fx_rate=Decimal("1"), importe_eur=Decimal("300"),
+        gastos_eur=Decimal("0"), tasas_externas_eur=Decimal("0"), retencion_eur=Decimal("0"),
+        estado="confirmada", origen="manual", external_id=None,
+    ))
+    db.commit()
+    svc.aplicar_transaccion(db, cartera.id, "US_K")
+    db.refresh(paso)
+    assert paso.estado == "EN_CURSO" and paso.notas and "300" in paso.notas
+
+    # 2) Tx por los 700 € restantes → COMPLETADO (tolerancia ±5 %).
+    db.add(models.Transaccion(
+        cartera_id=cartera.id, broker_id=None, posicion_id=p.id, fecha=date.today(),
+        tipo="BUY", cantidad=Decimal("7"), precio_local=Decimal("100"), divisa_local="EUR",
+        importe_local=Decimal("700"), fx_rate=Decimal("1"), importe_eur=Decimal("700"),
+        gastos_eur=Decimal("0"), tasas_externas_eur=Decimal("0"), retencion_eur=Decimal("0"),
+        estado="confirmada", origen="manual", external_id=None,
+    ))
+    db.commit()
+    svc.aplicar_transaccion(db, cartera.id, "US_K")
+    db.refresh(paso)
+    assert paso.estado == "COMPLETADO"
+
+    # 3) Nuevo paso VENDER total: si la posición queda a 0 → COMPLETADO.
+    paso_v = svc.crear_paso(db, cartera.id, "US_K", "VENDER", "ALTA")
+    db.add(models.Transaccion(
+        cartera_id=cartera.id, broker_id=None, posicion_id=p.id, fecha=date.today(),
+        tipo="SELL", cantidad=Decimal("10"), precio_local=Decimal("120"), divisa_local="EUR",
+        importe_local=Decimal("1200"), fx_rate=Decimal("1"), importe_eur=Decimal("1200"),
+        gastos_eur=Decimal("0"), tasas_externas_eur=Decimal("0"), retencion_eur=Decimal("0"),
+        estado="confirmada", origen="manual", external_id=None,
+    ))
+    db.commit()
+    from app.services.fifo import rebuild_for_posicion
+    rebuild_for_posicion(db, p.id)
+    db.commit()
+    svc.aplicar_transaccion(db, cartera.id, "US_K")
+    db.refresh(paso_v)
+    assert paso_v.estado == "COMPLETADO" and "Cerrada por completo" in (paso_v.notas or "")

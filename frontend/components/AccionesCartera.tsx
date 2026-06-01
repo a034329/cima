@@ -7,13 +7,16 @@ import {
   crearAportacion,
   crearOpcion,
   crearTransaccion,
+  evaluarFriccion,
   fetchBrokersSoportados,
   fetchEstadoBrokers,
   importarExtracto,
+  registrarFriccion,
 } from '@/lib/api';
 import type { BrokerEstado } from '@/lib/api';
+import { FriccionDialog } from '@/components/FriccionDialog';
 import { notificarDatosActualizados } from '@/lib/refetch';
-import type { ImportResultado, TipoTransaccion } from '@/lib/types';
+import type { FriccionResultado, ImportResultado, TipoTransaccion } from '@/lib/types';
 
 // Etiquetas humanas para los broker_tipo del backend. Si el backend devuelve
 // uno desconocido, se muestra el slug en mayúsculas.
@@ -149,12 +152,34 @@ function ModalAnadirTx({
   const hoy = new Date().toISOString().slice(0, 10);
   const [modo, setModo] = useState<ModoOp>('accion');
   const [submitting, setSubmitting] = useState(false);
+  // Fricción pendiente cuando una operación (vender o comprar fuera de plan)
+  // dispara el aviso conductual. Si no es null, se muestra el diálogo y la
+  // operación queda en espera hasta que el usuario decida.
+  const [pendiente, setPendiente] = useState<{ decision: string; friccion: FriccionResultado } | null>(null);
 
-  // Form acción/ETF (BUY/SELL)
+  // Form acción/ETF (BUY/SELL).
   const [acc, setAcc] = useState({
     isin: '', ticker: '', nombre: '', fecha: hoy, tipo: 'BUY' as TipoTransaccion,
     cantidad: '', precio_local: '', divisa_local: 'EUR', importe_eur: '', gastos_eur: '0', notas: '',
   });
+  // Posiciones existentes para el selector (autocompleta isin/nombre/divisa).
+  const [posicionesCartera, setPosicionesCartera] = useState<
+    Array<{ isin: string; nombre: string; divisa_local: string }>
+  >([]);
+  useEffect(() => {
+    // El modal solo se monta cuando se abre → carga única al entrar.
+    fetch(`${process.env.NEXT_PUBLIC_API_BASE ?? ''}/api/posiciones`)
+      .then((r) => r.ok ? r.json() : { posiciones: [] })
+      .then((d) => {
+        type Pos = { isin: string; nombre: string; divisa_cotizacion?: string | null; cantidad?: string };
+        const lista = (d.posiciones || []) as Pos[];
+        setPosicionesCartera(
+          lista.filter((p) => parseFloat(p.cantidad ?? '0') > 0)
+               .map((p) => ({ isin: p.isin, nombre: p.nombre,
+                              divisa_local: p.divisa_cotizacion || 'EUR' })),
+        );
+      }).catch(() => setPosicionesCartera([]));
+  }, []);
   // Form dividendo
   const [div, setDiv] = useState({
     isin: '', nombre: '', fecha: hoy, bruto: '', retencion: '0', retencion_pais: '', notas: '',
@@ -183,6 +208,15 @@ function ModalAnadirTx({
     try {
       if (modo === 'accion') {
         if (acc.isin.length !== 12) throw new Error('ISIN debe tener 12 caracteres');
+        // Pilar psicológico: antes de aplicar, pregúntale al motor de fricción.
+        // Si dispara, suspendemos el submit y mostramos el diálogo (rebatir/seguir).
+        const decision = acc.tipo === 'SELL' ? 'VENDER' : 'COMPRAR';
+        const f = await evaluarFriccion(acc.isin.toUpperCase(), decision).catch(() => null);
+        if (f) {
+          setPendiente({ decision, friccion: f });
+          setSubmitting(false);
+          return;
+        }
         await crearTransaccion({
           isin: acc.isin.toUpperCase(), ticker: acc.ticker || undefined,
           nombre: acc.nombre || undefined, fecha: acc.fecha, tipo: acc.tipo,
@@ -190,8 +224,9 @@ function ModalAnadirTx({
           divisa_local: acc.divisa_local, importe_local: acc.importe_eur,
           fx_rate: '1', importe_eur: acc.importe_eur, gastos_eur: acc.gastos_eur || '0',
           notas: acc.notas || undefined,
+          confirmar_directo: true,             // se aplica al instante (FIFO + fiscal)
         });
-        onSuccess('Operación registrada (pendiente_confirmar)');
+        onSuccess(`${acc.tipo === 'SELL' ? 'Venta' : 'Compra'} aplicada (FIFO recalculado)`);
       } else if (modo === 'dividendo') {
         if (div.isin.length !== 12) throw new Error('ISIN debe tener 12 caracteres');
         await crearTransaccion({
@@ -273,6 +308,30 @@ function ModalAnadirTx({
           <div className="px-5 py-4 space-y-3 max-h-[65vh] overflow-y-auto">
             {modo === 'accion' && (
               <>
+                {posicionesCartera.length > 0 && (
+                  <label className="block">
+                    <span className="block text-sm font-medium mb-1">Posición existente (opcional)</span>
+                    <select
+                      value={acc.isin}
+                      onChange={(e) => {
+                        const p = posicionesCartera.find((x) => x.isin === e.target.value);
+                        if (p) setAcc({ ...acc, isin: p.isin, nombre: p.nombre, divisa_local: p.divisa_local });
+                        else setAcc({ ...acc, isin: '', nombre: '', divisa_local: 'EUR' });
+                      }}
+                      className="w-full px-3 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]"
+                    >
+                      <option value="">— Operación sobre valor nuevo —</option>
+                      {posicionesCartera.map((p) => (
+                        <option key={p.isin} value={p.isin}>
+                          {p.nombre} ({p.isin}) · {p.divisa_local}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-[11px] text-[rgb(var(--muted))]">
+                      Al elegir, ISIN/nombre/divisa se autocompletan.
+                    </span>
+                  </label>
+                )}
                 <Campo label="ISIN (12 caracteres)" value={acc.isin}
                   onChange={(v) => setAcc({ ...acc, isin: v.toUpperCase() })}
                   placeholder="IE000U9J8HX9" required />
@@ -401,6 +460,41 @@ function ModalAnadirTx({
           </div>
         </form>
       </div>
+
+      {pendiente && (
+        <FriccionDialog
+          friccion={pendiente.friccion}
+          etiquetaProceder={
+            pendiente.decision === 'VENDER' ? 'Vender de todos modos' : 'Comprar de todos modos'
+          }
+          onReconsiderar={() => setPendiente(null)}
+          onProceder={async (motivo) => {
+            try {
+              setSubmitting(true);
+              // 1) Captura el override (qué se hizo aun con la fricción).
+              await registrarFriccion(
+                acc.isin.toUpperCase(), pendiente.decision,
+                pendiente.friccion.severidad, motivo.trim() || null,
+              );
+              // 2) Ejecuta la operación al instante (FIFO + fiscal + plan).
+              await crearTransaccion({
+                isin: acc.isin.toUpperCase(), ticker: acc.ticker || undefined,
+                nombre: acc.nombre || undefined, fecha: acc.fecha, tipo: acc.tipo,
+                cantidad: acc.cantidad, precio_local: acc.precio_local,
+                divisa_local: acc.divisa_local, importe_local: acc.importe_eur,
+                fx_rate: '1', importe_eur: acc.importe_eur, gastos_eur: acc.gastos_eur || '0',
+                notas: acc.notas || undefined, confirmar_directo: true,
+              });
+              setPendiente(null);
+              onSuccess(`${acc.tipo === 'SELL' ? 'Venta' : 'Compra'} aplicada tras rebatir la fricción`);
+            } catch (e) {
+              onError(e instanceof Error ? e.message : String(e));
+            } finally {
+              setSubmitting(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

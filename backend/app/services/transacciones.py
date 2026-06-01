@@ -212,16 +212,30 @@ def crear_manual(
     db: Session,
     cartera_id: str,
     candidata: TxCandidata,
+    confirmar_directo: bool = False,
 ) -> models.Transaccion:
-    """Crea una transacción manual (estado `pendiente_confirmar`)."""
+    """Crea una transacción manual.
+
+    Por defecto queda en `pendiente_confirmar` (esperando confirmación cruzada
+    con el extracto del broker). Con `confirmar_directo=True` queda CONFIRMADA
+    y se ejecuta el rebuild FIFO inmediatamente → la posición se actualiza al
+    instante (caso típico: el usuario acaba de operar y registra la venta sin
+    esperar al CSV del broker)."""
     pos = _get_or_create_posicion(
         db, cartera_id, candidata.isin, candidata.nombre, candidata.divisa_local
     )
-    tx = _insertar_tx(
-        db, cartera_id, pos.id, candidata,
-        origen="manual", estado="pendiente_confirmar",
-    )
+    estado = "confirmada" if confirmar_directo else "pendiente_confirmar"
+    tx = _insertar_tx(db, cartera_id, pos.id, candidata, origen="manual", estado=estado)
     db.commit()
+    if confirmar_directo:
+        # Aplica el FIFO sobre los lotes: BUY añade lote, SELL consume FIFO y
+        # genera matches. Sin esto, la posición no refleja el cambio.
+        from app.services.fifo import rebuild_for_posicion
+        from app.services.plan import aplicar_transaccion as aplicar_a_plan
+        rebuild_for_posicion(db, pos.id)
+        db.commit()
+        # Avanza/cierra los pasos del plan activos para este ISIN.
+        aplicar_a_plan(db, cartera_id, pos.isin)
     return tx
 
 
@@ -352,4 +366,13 @@ def reconciliar_extracto(
             resultado.avisos.append(f"[FIFO] {aviso}")
 
     db.commit()
+    # Avanza los pasos del plan por cada ISIN tocado tras el extracto.
+    from app.services.plan import aplicar_transaccion as aplicar_a_plan
+    isines = {
+        p.isin for p in db.execute(
+            select(models.Posicion).where(models.Posicion.id.in_(posiciones_tocadas))
+        ).scalars()
+    }
+    for isin in isines:
+        aplicar_a_plan(db, cartera_id, isin)
     return resultado

@@ -43,21 +43,42 @@ def crear_transaccion(
     payload: TransaccionIn,
     db: Session = Depends(get_db),
 ) -> models.Transaccion:
-    """Registra una transacción manual.
+    """Registra una transacción manual. Por defecto se aplica AL INSTANTE
+    (`confirmar_directo=true`): queda `confirmada` y dispara el rebuild FIFO
+    → la posición se actualiza (cantidad, coste, G/P realizada). Si pasas
+    `false`, queda en `pendiente_confirmar` esperando al extracto del broker.
 
-    Queda en estado `pendiente_confirmar` hasta que aparezca en el extracto
-    correspondiente (reconciliación automática al importar el siguiente CSV
-    del broker).
-    """
+    Si pasas `posicion_id` (selector de la cartera), `isin`/`nombre`/`divisa`
+    se autocompletan desde esa posición."""
     cartera = _resolver_cartera_por_defecto(db)
+
+    isin = payload.isin
+    nombre = payload.nombre
+    divisa_local = payload.divisa_local
+    if payload.posicion_id:
+        pos = db.execute(
+            select(models.Posicion)
+            .where(models.Posicion.id == payload.posicion_id)
+            .where(models.Posicion.cartera_id == cartera.id)
+        ).scalars().first()
+        if pos is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                f"Posición {payload.posicion_id} no existe en tu cartera")
+        isin = isin or pos.isin
+        nombre = nombre or pos.nombre
+        divisa_local = divisa_local or pos.divisa_local
+    if not isin:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Falta isin (o posicion_id para autocompletarlo)")
+
     candidata = TxCandidata(
         fecha=payload.fecha,
         tipo=payload.tipo,
-        isin=payload.isin,
-        nombre=payload.nombre,
+        isin=isin,
+        nombre=nombre,
         cantidad=payload.cantidad,
         precio_local=payload.precio_local,
-        divisa_local=payload.divisa_local,
+        divisa_local=divisa_local or "EUR",
         importe_local=payload.importe_local,
         fx_rate=payload.fx_rate,
         importe_eur=payload.importe_eur,
@@ -69,7 +90,8 @@ def crear_transaccion(
         broker_id=payload.broker_id or "",
         notas=payload.notas,
     )
-    return crear_manual(db, cartera.id, candidata)
+    return crear_manual(db, cartera.id, candidata,
+                        confirmar_directo=payload.confirmar_directo)
 
 
 @router.get(

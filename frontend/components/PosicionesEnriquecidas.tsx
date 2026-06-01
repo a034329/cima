@@ -8,11 +8,14 @@ import type { ColumnaCatalogo, PosicionMetricas, PosicionesResumen } from '@/lib
 // Columnas monetarias por acción (PM/precio) vs importes absolutos (€) vs %.
 const COLS_PM = new Set(['pm_real', 'pm_fiscal_es', 'pm_desc', 'precio_actual_eur']);
 const COLS_PCT = new Set([
-  'gp_no_realizada_pct', 'rentab_total_pct', 'cagr4_div_pct',
+  'gp_no_realizada_pct', 'rentab_total_pct', 'rentab_total_hist_pct', 'cagr4_div_pct',
   'umbral_rotacion_1y_pct', 'umbral_rotacion_2y_pct',
   'umbral_rotacion_3y_pct', 'umbral_rotacion_4y_pct',
 ]);
-const COLS_GP = new Set(['gp_realizada_anio', 'gp_no_realizada_eur', 'gp_no_realizada_pct', 'rentab_total_pct']);
+const COLS_GP = new Set(['gp_realizada_anio', 'gp_no_realizada_eur', 'gp_no_realizada_pct',
+                          'rentab_total_pct', 'rentab_total_hist_pct',
+                          'opciones_ejercidas_anio', 'opciones_ejercidas_hist',
+                          'primas_opc_anio', 'primas_opc_hist']);
 
 // Cabecera pegajosa: el panel tiene scroll propio (vertical+horizontal), por eso top-0.
 const TH = 'sticky top-0 z-10 bg-[rgb(var(--card))] cursor-pointer hover:text-[rgb(var(--fg))] ' +
@@ -38,6 +41,7 @@ export function PosicionesEnriquecidas({ data, onData }: {
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [abrePanel, setAbrePanel] = useState(false);
+  const [filtro, setFiltro] = useState('');
   const [orden, setOrden] = useState<{ key: string; dir: 1 | -1 }>({
     key: 'gp_no_realizada_eur', dir: -1,
   });
@@ -86,7 +90,10 @@ export function PosicionesEnriquecidas({ data, onData }: {
     if (key === 'decision') return p.decision;
     return parseFloat((p as unknown as Record<string, string>)[key] ?? '0');
   };
-  const filas = [...securities].sort((a, b) => {
+  const seguridadesFiltradas = filtro
+    ? securities.filter((p) => (p.nombre || '').toLowerCase().includes(filtro.toLowerCase()))
+    : securities;
+  const filas = [...seguridadesFiltradas].sort((a, b) => {
     const va = valorOrden(a, orden.key);
     const vb = valorOrden(b, orden.key);
     if (va < vb) return -1 * orden.dir;
@@ -99,7 +106,7 @@ export function PosicionesEnriquecidas({ data, onData }: {
     <div className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-semibold">
-          Acciones y ETFs ({securities.length})
+          Acciones y ETFs ({filtro ? `${seguridadesFiltradas.length}/${securities.length}` : securities.length})
           <span className="ml-2 text-xs font-normal text-[rgb(var(--muted))]">
             métricas año {data.anio}
             {data.precios_actualizados && (
@@ -109,6 +116,14 @@ export function PosicionesEnriquecidas({ data, onData }: {
             )}
           </span>
         </h3>
+        <div className="flex items-center gap-2">
+          <input
+            type="search"
+            value={filtro}
+            onChange={(e) => setFiltro(e.target.value)}
+            placeholder="Filtrar por nombre…"
+            className="w-56 px-3 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]"
+          />
         <div className="relative">
           <button
             onClick={() => setAbrePanel((v) => !v)}
@@ -143,6 +158,7 @@ export function PosicionesEnriquecidas({ data, onData }: {
               ))}
             </div>
           )}
+        </div>
         </div>
       </div>
 
