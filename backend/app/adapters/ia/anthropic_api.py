@@ -65,7 +65,7 @@ class AnthropicClasificador:
             "proveedor claude_cli (Claude Max)."
         )
 
-    def investigar(self, system: str, user: str) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:  # noqa: ARG002
         # TODO(api): client.messages.create(..., tools=[{"type": "web_search_..."}]).
         raise NotImplementedError(
             "Búsqueda web vía API pendiente — usará el server-tool `web_search`. "

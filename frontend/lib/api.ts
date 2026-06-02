@@ -523,12 +523,13 @@ export async function fetchHistorialAsesor(): Promise<import('./types').MensajeA
 }
 
 export async function enviarMensajeAsesor(
-  mensaje: string, porVoz = false,
+  mensaje: string, porVoz = false, forzarWeb = false, signal?: AbortSignal,
 ): Promise<import('./types').RespuestaAsesor> {
   return fetchJson('/api/asesor', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mensaje, por_voz: porVoz }),
+    body: JSON.stringify({ mensaje, por_voz: porVoz, forzar_web: forzarWeb }),
+    signal,
   });
 }
 
@@ -538,6 +539,27 @@ export async function limpiarAsesor(): Promise<void> {
 
 export async function fetchRegimen(): Promise<import('./types').RegimenEstado> {
   return fetchJson('/api/regimen');
+}
+
+export async function fetchRegimenAuto(): Promise<import('./types').RegimenAutoEstado> {
+  return fetchJson('/api/regimen/auto');
+}
+
+export async function lanzarRegimenAuto(): Promise<import('./types').RegimenAutoEstado> {
+  const res = await fetch(`${API_BASE}/api/regimen/auto`, { method: 'POST' });
+  if (!res.ok && res.status !== 202) throw await apiError(res);
+  return res.json();
+}
+
+export async function firmarRegimenAuto(): Promise<import('./types').RegimenEstado> {
+  const res = await fetch(`${API_BASE}/api/regimen/firmar`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res);
+  return res.json();
+}
+
+export async function descartarRegimenAuto(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/regimen/auto`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 204) throw await apiError(res);
 }
 
 export async function auditarCompra(

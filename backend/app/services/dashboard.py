@@ -71,6 +71,11 @@ class DashboardResultado:
     capital_mercado_eur: Decimal
     gp_no_realizada_eur: Decimal
     gp_no_realizada_pct: Decimal
+    # Liquidez DISPONIBLE para inversión (lo que puedes desplegar hoy):
+    # total real en cuentas − liquidez asignada a bloques fuera de estrategia
+    # (colchón y cualquier otro con en_estrategia=False, doctrina WG: intocable).
+    # El desglose total/fuera-estrategia vive en los dos campos del bloque
+    # ⬇ "campos con default" — orden de dataclass forzado a meterlos allí.
     liquidez_eur: Decimal
     progreso_if_pct: Decimal
     anios_if: Decimal | None
@@ -93,6 +98,10 @@ class DashboardResultado:
     opciones_riesgo: list[OpcionRiesgo] = field(default_factory=list)
     opciones_proximas_vencer: int = 0
     opciones_itm: int = 0
+    # Desglose de la liquidez: total en cuentas y cuánto de ese total está
+    # asignado a bloques fuera de estrategia (no es dry powder).
+    liquidez_total_eur: Decimal = Decimal("0")
+    liquidez_fuera_estrategia_eur: Decimal = Decimal("0")
 
 
 def _anios_a_if(
@@ -189,7 +198,11 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
     gp_no_real = capital_mercado - capital_coste
     gp_no_real_pct = (gp_no_real / capital_coste) if capital_coste > 0 else Decimal("0")
 
-    liquidez = calcular_liquidez(db, cartera_id).total_disponible
+    # Liquidez disponible para invertir = total real en cuentas − liquidez
+    # asignada a bloques fuera de estrategia (colchón etc., doctrina WG:
+    # intocable para reinversión). Helper compartido en `services/liquidez.py`.
+    from app.services.liquidez import liquidez_para_invertir
+    liquidez, liquidez_total, liquidez_fuera = liquidez_para_invertir(db, cartera_id)
     # Objetivo IF configurable por cartera (default 300k).
     _c = db.get(models.Cartera, cartera_id)
     objetivo_if = (Decimal(str(_c.objetivo_if_eur))
@@ -338,4 +351,6 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
         perdida_a_arrastrar=Decimal(str(opt.perdida_a_arrastrar_anio)),
         opciones_riesgo=opciones_riesgo,
         opciones_proximas_vencer=prox_vencer, opciones_itm=n_itm,
+        liquidez_total_eur=liquidez_total.quantize(Decimal("0.01")),
+        liquidez_fuera_estrategia_eur=liquidez_fuera.quantize(Decimal("0.01")),
     )

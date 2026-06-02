@@ -339,7 +339,7 @@ def test_precio_via_ia_fallback(monkeypatch) -> None:
     # Yahoo "falla" (no precio) y FMP también (None)
     monkeypatch.setattr(precios, "_precio_fmp_us", lambda sim: None)
     class _IA:
-        def investigar(self, system, user):
+        def investigar(self, system, user, timeout_s=None):
             return '{"precio": 67.6, "divisa": "HKD"}'
     monkeypatch.setattr(ia_mod, "get_clasificador", lambda *a, **k: _IA())
     # forzar el camino IA: yfinance puede no estar disponible o devolver vacío en test

@@ -23,21 +23,37 @@ _PRIORIDADES = {"CRITICA", "ALTA", "MEDIA", "BAJA"}
 
 # Palabras clave que sugieren que la pregunta NECESITA datos en tiempo real /
 # noticias / contexto de mercado → enrutar a `investigar` (con búsqueda web)
-# en vez de `completar` (solo el contexto guardado).
+# en vez de `completar` (solo el contexto guardado). Cubre tres familias:
+# (a) marcadores temporales (hoy/ahora/última hora), (b) preguntas explícitas
+# por movimiento o noticias, (c) peticiones directas al asistente para que
+# busque/investigue/acceda a internet. Si la heurística falla, el usuario
+# puede forzar el modo web con el toggle 🌐 del chat (`forzar_web=True`).
 _KW_WEB = (
     "hoy", "ahora", "actualmente", "última hora", "ultima hora",
-    "noticias", "noticia", "última hora",
+    "noticias", "noticia",
     "por qué sube", "por qué baja", "por qué cae", "por qué está",
     "está subiendo", "está bajando", "está cayendo", "está al alza", "está a la baja",
     "qué pasa con", "qué le pasa a", "qué pasó con", "que pasa con", "que le pasa a",
     "cotización", "cotiza", "precio actual", "precio de hoy",
     "earnings hoy", "resultados de hoy", "guidance", "ha publicado",
     "presentó resultados", "presento resultados",
+    # Peticiones explícitas de búsqueda/investigación al asistente
+    "busca ", "buscar ", "búscame", "buscame", "puedes buscar", "podrías buscar",
+    "investiga", "investígame", "investigame", "investigar",
+    "consulta", "consultar",
+    # Datos en vivo / web
+    "internet", "en la web", "en la red", "tiempo real", "en vivo", "actualizado",
+    "información reciente", "última información", "datos recientes",
+    # Eventos corporativos sin marcador temporal explícito
+    "dividendo anunciado", "ha subido el dividendo", "ha bajado el dividendo",
+    "fusión", "adquisición", "opa ",
 )
 
 
 def _requiere_web(texto: str) -> bool:
-    """Heurística: ¿la pregunta pide datos en vivo / noticias del día?"""
+    """Heurística: ¿la pregunta pide datos en vivo / noticias del día / que
+    investigue por web? Si vuelve False y la pregunta lo necesitaba, el toggle
+    🌐 del chat permite forzar (ver `forzar_web` en `responder`)."""
     t = (texto or "").lower()
     return any(k in t for k in _KW_WEB)
 
@@ -154,11 +170,16 @@ def _contexto(db: Session, cartera_id: str) -> str:
     from app.services.estimaciones import calcular_estimaciones
     from app.services.onboarding import plan_firmado_actual
     from app.services.plan import listar_pasos, posiciones_con_plan
+    from app.services.posiciones import calcular_metricas_posiciones
     from app.services.regimen import estado_regimen
 
     d = calcular_dashboard(db, cartera_id)
     est = {e.isin: e for e in calcular_estimaciones(db, cartera_id)}
     plan = {p.isin: p for p in posiciones_con_plan(db, cartera_id)}
+    # PM/coste/G-P real por posición — sin esto el asesor alucinaba "estás
+    # ligeramente en rojo con Meta" porque solo veía el precio de mercado, no
+    # tu coste medio (caso real Angel). Ahora le pasamos la métrica completa.
+    metricas = {m.isin: m for m in calcular_metricas_posiciones(db, cartera_id)}
     dist = calcular_distribucion(db, cartera_id)
     reg = estado_regimen(db, cartera_id)
     pf = plan_firmado_actual(db, cartera_id)
@@ -188,36 +209,58 @@ def _contexto(db: Session, cartera_id: str) -> str:
     todos = d.posiciones_peso
     top = todos[:_DETALLE_TOP]
     resto = todos[_DETALLE_TOP:]
-    L.append("\nPOSICIONES — top por valor (valor · CAGR4+Div · yield · precio→objetivo · "
-             "múltiplo/métrica · anclas: EPS consenso 4Y / PER histórico · decisión):")
+    L.append(
+        "\nPOSICIONES — top por valor (valor · PM€→precio€ · G/P latente € (%) · "
+        "rent. total con divs+opc · CAGR4+Div · yield · precio_obj · múltiplo/métrica · "
+        "anclas: EPS consenso 4Y / PER hist · decisión):"
+    )
     for p in top:
         e = est.get(p.isin)
+        m = metricas.get(p.isin)
         pl = plan.get(p.isin)
         cagr = _pct(e.cagr4_div_pct, 1) if e else "—"
         yld = _pct(e.div_yield_pct, 1) if e else "—"
-        precio = f"{_num(e.precio_actual)}→{_num(e.precio_objetivo)}" if e else "—"
+        precio_obj = _num(e.precio_objetivo) if e else "—"
         modelo = f"{_num(e.multiplo_objetivo)}×{_num(e.metrica_base_4y)}" if e else "—"
         anclas = (f"consenso {_num(e.eps_consenso_4y)} / PER hist {_num(e.per_hist_medio)}"
                   if e else "—")
         dec = pl.decision if pl else "MANTENER"
-        L.append(f"  - {p.nombre} ({p.isin}) [{p.categoria_base or '-'}] {_eur(p.valor_eur)} "
-                 f"({_pct(p.peso, 0)}) · {cagr} · yield {yld} · {precio} · modelo {modelo} "
-                 f"· {anclas} · {dec}")
+        pm = f"{_num(m.pm_real)}→{_num(m.precio_actual_eur)}€" if m else "—"
+        gp = (f"{_eur(m.gp_no_realizada_eur)} ({_pct(m.gp_no_realizada_pct, 1)})"
+              if m else "—")
+        rentab = _pct(m.rentab_total_pct, 1) if m else "—"
+        L.append(
+            f"  - {p.nombre} ({p.isin}) [{p.categoria_base or '-'}] {_eur(p.valor_eur)} "
+            f"({_pct(p.peso, 0)}) · PM {pm} · G/P {gp} · rentab {rentab} · "
+            f"{cagr} · yield {yld} · obj {precio_obj} · modelo {modelo} · {anclas} · {dec}"
+        )
     if resto:
-        L.append("\nRESTO de posiciones (nombre · isin · bloque · valor · peso · CAGR4+Div · decisión):")
+        L.append("\nRESTO de posiciones (nombre · isin · bloque · valor · peso · "
+                 "G/P latente · CAGR4+Div · decisión):")
         for p in resto:
             e = est.get(p.isin)
+            m = metricas.get(p.isin)
             pl = plan.get(p.isin)
             cagr = _pct(e.cagr4_div_pct, 1) if e else "—"
+            gp = (f"{_eur(m.gp_no_realizada_eur)} ({_pct(m.gp_no_realizada_pct, 1)})"
+                  if m else "—")
             dec = pl.decision if pl else "MANTENER"
             L.append(f"  - {p.nombre} ({p.isin}) [{p.categoria_base or '-'}] "
-                     f"{_eur(p.valor_eur)} ({_pct(p.peso, 0)}) · {cagr} · {dec}")
+                     f"{_eur(p.valor_eur)} ({_pct(p.peso, 0)}) · G/P {gp} · {cagr} · {dec}")
 
-    from app.services.vigilancia import evaluar as evaluar_vigilancia
+    from app.services.vigilancia import (
+        evaluar as evaluar_vigilancia,
+        evaluar_intradia as evaluar_vig_intradia,
+    )
     alertas, desde = evaluar_vigilancia(db, cartera_id)
     if alertas:
         L.append(f"\nALERTAS DE VIGILANCIA (movimientos desde {desde or 'la última vez'}):")
         for a in alertas[:10]:
+            L.append(f"  - {a.nombre}: {_pct(a.cambio_pct, 1)} [{a.nivel}]")
+    intradia = evaluar_vig_intradia(db, cartera_id)
+    if intradia:
+        L.append("\nALERTAS INTRA-DÍA (movimientos del día vs cierre anterior):")
+        for a in intradia[:10]:
             L.append(f"  - {a.nombre}: {_pct(a.cambio_pct, 1)} [{a.nivel}]")
 
     from app.services.fiscal_contexto import calcular_contexto
@@ -247,15 +290,17 @@ def historial(db: Session, cartera_id: str) -> list[models.MensajeAsesor]:
 
 def responder(
     db: Session, cartera_id: str, texto: str, por_voz: bool = False,
+    forzar_web: bool = False,
 ) -> tuple[models.MensajeAsesor, list[Accion]]:
     """Persiste el mensaje del usuario, llama al asesor con el contexto y el historial,
     persiste el texto (sin el bloque de acciones) y devuelve (respuesta, acciones).
-    Las acciones (whitelisteadas) solo se extraen en modo owner; son efímeras."""
+    Las acciones (whitelisteadas) solo se extraen en modo owner; son efímeras.
+    `forzar_web=True` (toggle 🌐 del chat) salta la heurística y usa `investigar`."""
     db.add(models.MensajeAsesor(cartera_id=cartera_id, rol="user", contenido=texto))
     db.commit()
 
     mode = getattr(settings.mode, "value", settings.mode)
-    web = _requiere_web(texto)
+    web = forzar_web or _requiere_web(texto)
     system = (system_asesor(mode, con_web=web, por_voz=por_voz)
               + "\n\nESTADO ACTUAL DE LA CARTERA:\n" + _contexto(db, cartera_id))
     hist = historial(db, cartera_id)[-_MAX_HIST:]
@@ -264,9 +309,10 @@ def responder(
 
     ia = get_clasificador()
     if web:
-        # La pregunta exige datos en vivo o noticias → IA con búsqueda web (lenta
-        # pero precisa). El timeout es el de web (10 min, ya configurado).
-        respuesta = ia.investigar(system, user)
+        # La pregunta exige datos en vivo o noticias → IA con búsqueda web. Para
+        # el chat usamos un timeout más corto (3 min) que el del análisis
+        # profundo (10 min); si tarda más, abortamos y el usuario reformula.
+        respuesta = ia.investigar(system, user, timeout_s=settings.ia_chat_web_timeout_s)
     else:
         respuesta = ia.completar(system, user, timeout_s=settings.ia_chat_timeout_s)
     creditos.registrar_uso_ia(db, cartera_id, "asesor", 1)

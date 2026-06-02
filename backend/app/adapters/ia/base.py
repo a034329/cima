@@ -81,8 +81,9 @@ class ClasificadorIA(Protocol):
         transparente."""
         ...
 
-    def investigar(self, system: str, user: str) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:
         """Como `completar` pero CON búsqueda web (PASO 0: contexto cualitativo).
         En dev (Max CLI) usa la tool WebSearch pre-aprobada; en la API usará el
-        server-tool `web_search`. Más lento y no determinista que `completar`."""
+        server-tool `web_search`. Más lento y no determinista que `completar`.
+        `timeout_s` permite acortar para chat conversacional vs análisis profundo."""
         ...

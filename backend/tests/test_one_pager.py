@@ -19,7 +19,7 @@ _JSON = (
 
 
 class _FakeIA:
-    def investigar(self, system: str, user: str) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:
         return _JSON
 
 

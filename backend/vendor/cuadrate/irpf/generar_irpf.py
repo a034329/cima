@@ -1766,6 +1766,124 @@ def _enrich_with_instrument_type(operaciones: list, broker: str) -> None:
         op['instrument_type_unknown'] = instr_unknown
 
 
+def _detect_shorts_degiro_por_inventario(operaciones):
+    """Detección automática de short selling en DeGiro por estado de
+    inventario cronológico.
+
+    Complementa al detector intra-broker de pares simétricos (caso Klepierre:
+    mismo día + mercados distintos + Order IDs, sección 2080-2150). Aquel
+    cubre el cierre forzoso por ejercicio de opción en mercado equivocado;
+    éste cubre el caso GENERAL del daytrader que abre un short (venta de un
+    valor que no tiene) y lo cubre días o semanas después con una compra
+    posterior — el patrón normal de shorting voluntario.
+
+    Algoritmo (intra-año, por (isin, broker)):
+      - Iterar ops cronológicamente.
+      - Tracker mini-FIFO: `inventario` (acciones disponibles) y
+        `shorts_pendientes` (acciones vendidas en corto sin cubrir).
+      - COMPRA con shorts_pendientes > 0 → es cobertura del short. Marcar
+        `_es_corto_cobertura` (si no lo marcó ya el detector Klepierre).
+      - VENTA con inventario == 0 → es apertura de short. Marcar
+        `_es_corto_apertura` (si no lo marcó ya el detector Klepierre).
+      - Idempotente: respeta flags ya emitidos.
+
+    Conservador: solo marca apertura cuando inventario==0 (apertura limpia).
+    Para ventas parciales (donde la venta excede inventario pero hay parte
+    cubierta por lots vivos), no marca — el motor lo procesaría como venta
+    normal + orphan_sale por la diferencia, comportamiento aceptable para
+    un caso raro. Mejora futura: extender el motor para procesar
+    venta-parcial-más-short en una sola operación.
+
+    Limitación conocida: solo ve ops del año que pasa parse_degiro. Para
+    cortos cuya apertura está en un año previo cargado vía parse_csv_irpf,
+    requiere implementación en el motor (los flags tendrían que persistirse
+    a través del cierre del año).
+
+    Modifica `operaciones` in-place.
+    """
+    from collections import defaultdict
+
+    # Agrupar ops DeGiro de tipo A/T por (isin, broker), conservando el
+    # índice original para no romper el orden de la lista pasada al motor.
+    grupos = defaultdict(list)
+    for idx, op in enumerate(operaciones):
+        if op.get('broker', '') != 'DeGiro':
+            continue
+        if op.get('tipo') not in ('A', 'T'):
+            continue
+        if not op.get('isin'):
+            continue
+        key = (op['isin'], op.get('broker', ''))
+        grupos[key].append((idx, op))
+
+    for key, lst in grupos.items():
+        # GUARDIA DE ACTIVIDAD BILATERAL: el detector solo aplica a (isin,
+        # broker) con tanto compras como ventas. Una venta totalmente aislada
+        # (sin compra antes ni después del mismo ISIN en el año) es casi
+        # siempre un evento corporativo: derechos de suscripción recibidos
+        # gratis, scrip dividend TYPE B (venta de derechos en mercado, coste
+        # 0), o similar. NO debe marcarse como short — el motor procesa esos
+        # casos con su lógica específica (casillas 0341-0355, etc.).
+        n_compras = sum(1 for _, o in lst if o['tipo'] == 'A')
+        n_ventas = sum(1 for _, o in lst if o['tipo'] == 'T')
+        if n_compras == 0 or n_ventas == 0:
+            continue
+        # Orden cronológico estable: por fecha y, dentro de la misma fecha,
+        # compras antes que ventas (consistente con calcular_fifo_from_ops).
+        lst.sort(key=lambda x: (x[1]['fecha'], 0 if x[1]['tipo'] == 'A' else 1))
+
+        inventario = Decimal('0')
+        shorts_pendientes = Decimal('0')
+
+        for idx, op in lst:
+            cantidad = op.get('cantidad', Decimal('0'))
+            if not isinstance(cantidad, Decimal):
+                cantidad = Decimal(str(cantidad))
+
+            if op['tipo'] == 'A':
+                # COMPRA: si hay shorts abiertos, cubre primero.
+                if shorts_pendientes > 0:
+                    cubrir = min(cantidad, shorts_pendientes)
+                    shorts_pendientes -= cubrir
+                    if not op.get('_es_corto_cobertura'):
+                        op['_es_corto_cobertura'] = True
+                        op['_corto_motivo'] = (
+                            f"Compra de {cantidad} {op.get('isin', '')} "
+                            f"({(op.get('nombre', '') or '')[:30]}) el "
+                            f"{op['fecha']} cubre una posición corta abierta "
+                            f"previamente en DeGiro (detector por estado de "
+                            f"inventario cronológico)."
+                        )
+                    remanente = cantidad - cubrir
+                    if remanente > 0:
+                        inventario += remanente
+                else:
+                    inventario += cantidad
+            else:  # 'T' — VENTA
+                if inventario == 0 and cantidad > 0:
+                    # Apertura LIMPIA de short (sin inventario previo).
+                    shorts_pendientes += cantidad
+                    if not op.get('_es_corto_apertura'):
+                        op['_es_corto_apertura'] = True
+                        op['_corto_motivo'] = (
+                            f"Venta de {cantidad} {op.get('isin', '')} "
+                            f"({(op.get('nombre', '') or '')[:30]}) el "
+                            f"{op['fecha']} sin inventario disponible en "
+                            f"DeGiro: candidata a apertura de venta corta. "
+                            f"El motor FIFO valida con inventario real "
+                            f"consolidado (incluye otros brokers e histórico)."
+                        )
+                elif cantidad > inventario:
+                    # Venta parcial: consume inventario disponible y el resto
+                    # queda como orphan_sale en el motor. No marcamos short
+                    # porque el motor no maneja venta-parcial-más-short en una
+                    # sola op. Decrementamos inventario a 0; el motor decidirá
+                    # qué hacer con la diferencia.
+                    inventario = Decimal('0')
+                else:
+                    inventario -= cantidad
+
+
 def parse_degiro(filepath, external_fees_by_order=None, bond_data=None,
                  cambios_producto=None, cambios_isin=None):
     """
@@ -2439,6 +2557,13 @@ def parse_degiro(filepath, external_fees_by_order=None, bond_data=None,
                                          + abs(cupon_corrido))
                     op['_cupon_corrido_eur'] = abs(cupon_corrido)
 
+    # Detector general de shorts DeGiro por estado de inventario cronológico
+    # (complementa al detector intra-broker de Klepierre que solo cubre el
+    # caso de pares simétricos mismo día/mercados distintos). Cubre el
+    # daytrader que abre short hoy y cubre días/semanas después.
+    # Idempotente: respeta los flags ya emitidos arriba.
+    _detect_shorts_degiro_por_inventario(operaciones)
+
     return operaciones, sp_ops, descartadas, {
         'splits':             todos_splits,
         'isin_chgs':          isin_chgs,
@@ -2969,7 +3094,14 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                     return row[h.index(name)] if name in h else ''
                 try:
                     asset_cat = col_t('Asset Category')
-                    if 'Option' in asset_cat or asset_cat in ('Forex', 'Futures'):
+                    # 'Option' (incluido 'Equity and Index Options' y 'Futures
+                    # Options') → parse_ibkr_opciones.
+                    # 'Futures' (futuros lineales) → parse_ibkr_futures.
+                    # 'Forex' → parse_ibkr_fx_pl.
+                    # Las tres categorías van por pipelines especializados, no
+                    # por el bloque de trades normales (acciones/ETF/etc.).
+                    if ('Option' in asset_cat
+                            or asset_cat in ('Forex', 'Futures')):
                         descartadas['opcion'] += 1
                         continue
                     # Asset Categories aceptadas en el motor: Stocks, ETF,
@@ -3120,7 +3252,45 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                     if extra_fee > 0:
                         gastos = gastos + extra_fee
 
-                    operaciones.append({
+                    # ── Detección de short (IBKR) ────────────────────────────
+                    # IBKR emite en el campo `Code` el indicador Opening/Closing
+                    # del trade respecto a tu posición. Combinado con el signo
+                    # de Quantity identifica shorts de forma inequívoca:
+                    #   qty<0 + 'O' en Code → apertura de short (vendes sin tener)
+                    #   qty>0 + 'C' en Code → cobertura de short (compras para cubrir)
+                    #   qty>0 + 'B' en Code → AUTOMATIC BUY-IN (cobertura forzosa
+                    #     ordenada por IBKR cuando el short se queda sin borrow
+                    #     o sin margen suficiente). Semánticamente es cobertura
+                    #     idéntica; se distingue con `_buy_in_forzoso=True` para
+                    #     que el informe pueda etiquetarlo aparte.
+                    # Combinaciones soportadas: 'O', 'O;P' (partial), 'A;O'
+                    # (assignment de una opción que abrió short), análogo para C
+                    # y combos con 'B' (p.ej. 'B;C').
+                    # El motor FIFO valida contra inventario (motor_fiscal.py:966)
+                    # — si hay inventario disponible los flags son ignorados,
+                    # así que es seguro emitirlos como hint. Solo aplicamos a
+                    # Asset Category=Stocks/ETF (no bonos, cripto ni opciones).
+                    code_raw = col_t('Code') if 'Code' in h else ''
+                    code_tokens = {t.strip() for t in code_raw.split(';') if t.strip()}
+                    is_short_open = (
+                        quantity < 0 and 'O' in code_tokens
+                        and asset_cat in ('Stocks', 'ETF')
+                    )
+                    is_buy_in = (
+                        quantity > 0 and 'B' in code_tokens
+                        and asset_cat in ('Stocks', 'ETF')
+                    )
+                    is_short_cover_voluntario = (
+                        quantity > 0 and 'C' in code_tokens
+                        and 'B' not in code_tokens
+                        and asset_cat in ('Stocks', 'ETF')
+                    )
+                    # Buy-in cubre short también — semánticamente es Closing
+                    # forzoso. La presencia conjunta 'B' + 'C' sigue siendo
+                    # cobertura (no doblar).
+                    is_short_cover = is_short_cover_voluntario or is_buy_in
+
+                    op_dict = {
                         'tipo':        'A' if quantity > 0 else 'T',
                         'isin':        isin_resolved,
                         'nombre':      nombre_canon[:50],
@@ -3142,7 +3312,36 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                         'instrument_type_reason':  instr_reason,
                         'instrument_type_unknown': instr_unknown,
                         '_ibkr_fii_type':          fii_type,
-                    })
+                        '_ibkr_code':              code_raw,
+                    }
+                    if is_short_open:
+                        op_dict['_es_corto_apertura'] = True
+                        op_dict['_corto_motivo'] = (
+                            f"IBKR marcó la venta de {abs(quantity)} {symbol} "
+                            f"({nombre_canon[:40]}) el {fecha} con Code='{code_raw}' "
+                            f"(Opening). Combinado con cantidad negativa = apertura "
+                            f"de venta corta. El motor FIFO valida con inventario."
+                        )
+                    if is_short_cover:
+                        op_dict['_es_corto_cobertura'] = True
+                        if is_buy_in:
+                            op_dict['_buy_in_forzoso'] = True
+                            op_dict['_corto_motivo'] = (
+                                f"IBKR ejecutó AUTOMATIC BUY-IN sobre {quantity} {symbol} "
+                                f"({nombre_canon[:40]}) el {fecha} con Code='{code_raw}'. "
+                                f"Cobertura FORZOSA por el broker de una posición corta "
+                                f"que quedó sin garantía o sin stock prestable. G/P se "
+                                f"calcula igual que una cobertura normal (precio apertura "
+                                f"− precio buy-in)."
+                            )
+                        else:
+                            op_dict['_corto_motivo'] = (
+                                f"IBKR marcó la compra de {quantity} {symbol} "
+                                f"({nombre_canon[:40]}) el {fecha} con Code='{code_raw}' "
+                                f"(Closing). Combinado con cantidad positiva = cobertura "
+                                f"de una posición corta abierta previamente."
+                            )
+                    operaciones.append(op_dict)
                 except (ValueError, IndexError, KeyError):
                     descartadas['otros'] += 1
 
@@ -3255,7 +3454,7 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
 #   TRADING / SELL                → venta (T)
 #   DELIVERY / MIGRATION          → cambio custodio interno TR (sin alteración)
 #   DELIVERY / FREE_RECEIPT       → staking rewards (CRYPTO) → RCM staking
-#                                    Art. 25.2 LIRPF + DGT V0975-22
+#                                    Art. 25.2 LIRPF + DGT V1766-22
 #                                    [parse_tr_staking]
 #
 # ISIN — convención TR:
@@ -3670,9 +3869,20 @@ def parse_tr_staking(filepath):
     Parsea recepciones gratuitas de cripto (staking rewards) de Trade Republic
     (DELIVERY/FREE_RECEIPT, asset_class=CRYPTO).
 
-    Doctrina fiscal: DGT V0975-22 → los rendimientos de staking se consideran
-    rendimientos del capital mobiliario (Art. 25.2 LIRPF), valorados al precio
-    de mercado en EUR en el momento de la recepción.
+    Doctrina fiscal — DGT V1766-22 (26-7-2022): los rendimientos del staking se
+    califican como rendimientos del capital mobiliario por la cesión a terceros
+    de capitales propios SATISFECHO EN ESPECIE (Art. 25.2 LIRPF). Valoración:
+    precio de mercado en EUR en el momento de cada recepción (Art. 43.1 LIRPF
+    para operaciones en especie).
+
+    Casilla RentaWEB 2025: 0027 (intereses de cuentas, depósitos y activos
+    financieros en general), por analogía con un rendimiento periódico por
+    cesión de capital. La V1766-22 NO fija casilla concreta, así que existe
+    alternativa doctrinal en 0031 (transmisión / amortización de otros activos
+    financieros) por ser el rendimiento satisfecho en especie. Implicación
+    práctica: ambas tributan en base del ahorro al mismo tipo → la cuota es
+    idéntica; la elección solo afecta a coherencia formal y trazabilidad ante
+    un requerimiento AEAT.
 
     Devuelve lista de dicts con tipo 'STAKING_REWARD'.
     """
@@ -4899,11 +5109,22 @@ def _ecb_cache_save_disk() -> None:
                 pass
 
 
-def fetch_ecb_rates(currencies: set, year: str) -> None:
+def fetch_ecb_rates(currencies: set, year: str,
+                    min_fecha: str | None = None) -> None:
     """
     Asegura que _ECB_CACHE contiene los tipos diarios del BCE para las divisas
     y el año solicitados. Primero intenta disco; solo acude a la red cuando
     faltan datos para ese par (año, divisa).
+
+    Parámetros:
+      currencies — set de códigos ISO de divisa (USD, GBP, …).
+      year       — año del ejercicio, como string ('2025').
+      min_fecha  — opcional, ISO 'YYYY-MM-DD'. Si se pasa y la última fecha
+                  cacheada para (año, divisa) es ANTERIOR a min_fecha, se
+                  fuerza una nueva descarga. Evita el bug de cache parcial:
+                  si la caché tiene hasta marzo pero el extracto llega hasta
+                  junio, sin min_fecha la función saltaría la red dejando
+                  meses recientes sin tipo BCE.
 
     Fuente oficial: ECB SDMX API (gratuita, sin API key).
     URL: https://data-api.ecb.europa.eu/service/data/EXR/D.{CUR}.EUR.SP00.A
@@ -4925,17 +5146,27 @@ def fetch_ecb_rates(currencies: set, year: str) -> None:
 
     _ecb_cache_load_disk()
 
-    for cur in to_fetch:
-        # ¿Ya hay entradas de esta (año, divisa) en caché? Si sí, saltar red.
+    def _cache_complete(currency: str) -> bool:
+        """¿La caché cubre (año, divisa) hasta min_fecha (si se pidió)?"""
         year_prefix = f"{year}-"
-        if any(k[1] == cur and k[0].startswith(year_prefix) for k in _ECB_CACHE):
+        fechas = [k[0] for k in _ECB_CACHE
+                  if k[1] == currency and k[0].startswith(year_prefix)]
+        if not fechas:
+            return False
+        if min_fecha is None:
+            return True
+        # Hay datos; comprobar que la última fecha cacheada cubre min_fecha.
+        return max(fechas) >= min_fecha
+
+    for cur in to_fetch:
+        if _cache_complete(cur):
             continue
 
         # Antes de tirar de red, releemos el disco: otro proceso del servidor
         # web puede haber descargado justo este par (año, divisa) mientras el
         # hilo actual seguía otra ruta. Evita descargas duplicadas.
         _ecb_cache_refresh_from_disk()
-        if any(k[1] == cur and k[0].startswith(year_prefix) for k in _ECB_CACHE):
+        if _cache_complete(cur):
             continue
 
         url = (f"https://data-api.ecb.europa.eu/service/data/EXR/"
@@ -6424,10 +6655,17 @@ def buscar_primas_anios_anteriores(orphan_info, base_dir, ejercicio,
 def parse_ibkr_opciones(filepath):
     """
     Parsea la sección 'Trades' con Asset Category = Options del Activity Statement IBKR.
-    Retorna lista de dicts con los mismos campos que parse_opciones_degiro.
+    Retorna tupla (opciones, descartadas) — alineado con parse_ibkr,
+    parse_degiro, parse_tr. `descartadas` es un dict con detalle de filas
+    no incorporadas (útil en uso embebido/backend donde print() se pierde):
+        descartadas = {
+            'sin_fx': [{'symbol', 'currency', 'fecha'} ...],
+        }
+    El CLI sigue emitiendo el aviso por stdout además de poblar el dict.
     """
+    descartadas: dict = {'sin_fx': []}
     if not os.path.exists(filepath):
-        return []
+        return [], descartadas
 
     opciones      = []
     trades_header = None
@@ -6477,6 +6715,11 @@ def parse_ibkr_opciones(filepath):
                                     if date_str else '')
                         rate = _ibkr_eur_per_unit(date_iso, currency)
                         if rate is None:
+                            descartadas['sin_fx'].append({
+                                'symbol': symbol,
+                                'currency': currency,
+                                'fecha': date_iso,
+                            })
                             print(f"  [AVISO IBKR opc] {symbol} en {currency} "
                                   f"({date_iso}) — sin tipo BCE, descartada")
                             continue
@@ -6535,7 +6778,264 @@ def parse_ibkr_opciones(filepath):
                 except (ValueError, IndexError, KeyError):
                     pass
 
-    return opciones
+    return opciones, descartadas
+
+
+def parse_ibkr_futures(filepath):
+    """Parsea la sección 'Trades' con Asset Category = Futures del Activity
+    Statement de IBKR. Devuelve lista de trades con su Realized P/L ya
+    calculado por IBKR (incluye multiplier y conversión).
+
+    Doctrina aplicable: Manual práctico AEAT cap. 11, sección 14
+    (Operaciones realizadas en los mercados de futuros y opciones).
+    Las G/P de futuros especulativos van a la casilla 1626 con clave 4
+    (Otros elementos patrimoniales no afectos a actividades económicas)
+    de la base imponible del ahorro (Art. 33 LIRPF). Imputación al
+    ejercicio en que se liquida la posición o se extingue el contrato
+    (no día a día por MTM).
+
+    El Realized P/L que IBKR expone en la sección Trades para el trade
+    de CIERRE de cada contrato (Code='C') consolida apertura + cierre
+    incluyendo el multiplier del contrato (ES=50, MES=5, NQ=20, etc.)
+    y la conversión a la moneda base de la cuenta. Confiamos en él.
+
+    Diferencia operativa clave vs opciones:
+      - Opciones: el motor empareja apertura+cierre manualmente porque
+        necesitamos distinguir cierre en mercado (→1626) vs ejercicio
+        con entrega (→prima al subyacente). El Realized P/L de IBKR
+        para opciones existe pero no lo usamos por esa razón.
+      - Futuros: NO hay ejercicio con entrega típico para retail (los
+        contratos se cierran en mercado o se compensan al rollover).
+        Usar el Realized P/L de IBKR directamente es correcto y
+        más simple.
+
+    Cross-año automático: si el contrato se abrió en el año N-1 y se
+    cierra en el año N, IBKR ya consolida el Realized P/L en el
+    statement del año N (año del cierre). El motor lo lee y lo imputa
+    al año del cierre, alineado con la doctrina AEAT.
+
+    Retorna tupla (futures, descartadas) — alineado con parse_ibkr,
+    parse_degiro, parse_tr. Cada elemento de `futures` es un dict con
+    los campos:
+        fecha (date del trade de cierre)
+        symbol (ticker IBKR, ej. 'ESH26', 'MES Z25')
+        descripcion (nombre completo del contrato)
+        multiplier (si está disponible en FII, decimal o None)
+        cantidad (número de contratos cerrados, valor absoluto)
+        accion ('compra' o 'venta' — dirección del trade de cierre)
+        realized_pl_eur (Decimal, ya en EUR y con multiplier aplicado)
+        gastos_eur (comisión + tasas, Decimal en EUR)
+        currency_origen (moneda original del contrato, p.ej. 'USD')
+        code (string con tokens del campo Code de IBKR)
+        broker ('IBKR')
+        instrument_type ('FUTURE')
+
+    `descartadas` es un dict con detalle de líneas no incorporadas
+    (útil en uso embebido/backend donde print() se perdería):
+        descartadas = {
+            'sin_fx': [{'symbol', 'currency', 'fecha'} ...],
+        }
+    """
+    descartadas: dict = {'sin_fx': []}
+    if not os.path.exists(filepath):
+        return [], descartadas
+
+    futures      = []
+    trades_header = None
+
+    # Mapeo Symbol → {multiplier, description} desde FII (informativo).
+    fii_map: dict = {}
+    fii_header = None
+
+    with open(filepath, encoding='utf-8') as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or len(row) < 5:
+                continue
+
+            # ── Financial Instrument Information (multiplier + description) ──
+            if row[0] == 'Financial Instrument Information' and row[1] == 'Header':
+                fii_header = row
+                continue
+            if (row[0] == 'Financial Instrument Information'
+                    and row[1] == 'Data' and fii_header):
+                h = fii_header
+                def col_f(name):
+                    return row[h.index(name)] if name in h else ''
+                if 'Futures' not in col_f('Asset Category'):
+                    continue
+                sym = col_f('Symbol').strip()
+                if not sym:
+                    continue
+                try:
+                    mult_raw = col_f('Multiplier')
+                    mult = Decimal(mult_raw.replace(',', '')) if mult_raw else None
+                except (InvalidOperation, ValueError):
+                    mult = None
+                fii_map[sym] = {
+                    'multiplier': mult,
+                    'description': col_f('Description').strip(),
+                }
+                continue
+
+            # ── Trades section ───────────────────────────────────────────
+            if row[0] == 'Trades' and row[1] == 'Header':
+                trades_header = row
+                continue
+            if row[0] == 'Trades' and row[1] == 'Data' and trades_header:
+                h = trades_header
+                def col_t(name):
+                    return row[h.index(name)].strip() if name in h else ''
+                try:
+                    asset_cat = col_t('Asset Category')
+                    # SOLO Futures puros — opciones sobre futuros van por
+                    # parse_ibkr_opciones (que matchea 'Option' in asset_cat
+                    # incluyendo 'Futures Options').
+                    if asset_cat != 'Futures':
+                        continue
+
+                    symbol   = col_t('Symbol')
+                    date_str = col_t('Date/Time')
+                    qty_str  = col_t('Quantity')
+                    proceeds = col_t('Proceeds')
+                    comm_fee = col_t('Comm/Fee')
+                    realized = col_t('Realized P/L')
+                    currency = col_t('Currency')
+
+                    if not qty_str or qty_str in ('Quantity', 'Total'):
+                        continue
+
+                    quantity     = Decimal(qty_str.replace(',', ''))
+                    realized_pl  = Decimal(realized.replace(',', '') or '0')
+                    gastos_local = abs(Decimal(comm_fee.replace(',', '') or '0'))
+
+                    fecha = parse_date(date_str)
+                    if not fecha:
+                        continue
+
+                    # Conversión a EUR. Si la cuenta IBKR ya está en EUR,
+                    # realized_pl y gastos_local YA vienen en EUR (es la
+                    # base currency de la cuenta). Si no, IBKR ya hizo la
+                    # conversión a la base de la cuenta (no es necesario
+                    # FX adicional). En cualquier caso, aplicamos BCE
+                    # cuando currency != 'EUR' (principio del tipo de
+                    # cambio oficial publicado por el BCE).
+                    if currency and currency != 'EUR':
+                        date_iso = (date_str.split(',')[0].strip()
+                                    if date_str else '')
+                        rate = _ibkr_eur_per_unit(date_iso, currency)
+                        if rate is None:
+                            descartadas['sin_fx'].append({
+                                'symbol': symbol,
+                                'currency': currency,
+                                'fecha': date_iso,
+                            })
+                            print(f"  [AVISO IBKR fut] {symbol} en "
+                                  f"{currency} ({date_iso}) — sin tipo BCE, "
+                                  f"descartado")
+                            continue
+                        realized_pl = (realized_pl * rate).quantize(
+                            Decimal('0.01'), ROUND_HALF_UP)
+                        gastos_local = (gastos_local * rate).quantize(
+                            Decimal('0.01'), ROUND_HALF_UP)
+
+                    # Solo el trade de cierre tiene Realized P/L != 0.
+                    # Las aperturas tienen Realized P/L = 0 (no se ha
+                    # cerrado nada). Para evitar duplicar el cómputo, sólo
+                    # registramos las líneas con Realized P/L ≠ 0.
+                    if realized_pl == 0:
+                        continue
+
+                    code_str = col_t('Code') if 'Code' in h else ''
+                    accion   = 'venta' if quantity < 0 else 'compra'
+
+                    fii = fii_map.get(symbol, {})
+                    futures.append({
+                        'fecha':              fecha,
+                        'symbol':             symbol[:40],
+                        'descripcion':        fii.get('description', symbol)[:60],
+                        'multiplier':         fii.get('multiplier'),
+                        'cantidad':           abs(quantity),
+                        'accion':             accion,
+                        'realized_pl_eur':    realized_pl,
+                        'gastos_eur':         gastos_local,
+                        'currency_origen':    currency,
+                        'code':               code_str,
+                        'broker':             'IBKR',
+                        'instrument_type':    'FUTURE',
+                    })
+                except (ValueError, IndexError, KeyError, InvalidOperation):
+                    pass
+
+    return futures, descartadas
+
+
+def calcular_resumen_futuros(futuros):
+    """Agrega los cierres de futuros devueltos por parse_ibkr_futures por
+    Symbol (= contrato) y devuelve (por_contrato, totales).
+
+    Cada cierre ya trae el Realized P/L calculado por IBKR (que incluye el
+    multiplier del contrato y la conversión a la base currency). Esta
+    función sólo agrupa y suma.
+
+    Doctrina: Manual práctico AEAT cap. 11 §14. Los futuros especulativos
+    se imputan al ejercicio en que se liquida la posición o se extingue
+    el contrato → casilla 1626 con clave 4 (Otros elementos patrimoniales)
+    de la base imponible del ahorro.
+
+    Retorna:
+      por_contrato: lista de dicts con:
+        symbol, descripcion, multiplier, n_cierres, currency_origen,
+        realized_pl_eur (suma), gastos_eur (suma), pl_neto_eur (rpl − gastos)
+      totales: dict con:
+        n_contratos_distintos, n_cierres_total,
+        realized_pl_total_eur, gastos_total_eur, pl_neto_eur
+    """
+    by_symbol = defaultdict(lambda: {
+        'symbol': '',
+        'descripcion': '',
+        'multiplier': None,
+        'n_cierres': 0,
+        'currency_origen': '',
+        'realized_pl_eur': Decimal('0'),
+        'gastos_eur': Decimal('0'),
+        'fechas': [],
+    })
+
+    for f in futuros:
+        sym = f['symbol']
+        d = by_symbol[sym]
+        d['symbol'] = sym
+        if not d['descripcion'] and f.get('descripcion'):
+            d['descripcion'] = f['descripcion']
+        if d['multiplier'] is None and f.get('multiplier') is not None:
+            d['multiplier'] = f['multiplier']
+        if not d['currency_origen']:
+            d['currency_origen'] = f.get('currency_origen', '')
+        d['n_cierres']       += 1
+        d['realized_pl_eur'] += f.get('realized_pl_eur', Decimal('0'))
+        d['gastos_eur']      += f.get('gastos_eur', Decimal('0'))
+        d['fechas'].append(f['fecha'])
+
+    # Lista ordenada por |pl_neto| descendente (más relevantes arriba).
+    por_contrato = []
+    for sym, d in by_symbol.items():
+        pl_neto = d['realized_pl_eur'] - d['gastos_eur']
+        d['pl_neto_eur'] = pl_neto
+        por_contrato.append(d)
+    por_contrato.sort(key=lambda x: abs(x['pl_neto_eur']), reverse=True)
+
+    totales = {
+        'n_contratos_distintos':  len(by_symbol),
+        'n_cierres_total':        sum(d['n_cierres'] for d in por_contrato),
+        'realized_pl_total_eur':  sum((d['realized_pl_eur'] for d in por_contrato),
+                                       Decimal('0')),
+        'gastos_total_eur':       sum((d['gastos_eur'] for d in por_contrato),
+                                       Decimal('0')),
+        'pl_neto_eur':            sum((d['pl_neto_eur'] for d in por_contrato),
+                                       Decimal('0')),
+    }
+    return por_contrato, totales
 
 
 def calcular_resumen_opciones(opciones):
@@ -7393,6 +7893,7 @@ def main():
     todos_corp   = []   # para el informe
     todos_divs   = []   # para informe dividendos
     todas_opts   = []   # para informe opciones
+    todos_futuros = []   # para informe futuros IBKR (parse_ibkr_futures)
     degiro_raw_rows = []  # filas crudas para parser de opciones
     todos_corp_posibles_liberadas = []  # candidatos a acciones liberadas scrip (DeGiro)
     todas_no_soportadas = []  # categoría no soportada (cripto IBKR, derivados DeGiro/IBKR, bonds, etc.)
@@ -7496,15 +7997,28 @@ def main():
             print(f"    ⚠️  No soportadas (IBKR)   : {n_nosop_ib}  → declarar manualmente. "
                   f"Categorías: {', '.join(cats_set)}")
         ibkr_divs  = parse_ibkr_dividendos(IBKR_FILE)
-        ibkr_opts  = parse_ibkr_opciones(IBKR_FILE)
+        ibkr_opts, ibkr_opts_desc  = parse_ibkr_opciones(IBKR_FILE)
+        ibkr_futs, ibkr_futs_desc  = parse_ibkr_futures(IBKR_FILE)
         ibkr_fx_pl = parse_ibkr_fx_pl(IBKR_FILE)
         ibkr_interest = parse_ibkr_interest(IBKR_FILE)
         todos_divs.extend(ibkr_divs)
         todas_opts.extend(ibkr_opts)
+        todos_futuros.extend(ibkr_futs)
         if ibkr_divs:
             print(f"    Dividendos/retenciones   : {len(ibkr_divs)}")
         if ibkr_opts:
             print(f"    Opciones                 : {len(ibkr_opts)}")
+        if ibkr_futs:
+            print(f"    Futuros (cierres)        : {len(ibkr_futs)}")
+        # Descartes estructurados (uso embebido en backend): si aparecen
+        # filas sin FX BCE, los printeamos como resumen — además del aviso
+        # individual ya emitido al detectarse.
+        if ibkr_opts_desc.get('sin_fx'):
+            print(f"    ⚠️  Opciones descartadas sin FX: "
+                  f"{len(ibkr_opts_desc['sin_fx'])}")
+        if ibkr_futs_desc.get('sin_fx'):
+            print(f"    ⚠️  Futuros descartados sin FX: "
+                  f"{len(ibkr_futs_desc['sin_fx'])}")
         if ibkr_fx_pl['fx'] or ibkr_fx_pl['tbills']:
             print(f"    FX P&L (divisas)         : {len(ibkr_fx_pl['fx'])}")
             print(f"    Treasury Bills           : {len(ibkr_fx_pl['tbills'])}")
@@ -7673,7 +8187,7 @@ def main():
                     'retencion_es_eur': it.get('retencion_es_eur', Decimal('0')),
                 })
 
-        # Staking rewards (CRYPTO) — RCM Art. 25.2 LIRPF, DGT V0975-22
+        # Staking rewards (CRYPTO) — RCM Art. 25.2 LIRPF, DGT V1766-22 (26-7-2022)
         # parse_tr_staking también devuelve TODOS los años; filtrar por ejercicio.
         tr_staking_raw = parse_tr_staking(TR_FILE)
         tr_staking = [s for s in tr_staking_raw
@@ -7682,8 +8196,10 @@ def main():
             bruto_s = sum(s['importe_eur'] for s in tr_staking)
             assets  = sorted({s['asset'] for s in tr_staking})
             print(f"    Staking rewards (CRYPTO) : {len(tr_staking)} eventos  "
-                  f"valor {fmt_es(bruto_s)} EUR → casilla 0029 RCM staking")
-            print(f"       · Doctrina: DGT V0975-22 — RCM valorado en EUR al momento de recepción")
+                  f"valor {fmt_es(bruto_s)} EUR → casilla 0027 RCM staking")
+            print(f"       · Doctrina: DGT V1766-22 — RCM Art. 25.2 LIRPF, valorado en")
+            print(f"         EUR al momento de cada recepción (Art. 43.1 LIRPF, en especie).")
+            print(f"       · Alternativa doctrinal: casilla 0031 (cuota idéntica en base ahorro).")
             print(f"       · Activos: {', '.join(assets)}")
 
     # ── Dividendos DeGiro (extracto de cuenta) ─────────────────────────────
@@ -8258,6 +8774,18 @@ def main():
         key = (fecha, tipo_trade, sub)
         ejercicio_lookup.setdefault(key, info)
 
+    # Futuros IBKR: resumen agrupado por symbol — alimenta PDF/Excel.
+    if todos_futuros:
+        futuros_por_contrato, futuros_totales = calcular_resumen_futuros(todos_futuros)
+        print(f"\n  Futuros IBKR procesados: "
+              f"{futuros_totales['n_contratos_distintos']} contrato(s), "
+              f"{futuros_totales['n_cierres_total']} cierre(s), "
+              f"P&L neto {fmt_es(futuros_totales['pl_neto_eur'])} EUR → "
+              f"casilla 1626 c.4")
+    else:
+        futuros_por_contrato = None
+        futuros_totales = None
+
     if todas_opts:
         opts_por_contrato_pre, opts_totales_pre = calcular_resumen_opciones(todas_opts)
         for _d in opts_totales_pre['_ejercidas']:
@@ -8775,13 +9303,57 @@ def main():
                 paths_por_year[year] = p
         paths_anteriores = sorted(paths_por_year.values())
 
+        # ── Sidecar shorts cross-año ──────────────────────────────────────
+        # Las ventas en corto que quedan vivas al cierre de un ejercicio
+        # NO se reflejan en los XLSX maestros (los XLSX históricos no
+        # persisten los flags `_es_corto_apertura`). Se serializan en
+        # `shorts_pendientes_<año>.json` para que el ejercicio siguiente
+        # las pueda restaurar y emparejar con su cobertura.
+        from motor_fiscal import load_shorts_sidecar, save_shorts_sidecar
+        _shorts_sidecar_prev = os.path.join(
+            BASE_DIR, f"shorts_pendientes_{ej_int - 1}.json"
+        )
+        _shorts_sidecar_curr = os.path.join(
+            BASE_DIR, f"shorts_pendientes_{ej_int}.json"
+        )
+        shorts_iniciales = load_shorts_sidecar(_shorts_sidecar_prev)
+        if shorts_iniciales:
+            print(f"\n  📂 {len(shorts_iniciales)} short(s) heredados de "
+                  f"{ej_int - 1} (sidecar "
+                  f"{os.path.basename(_shorts_sidecar_prev)})")
+
         # return_ops=True → recuperamos también la lista de todas las ops
         # (actuales + históricas) con `_lote_id` anotado en cada compra. Así
         # el generador del XLSX puede vincular cada fila de G_P_por_valor con
         # la fila concreta de la hoja Operaciones mediante fórmulas Excel.
+        # persistir_shorts_al_cierre=True: shorts no cubiertos al cierre
+        # quedan vivos y se exponen en results.shorts_pendientes para
+        # serializarlos al sidecar (handoff al ejercicio siguiente).
         fifo_results, all_ops_with_ids = calcular_fifo_from_ops(
-            ops_motor, paths_anteriores, return_ops=True
+            ops_motor, paths_anteriores, return_ops=True,
+            shorts_iniciales=shorts_iniciales,
+            persistir_shorts_al_cierre=True,
         )
+
+        # Escribir o limpiar sidecar del año actual.
+        _shorts_pend_actual = getattr(fifo_results, 'shorts_pendientes', []) or []
+        if _shorts_pend_actual:
+            save_shorts_sidecar(_shorts_sidecar_curr, ej_int, _shorts_pend_actual)
+            print(f"  💾 {len(_shorts_pend_actual)} short(s) sin cubrir al "
+                  f"cierre de {ej_int} → "
+                  f"{os.path.basename(_shorts_sidecar_curr)}")
+            print(f"     Se restaurarán al procesar el ejercicio "
+                  f"{ej_int + 1}.")
+        elif os.path.exists(_shorts_sidecar_curr):
+            # Idempotencia: si reprocesamos el año y ahora todos los shorts
+            # están cubiertos, eliminar el sidecar para no dejar residuos
+            # que el año siguiente intentaría restaurar.
+            try:
+                os.remove(_shorts_sidecar_curr)
+                print(f"  🧹 Sidecar {os.path.basename(_shorts_sidecar_curr)} "
+                      f"eliminado (todos los shorts cubiertos en {ej_int}).")
+            except OSError:
+                pass
 
         # Propagar `_lote_id` a las ops enriquecidas: generar_irpf y motor
         # comparten la identidad de la op (mismo dict), así que basta con
@@ -8810,7 +9382,10 @@ def main():
             ],
             fx_pl=ibkr_fx_pl if (ibkr_fx_pl.get('fx') or ibkr_fx_pl.get('tbills')) else None,
             ibkr_interest=ibkr_interest if ibkr_interest else None,
+            tr_staking=tr_staking if tr_staking else None,
             gastos_plataforma=gastos_plataforma_dg if gastos_plataforma_dg else None,
+            futuros_por_contrato=futuros_por_contrato,
+            futuros_totales=futuros_totales,
         )
         # Sidecar JSON con eventos corporativos relevantes para el preflight UI.
         # Permite que el flujo de generación de PDF (que lee el XLSX maestro

@@ -355,7 +355,13 @@ export default function EstrategiaPage() {
         </div>
       )}
 
-      {regimen && <RegimenPanel estado={regimen} onGuardar={onGuardarRegimen} />}
+      {regimen && (
+        <RegimenPanel
+          estado={regimen}
+          onGuardar={onGuardarRegimen}
+          onAutoFirmada={setRegimen}
+        />
+      )}
 
       {/* Distribución */}
       <section>

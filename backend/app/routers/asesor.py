@@ -37,6 +37,10 @@ class EnviarIn(BaseModel):
     # True si la pregunta entró por VOZ → la IA responde de forma conversacional
     # (sin markdown, sin URLs, frases naturales para sintetizar a audio).
     por_voz: bool = False
+    # True si el usuario pulsó el toggle 🌐 del chat → fuerza `investigar` (web)
+    # aunque la heurística no haya disparado. Necesario para preguntas tipo
+    # "investiga X" o "qué herramientas tienes" que la heurística no cubre.
+    forzar_web: bool = False
 
 
 def _cartera(db: Session) -> models.Cartera:
@@ -62,7 +66,9 @@ def enviar(payload: EnviarIn, db: Session = Depends(get_db)) -> RespuestaOut:
     if not texto:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mensaje vacío")
     try:
-        m, acciones = svc.responder(db, _cartera(db).id, texto, por_voz=payload.por_voz)
+        m, acciones = svc.responder(db, _cartera(db).id, texto,
+                                    por_voz=payload.por_voz,
+                                    forzar_web=payload.forzar_web)
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Asesor IA: {e}")
     except NotImplementedError as e:

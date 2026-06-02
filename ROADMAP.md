@@ -273,13 +273,13 @@ Objetivo: pasar de tracker a "decidir mejor". Catálogo top 1.000 mantenido, edi
 
 Objetivo: el agente IA continuo con régimen macro, comandos profundos y los 9 filtros.
 
-### 3.1 Régimen macro 🔴 2w 🔵 (calibración MANUAL hecha; ingesta automática ⬜)
+### 3.1 Régimen macro 🔴 2w ✅ (manual + auto-clasificación híbrida firmable)
 
 - [x] **4 indicadores MANUALES** (ciclo, inflación/tipos, geopolítica, mercado) que fija el usuario — fiable, sin auto-fetch.
 - [x] **Clasificador VERDE/AMARILLO/ROJO** por mayoría (empate → el más cauto).
 - [x] **Calibración DCA**: régimen → tamaño de tramo + espaciado; integrado en la guía de compra (≈ N tramos por bloque según déficit). `RegimenPanel` en Estrategia.
 - [x] **Regla −14% S&P500**: auto-fetch del drawdown del S&P (vs máx. 52s) + VIX (yfinance, cacheado); escala el tramo si caída −10/−20% + ciclo no recesivo + VIX<28; bloquea si ciclo ROJA (bear market), VIX>35 o caída >20%. Ofrece el tramo escalado en la guía con la salvedad COYUNTURAL (no auto-clasifica).
-- [ ] Ingesta AUTOMÁTICA de los 4 indicadores subjetivos (auto-fetch) — pendiente.
+- [x] **Auto-clasificación híbrida** (`services/regimen_auto.py` + `routers/regimen.py` + `PropuestaRegimenCard`): los datos cuantificables (SP500 drawdown, VIX, Brent, WTI, curva 10y-3m) los aplica directamente sobre la tabla WG; la IA con **búsqueda web** (`investigar`) enriquece lo cualitativo (Fed dovish/hawkish, paro/PIB/probabilidad recesión, tensión geopolítica activa) ancla en los números provistos y devuelve señal+razón+fuentes por indicador. El job corre en segundo plano; la propuesta queda **firmable** (no toca el régimen vigente hasta que el usuario aprueba) en una sub-tarjeta del panel de Estrategia: comparativa ahora→propuesta por indicador, regenerable, descartable. `creditos.registrar_uso_ia('regimen_auto', 1)` por refresh.
 
 ### 3.2 Comandos profundos 🔴 3w 🔵 (/one-pager hecho; pestaña Análisis)
 
@@ -429,10 +429,9 @@ Lo siguiente, por valor:
 2. 🟠 **Importadores** Trading 212 / ING / MyInvestor (1.2) + integración Cuádrate (1.9, SSO + descuento).
 3. 🟠 **WebSocket** (1.7) para refresh tras tx — hoy es buen polling y memoización, pero el último 1% de UX vive ahí.
 4. 🟠 **Catálogo top-1000 mantenido** (2.1) — hoy es feed on-demand con caché.
-5. 🟠 **Régimen macro automático** (3.1) — ingesta auto de los 4 indicadores subjetivos; la regla −14% ya auto-fetchea.
-6. 🟠 **Refinar clasificador**: añadir beta + ROIC a los fundamentales para endurecer cortes Estable/Compounder (hoy los hace la IA por conocimiento).
-7. 🟠 **Push del repo** a GitHub (a tu mano) + Actions: hoy es repo local con commit base `2850de1` y ~12-15 archivos no commiteados de la última sesión.
-8. 🟠 **Beta cerrada** (1.10) — apertura a 100-300 usuarios de Cuádrate.
-9. 🟡 **3.5 Créditos** + **3.6 AI Act** — antes del SaaS.
-10. 🟡 **0.2 Validación legal** + **0.4 Entrevistas ICP** — antes de cobrar.
-11. 🟡 Decisión fundador: registrar `cima.app`, esquema mercantil, branding.
+5. 🟠 **Refinar clasificador**: añadir beta + ROIC a los fundamentales para endurecer cortes Estable/Compounder (hoy los hace la IA por conocimiento).
+6. 🟠 **Push del repo** a GitHub (a tu mano) + Actions: hoy es repo local con commit base `2850de1`.
+7. 🟠 **Beta cerrada** (1.10) — apertura a 100-300 usuarios de Cuádrate.
+8. 🟡 **3.5 Créditos** + **3.6 AI Act** — antes del SaaS.
+9. 🟡 **0.2 Validación legal** + **0.4 Entrevistas ICP** — antes de cobrar.
+10. 🟡 Decisión fundador: registrar `cima.app`, esquema mercantil, branding.

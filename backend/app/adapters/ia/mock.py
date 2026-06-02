@@ -60,7 +60,7 @@ class MockClasificador:
             '], "resumen": "Cartera de acumulación equilibrada hacia el crecimiento."}'
         )
 
-    def investigar(self, system: str, user: str) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:  # noqa: ARG002
         """PASO 0 canónico (offline): contexto + clasificación coyuntural."""
         return (
             '{"resumen": "Sin noticias estructurales recientes; ruido de mercado de corto plazo.",'

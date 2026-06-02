@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { fmtEUR } from '@/lib/api';
+import { PropuestaRegimenCard } from '@/components/PropuestaRegimenCard';
 import type { RegimenEstado, SenalMacro } from '@/lib/types';
 
 const INDICADORES: { k: keyof RegimenEstado['indicadores']; label: string }[] = [
@@ -23,9 +24,12 @@ const REGIMEN_BADGE: Record<RegimenEstado['regimen'], string> = {
   ROJO: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
 };
 
-export function RegimenPanel({ estado, onGuardar }: {
+export function RegimenPanel({ estado, onGuardar, onAutoFirmada }: {
   estado: RegimenEstado;
   onGuardar: (ind: RegimenEstado['indicadores']) => Promise<void>;
+  // Tras firmar la propuesta auto, el padre re-fetchea el régimen vigente. Si no
+  // se pasa, cae al `onGuardar` con los nuevos indicadores (efecto equivalente).
+  onAutoFirmada?: (e: RegimenEstado) => void;
 }) {
   const [guardando, setGuardando] = useState(false);
 
@@ -87,6 +91,13 @@ export function RegimenPanel({ estado, onGuardar }: {
         El modelo da el destino; el macro da el ritmo. El régimen calibra el tamaño y espaciado del
         DCA en la guía de compra de cada bloque.
       </p>
+      <PropuestaRegimenCard
+        vigente={estado}
+        onAplicar={(e) => {
+          if (onAutoFirmada) onAutoFirmada(e);
+          else void onGuardar(e.indicadores);
+        }}
+      />
     </div>
   );
 }

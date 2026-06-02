@@ -146,7 +146,7 @@ class _FakeIADual:
     def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
         self.completar_n += 1
         return "ok"
-    def investigar(self, system: str, user: str) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:
         self.investigar_n += 1
         return "ok con web"
 
@@ -162,3 +162,38 @@ def test_responder_enruta_a_investigar_si_la_pregunta_pide_actualidad(
     svc.responder(db, cartera.id, "por qué L'Oréal sube hoy un 5%")     # con web
     assert ia.completar_n == 1
     assert ia.investigar_n == 1
+
+
+def test_requiere_web_ampliada_cubre_busqueda_e_investiga() -> None:
+    from app.services.asesor import _requiere_web
+    # Peticiones explícitas que la heurística vieja no cazaba (caso real Angel).
+    assert _requiere_web("investiga Microsoft a fondo")
+    assert _requiere_web("búscame las últimas noticias de OWL")
+    assert _requiere_web("¿puedes buscar información sobre BAM?")
+    assert _requiere_web("dame datos en tiempo real de la cotización")
+
+
+def test_forzar_web_salta_la_heuristica(db: Session, cartera, monkeypatch) -> None:
+    """El toggle 🌐 del chat debe enrutar a `investigar` aunque la pregunta no
+    contenga ningún keyword (caso 'qué herramientas tienes')."""
+    _seed(db, cartera, monkeypatch)
+    ia = _FakeIADual()
+    monkeypatch.setattr(svc, "get_clasificador", lambda *a, **k: ia)
+
+    # Pregunta neutra que NO dispara la heurística:
+    svc.responder(db, cartera.id, "qué herramientas tienes a tu disposición")
+    assert ia.investigar_n == 0 and ia.completar_n == 1
+    # La misma pregunta con forzar_web=True debe ir a investigar.
+    svc.responder(db, cartera.id, "qué herramientas tienes a tu disposición",
+                  forzar_web=True)
+    assert ia.investigar_n == 1
+
+
+def test_system_prompt_sin_web_redirige_al_toggle() -> None:
+    """Cuando NO hay web, el system prompt instruye a redirigir al toggle 🌐,
+    no a decir 'no tengo acceso' (el bug original que vio Angel)."""
+    from app.adapters.ia.asesor import system_asesor
+    sin_web = system_asesor("owner", con_web=False)
+    assert "🌐" in sin_web and "vuelve a preguntármelo" in sin_web
+    # Cita explícita de la frase prohibida (en 2ª persona, dirigida al modelo):
+    assert "no tienes acceso a" in sin_web

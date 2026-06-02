@@ -915,10 +915,19 @@ def _opcion_dict_a_candidata(op: dict, broker_id: str) -> OpcionCandidata:
     accion = op["accion"]
     simbolo = op.get("simbolo") or op.get("subyacente") or "?"
     # external_id determinista: símbolo + fecha + acción + importe en céntimos.
+    # Si el parser propaga `order_id`/`TransactionID` (DEGIRO/IBKR), lo añadimos
+    # como sufijo para distinguir dos órdenes del mismo contrato/día/importe
+    # (caso real: rolling intra-día, lotes idénticos). NO se incluye en el
+    # core para preservar compatibilidad con opciones ya importadas con la
+    # versión vieja del parser — su external_id sigue siendo el mismo y el
+    # re-import las deduplica correctamente.
     ext_id = (
         f"opt-{broker_id[:6]}-{simbolo}-{fecha.isoformat()}-{accion}-"
         f"{int(importe * 100)}-{int(cantidad)}"
     )
+    order_id = op.get("order_id")
+    if order_id:
+        ext_id = f"{ext_id}-ord{order_id}"
     return OpcionCandidata(
         fecha=fecha,
         simbolo=simbolo,
@@ -987,6 +996,140 @@ def _es_isin_opcion(isin: str, nombre: str) -> bool:
     return bool(_re.search(r"\s[CP]\s?\d+[.,]?\d*\s+\d{2}[A-Z]{3}\d{2}", nombre or ""))
 
 
+# UUID v4 al estilo que emite DEGIRO en la columna ID Orden (lo replicamos
+# aquí en vez de importarlo del parser vendorizado: Cima no toca vendor/).
+import re as _re
+_RE_DEGIRO_OID = _re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', _re.I,
+)
+
+
+def _degiro_order_id(row: list[str]) -> str:
+    """Localiza el OrderID en cualquier celda de la fila (DEGIRO inserta
+    columnas vacías cuando la orden se ejecuta partida en varios mercados)."""
+    for cell in reversed(row):
+        s = (cell or "").strip()
+        if s and _RE_DEGIRO_OID.match(s):
+            return s
+    return ""
+
+
+def _anotar_order_ids_degiro(transacciones_path: str | Path, raw_rows: list[list[str]],
+                              opciones: list[dict]) -> None:
+    """Anota cada opción con el OrderID del DEGIRO. El parser vendorizado lo usa
+    internamente para agrupar splits pero NO lo propaga al dict de salida; sin
+    él, dos órdenes del mismo contrato+día+cantidad+importe colapsan al mismo
+    `external_id` sintético (bug real: rolling de puts el mismo día).
+
+    Construimos un mapa (ISIN_opcion, fecha) → primer OrderID encontrado y lo
+    inyectamos. Las filas sin OrderID (~10%, p.ej. opciones expiradas con
+    precio 0) usan el fallback `noorder-fecha-isin`.
+
+    Vive en el adaptador (no en el parser vendorizado): Cima nunca toca
+    `vendor/cuadrate/`."""
+    mapa: dict[tuple[str, str], str] = {}
+    for row in raw_rows:
+        if len(row) < 16:
+            continue
+        oid = _degiro_order_id(row)
+        if not oid:
+            continue
+        isin_row = (row[3] or "").strip()
+        fecha_row = (row[0] or "").strip()
+        key = (isin_row, fecha_row)
+        mapa.setdefault(key, oid)
+    for o in opciones:
+        isin = (o.get("isin") or "").strip()
+        f = o.get("fecha")
+        # `fecha` en el dict ya es `date` parseado por el parser; recuperamos
+        # el formato original del CSV (dd-mm-YYYY) para el lookup.
+        fecha_str = f.strftime("%d-%m-%Y") if hasattr(f, "strftime") else ""
+        oid = mapa.get((isin, fecha_str))
+        o["order_id"] = oid or f"noorder-{fecha_str}-{isin}"
+
+
+def _anotar_order_ids_ibkr(csv_path: str | Path, opciones: list[dict]) -> None:
+    """Anota cada opción con el TransactionID/TradeID/IBOrderID del Activity
+    Statement de IBKR. Sin él, dos trades del mismo contrato/día/cantidad/
+    importe colapsan al mismo `external_id` (caso real Angel: vender el mismo
+    strike de OWL en días distintos con vencimientos distintos cuando además
+    la prima coincide al céntimo).
+
+    Estrategia: segunda pasada al CSV indexando trades de opciones por su
+    firma `(symbol, fecha, qty, proceeds)` → TransactionID. Es el mismo
+    matching que hace el parser de Cuádrate, en paralelo. Fallback al
+    `Date/Time` completo si IBKR no expone TransactionID/TradeID en este
+    statement (incluye hora:minuto:segundo, suficiente intra-día)."""
+    import csv as _csv
+
+    mapa: dict[tuple[str, str, str, str], str] = {}
+    try:
+        with open(str(csv_path), encoding="utf-8") as f:
+            reader = _csv.reader(f)
+            header: list[str] | None = None
+            for row in reader:
+                if not row or len(row) < 5:
+                    continue
+                if row[0] == "Trades" and row[1] == "Header":
+                    header = row
+                    continue
+                if row[0] == "Trades" and row[1] == "Data" and header:
+                    def col(name: str) -> str:
+                        return row[header.index(name)].strip() if name in header else ""
+                    if "Option" not in col("Asset Category"):
+                        continue
+                    qty = col("Quantity")
+                    if not qty or qty in ("Quantity", "Total"):
+                        continue
+                    sig = (col("Symbol"), col("Date/Time"), qty, col("Proceeds"))
+                    tid = (col("TransactionID") or col("TradeID")
+                           or col("IBOrderID") or col("Date/Time"))
+                    if tid:
+                        # Si el mismo trade aparece más de una vez (no debería),
+                        # nos quedamos con el primero — el resto se trata como
+                        # entradas distintas si llegasen a las candidatas.
+                        mapa.setdefault(sig, tid)
+    except Exception:
+        return
+
+    for o in opciones:
+        # El parser ya truncó symbol a 40 chars; aquí necesitamos la firma
+        # ORIGINAL para el lookup. Como no la tenemos, usamos los campos del
+        # parser (simbolo, cantidad, importe) y buscamos el ID con la firma
+        # de IBKR recompuesta a partir de ellos. Si no encuentra, deja sin
+        # order_id y el external_id se mantiene como legacy (compatibilidad).
+        cantidad = o.get("cantidad")
+        importe = o.get("importe_eur")
+        simbolo = (o.get("simbolo") or "")[:40]
+        # En IBKR, el `proceeds` en el CSV puede llevar signo; los importes en
+        # el dict del parser ya son absolutos. Buscamos por una firma flexible:
+        # primer match cuyo Symbol[:40] coincide y qty (absoluto) coincide.
+        oid: str | None = None
+        for (sym, dt, q, pr), tid in mapa.items():
+            if sym[:40] != simbolo:
+                continue
+            try:
+                if abs(_to_decimal(q)) != _to_decimal(cantidad):
+                    continue
+                if abs(_to_decimal(pr)) != _to_decimal(importe):
+                    continue
+            except Exception:
+                continue
+            oid = tid
+            break
+        if oid:
+            o["order_id"] = oid
+
+
+# Divisas IBKR comunes (las que Cuádrate sabe traer del BCE). Antes de invocar
+# al parser, le pedimos `fetch_ecb_rates(..., min_fecha=hoy)` para que refresque
+# si está stale parcial (caso real Angel: cache hasta 8-may, opciones del 28-may
+# descartadas por falta de FX). El parámetro `min_fecha` lo añadió el dev de
+# Cuádrate justo para este caso.
+_IBKR_DIVISAS_FX = {"USD", "GBP", "DKK", "HKD", "CHF", "PLN", "AED", "SEK",
+                    "NOK", "JPY", "CAD", "AUD", "CNY", "SGD", "KRW"}
+
+
 def parse_degiro_opciones(
     transacciones_path: str | Path,
     broker_id: str,
@@ -1020,6 +1163,7 @@ def parse_degiro_opciones(
         sub_map = _build_degiro_ejercicio_subyacente_map(cuenta_path)
 
     opciones = g.parse_opciones_degiro(raw_rows, ejercidas_isin)
+    _anotar_order_ids_degiro(transacciones_path, raw_rows, opciones)
     cands = []
     for o in opciones:
         c = _opcion_dict_a_candidata(o, broker_id)
@@ -1032,12 +1176,35 @@ def parse_degiro_opciones(
 def parse_ibkr_opciones(
     csv_path: str | Path,
     broker_id: str,
+    avisos: list[str] | None = None,
 ) -> list[OpcionCandidata]:
-    """Extrae operaciones de opciones del Activity Statement de IBKR."""
+    """Extrae operaciones de opciones del Activity Statement de IBKR.
+
+    Pre-refresca el cache BCE con `min_fecha=hoy` para que cubra hasta el día
+    en curso (sin esto, una caché stale parcial dejaba descartadas las opciones
+    de los últimos días por falta de tipo USD/EUR — caso real Angel 28-may).
+    Cuádrate devuelve `(opciones, descartadas)`: propagamos `descartadas['sin_fx']`
+    via `avisos` para que el import muestre exactamente qué se quedó fuera."""
+    from datetime import date as _date
+
     _ensure_cuadrate_importable()
     import generar_irpf as g  # type: ignore[import-not-found]
 
-    opciones = g.parse_ibkr_opciones(str(csv_path))
+    ano = _date.today().year
+    try:
+        g.fetch_ecb_rates(_IBKR_DIVISAS_FX, str(ano), min_fecha=_date.today().isoformat())
+    except Exception:
+        pass  # Sin red: degradar; el parser usará el fallback del CSV o descartará.
+
+    opciones, descartadas = g.parse_ibkr_opciones(str(csv_path))
+    if avisos is not None:
+        sin_fx = (descartadas or {}).get("sin_fx") or []
+        for d in sin_fx:
+            avisos.append(
+                f"[OPCIONES] Descartada por falta de tipo BCE: "
+                f"{d.get('symbol', '?')} en {d.get('currency', '?')} ({d.get('fecha', '?')})"
+            )
+    _anotar_order_ids_ibkr(csv_path, opciones)
     return [_opcion_dict_a_candidata(o, broker_id) for o in opciones]
 
 

@@ -1,5 +1,5 @@
 """Classifier de instrumentos: distingue ACCIONES de ETFs/IIC, derivados,
-cripto, bonos y SOCIMI españolas.
+cripto, bonos, SOCIMI españolas y ETCs físicos.
 
 Implicación fiscal:
   - Acciones (STOCK): casillas 0326-0340 (apartado F2 RentaWEB).
@@ -12,6 +12,12 @@ Implicación fiscal:
     específico de IIC/SOCIMI). Solo aplica a SOCIMI españolas; los REITs/SIIC
     extranjeros (Klepierre, Realty Income, Simon, OBDC) van como acciones
     cotizadas normales (no hay doctrina DGT que los reclasifique).
+  - ETCs físicos (Exchange Traded Commodities colateralizados): casilla 0031
+    como RCM por cesión a terceros (Art. 25.2 LIRPF) según DGT V0267-25.
+    No son IIC sino notas de deuda respaldadas por commodity físico.
+    Distinción crítica con ETFs de mineras: 'iShares Physical Gold' es ETC
+    y va a 0031; 'iShares Gold Producers' / RING es ETF UCITS sobre mineras
+    y va a 2224-2236.
 
 Prioridad de fuentes (de mayor a menor fiabilidad):
   1. IBKR FII Type — si el broker es IBKR y el statement trae el campo Type
@@ -33,12 +39,13 @@ import os
 import re
 from typing import Literal
 
-InstrumentType = Literal['STOCK', 'ETF', 'DERIVATIVE', 'CRYPTO', 'BOND', 'SOCIMI']
+InstrumentType = Literal['STOCK', 'ETF', 'DERIVATIVE', 'CRYPTO', 'BOND', 'SOCIMI', 'ETC', 'FUTURE']
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _ETF_LIST_PATH = os.path.join(_BASE_DIR, 'etf_isin_list.json')
 _BLACKLIST_PATH = os.path.join(_BASE_DIR, 'stock_blacklist.json')
 _SOCIMI_LIST_PATH = os.path.join(_BASE_DIR, 'socimi_es_isin_list.json')
+_ETC_LIST_PATH = os.path.join(_BASE_DIR, 'etc_isin_list.json')
 
 
 # ── Heurística de nombre ─────────────────────────────────────────────────────
@@ -142,11 +149,41 @@ _DERIVATIVE_EMISOR_PREFIXES = (
 _DERIVATIVE_ISIN_PREFIXES = ('DE000',)
 
 
+# ── Heurística de ETCs físicos (DGT V0267-25 → casilla 0031) ────────────────
+#
+# ETC = Exchange Traded Commodity. Es una nota de deuda colateralizada
+# físicamente por commodity (oro/plata/platino/paladio/cobre/petróleo).
+# Doctrina: RCM por cesión a terceros (Art. 25.2.b LIRPF + DGT V0267-25).
+#
+# Distinción crítica con:
+#   - ETF UCITS de mineras (RING, iShares Gold Producers): SÍ son IIC,
+#     no tienen 'PHYSICAL' en el nombre — quedan fuera de la heurística.
+#   - ETF UCITS de bonos vinculados a commodity: misma lógica, no encajan.
+#
+# Heurística conservadora: si no estamos seguros, dejar que caiga al
+# clasificador ETF/STOCK normal. Un falso negativo (ETC clasificado como
+# ETF) es menos grave que un falso positivo (ETF de mineras enviado a
+# casilla 0031 incorrecta).
+
+# Commodities físicas que se colateralizan en ETCs retail europeos.
+_ETC_COMMODITIES = (
+    'GOLD', 'SILVER', 'PLATINUM', 'PALLADIUM',
+    'COPPER',
+    # Bonus: variantes nombre. WisdomTree/iShares usan estos términos.
+)
+
+# Tokens que marcan ETC físico con alta probabilidad.
+#   - 'PHYSICAL' + commodity → ETC (iShares/Invesco/WisdomTree pattern)
+#   - sufijo ' ETC' en el nombre → explícito
+_ETC_NAME_REQUIRES_PHYSICAL = True   # requiere "PHYSICAL" + commodity en el nombre
+
+
 # ── Singletons cargados en lazy-load ─────────────────────────────────────────
 
 _etf_whitelist: dict | None = None
 _stock_blacklist: dict | None = None
 _socimi_whitelist: dict | None = None
+_etc_whitelist: dict | None = None
 
 
 def _load_etf_whitelist() -> dict:
@@ -185,6 +222,49 @@ def _load_socimi_whitelist() -> dict:
     return _socimi_whitelist
 
 
+def _load_etc_whitelist() -> dict:
+    global _etc_whitelist
+    if _etc_whitelist is None:
+        if os.path.exists(_ETC_LIST_PATH):
+            with open(_ETC_LIST_PATH, encoding='utf-8') as f:
+                data = json.load(f)
+            _etc_whitelist = data.get('etcs', {})
+        else:
+            _etc_whitelist = {}
+    return _etc_whitelist
+
+
+def _is_etc_by_name_heuristic(name_norm: str) -> tuple[bool, str]:
+    """Heurística por nombre: detecta ETC físico cuando combina "PHYSICAL" +
+    nombre de commodity, o cuando termina explícitamente en " ETC".
+
+    Conservadora: si no hay señal clara, devuelve (False, ''). El caller
+    cae al classifier ETF/STOCK normal. Esto evita falsos positivos como
+    iShares Gold Producers (ETF UCITS de mineras de oro, NO ETC).
+
+    Returns:
+        (is_etc, motivo_breve)
+    """
+    if not name_norm:
+        return (False, '')
+    name_up = name_norm.upper()
+
+    # Sufijo explícito "ETC" al final del nombre (separador espacio o final).
+    # Patrón típico: "iShares Physical Gold ETC", "Invesco Physical Gold ETC".
+    # Exigimos boundary para evitar matchear "FACTOR ETC..." (que no existe
+    # pero defensividad). El test '\bETC\b' al final es el más limpio.
+    if re.search(r'\bETC\b', name_up):
+        return (True, 'sufijo "ETC" en nombre')
+
+    # PHYSICAL + commodity colateralizable.
+    if 'PHYSICAL' in name_up:
+        for commodity in _ETC_COMMODITIES:
+            if commodity in name_up:
+                return (True, f'"PHYSICAL" + "{commodity}" en nombre')
+
+    return (False, '')
+
+
 # ── API pública ──────────────────────────────────────────────────────────────
 
 def classify_isin(
@@ -217,9 +297,28 @@ def classify_isin(
     # 1. IBKR FII Type — fuente más fiable. Si IBKR clasifica como COMMON
     # pero el ISIN está en la lista de SOCIMI españolas, prevalece SOCIMI
     # (porque IBKR no distingue SOCIMI de acción común — la AEAT sí).
+    # Análogamente, los ETCs son un caso ciego para IBKR: el Activity
+    # Statement clasifica los Exchange Traded Commodities como 'ETF' (a
+    # veces 'COMMON' según mercado). Aplicamos primer filtrado IBKR y
+    # solo después chequeamos whitelist/heurística ETC con la pista del
+    # FII Type para evitar falsos positivos.
     if broker_norm == 'IBKR' and ibkr_type:
         t = ibkr_type.strip().upper()
         if t == 'ETF':
+            # IBKR dice ETF → puede ser ETF UCITS o ETC (IBKR no diferencia).
+            # Primero whitelist ETC; si no está, heurística PHYSICAL+commodity.
+            etc_list = _load_etc_whitelist()
+            if isin in etc_list:
+                entry = etc_list[isin]
+                return ('ETC',
+                        f"IBKR Type='ETF' + ISIN en whitelist ETC "
+                        f"({entry.get('ticker', '?')})",
+                        False)
+            is_etc_h, motivo_h = _is_etc_by_name_heuristic(name_norm)
+            if is_etc_h:
+                return ('ETC',
+                        f"IBKR Type='ETF' + heurística ETC ({motivo_h})",
+                        True)  # marginal: usuario puede recalificar
             return ('ETF', f"IBKR FII Type='{t}' (autoritativo)", False)
         if t in ('CRYPTOCURRENCY', 'CRYPTO'):
             return ('CRYPTO', f"IBKR FII Type='{t}' (autoritativo)", False)
@@ -229,6 +328,18 @@ def classify_isin(
                 entry = socimi_list[isin]
                 return ('SOCIMI',
                         f"ISIN en whitelist SOCIMI ES ({entry.get('nombre', isin)} — {entry.get('mercado', '?')})",
+                        False)
+            # Defensivo: incluso si IBKR dice COMMON, si el ISIN está en
+            # whitelist ETC explícita confiamos en la whitelist (DGT V0267-25
+            # vincula a la AEAT por encima de la clasificación del broker).
+            # NO aplicamos heurística por nombre aquí — IBKR diciendo COMMON
+            # es señal fuerte de que NO es ETC físico.
+            etc_list = _load_etc_whitelist()
+            if isin in etc_list:
+                entry = etc_list[isin]
+                return ('ETC',
+                        f"IBKR Type='{t}' pero ISIN en whitelist ETC "
+                        f"({entry.get('ticker', '?')}) — prevalece V0267-25",
                         False)
             return ('STOCK', f"IBKR FII Type='{t}' (autoritativo)", False)
         # 'RIGHT', 'WARRANT', etc. — caen al fallback siguiente.
@@ -242,6 +353,26 @@ def classify_isin(
         return ('SOCIMI',
                 f"ISIN en whitelist SOCIMI ES ({entry.get('nombre', isin)} — {entry.get('mercado', '?')})",
                 False)
+
+    # 2.5. ETC físico — whitelist por ISIN (anclaje primario) + heurística
+    # por nombre como fallback. Va ANTES de ETF whitelist porque algunos
+    # ETCs tienen ISIN europeo (IE/JE/DE) que también encajaría en heurística
+    # ETF — la doctrina V0267-25 los califica como RCM 0031, no IIC 2224.
+    etc_list = _load_etc_whitelist()
+    if isin in etc_list:
+        entry = etc_list[isin]
+        return ('ETC',
+                f"ISIN en whitelist ETC ({entry.get('ticker', '?')} - {entry.get('nombre', isin)})",
+                False)
+    # Heurística por nombre — conservadora, solo dispara si hay señal clara
+    # ("PHYSICAL"+commodity o sufijo " ETC"). Si no, cae al classifier ETF/STOCK
+    # normal — preferimos falso negativo (ETC tratado como ETF) que falso
+    # positivo (ETF de mineras enviado a 0031 incorrecta).
+    is_etc_h, motivo_h = _is_etc_by_name_heuristic(name_norm)
+    if is_etc_h:
+        # Marcamos UNKNOWN=True para que el usuario pueda re-clasificar
+        # manualmente desde el Excel si la heurística se equivocó.
+        return ('ETC', f'Heurística ETC: {motivo_h}', True)
 
     # 3. ETF whitelist por ISIN — fuente curada.
     etf_list = _load_etf_whitelist()
@@ -327,6 +458,12 @@ def is_etf(isin: str, name: str = '', broker: str = '', ibkr_type: str | None = 
     return t == 'ETF'
 
 
+def is_etc(isin: str, name: str = '', broker: str = '', ibkr_type: str | None = None) -> bool:
+    """Helper: True si el instrumento es ETC físico (RCM 0031, V0267-25)."""
+    t, _, _ = classify_isin(isin, name, broker, ibkr_type)
+    return t == 'ETC'
+
+
 def get_socimi_market(isin: str) -> str | None:
     """Devuelve el mercado de cotización de una SOCIMI española ('Continuo' o
     'Growth') o None si el ISIN no está en la whitelist.
@@ -343,7 +480,8 @@ def get_socimi_market(isin: str) -> str | None:
 
 def reload_caches() -> None:
     """Fuerza recarga de las listas JSON desde disco. Útil en tests."""
-    global _etf_whitelist, _stock_blacklist, _socimi_whitelist
+    global _etf_whitelist, _stock_blacklist, _socimi_whitelist, _etc_whitelist
     _etf_whitelist = None
     _stock_blacklist = None
     _socimi_whitelist = None
+    _etc_whitelist = None

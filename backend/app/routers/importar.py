@@ -140,6 +140,128 @@ def _resolver_broker(
 
 
 @router.post(
+    "/preview",
+    summary="DIAGNÓSTICO: parsea el CSV y devuelve lo que el parser ve, SIN tocar BD",
+)
+async def preview_extracto(
+    broker_tipo: Annotated[str, Form(description="ej: 'tr', 'degiro', 'ibkr'")],
+    fichero: Annotated[UploadFile, File(description="CSV a inspeccionar")],
+    fichero_cuenta: Annotated[UploadFile | None, File(
+        description="(DEGIRO opcional) CSV de Cuenta")] = None,
+    filtro: Annotated[str | None, Form(description="Subcadena opcional para filtrar")] = None,
+) -> dict:
+    """Endpoint de depuración: ejecuta los parsers (transacciones + opciones) y
+    devuelve un volcado de lo que extrae, sin reconciliar ni persistir nada.
+    Devuelve avisos y tracebacks completos para depurar sin acceso a logs."""
+    import traceback
+    avisos: list[str] = []
+    cands_tx: list = []
+    cands_opt: list = []
+    err_tx: str | None = None
+    err_opt: str | None = None
+
+    try:
+        parser = cuadrate.parser_para(broker_tipo)
+        if parser is None:
+            return {"error": f"broker_tipo '{broker_tipo}' no soportado",
+                    "soportados": cuadrate.brokers_soportados()}
+
+        suffix = Path(fichero.filename or "extracto.csv").suffix or ".csv"
+        contenido = await fichero.read()
+        if not contenido:
+            return {"error": "Fichero vacío"}
+
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=True, prefix="cima_prev_"
+        ) as tmp:
+            tmp.write(contenido); tmp.flush()
+            cuenta_path: str | None = None
+            tmp_cuenta = None
+            if fichero_cuenta is not None and broker_tipo == "degiro":
+                tmp_cuenta = tempfile.NamedTemporaryFile(
+                    suffix=".csv", delete=True, prefix="cima_prev_cuenta_")
+                cuenta_path = tmp_cuenta.name
+                cnt = await fichero_cuenta.read()
+                if cnt:
+                    tmp_cuenta.write(cnt); tmp_cuenta.flush()
+
+            try:
+                if broker_tipo == "degiro":
+                    cands_tx = parser(tmp.name, broker_id="preview",
+                                      cuenta_path=cuenta_path, avisos=avisos)
+                elif broker_tipo == "ibkr":
+                    cands_tx = parser(tmp.name, broker_id="preview", avisos=avisos)
+                else:
+                    cands_tx = parser(tmp.name, broker_id="preview")
+            except Exception:
+                err_tx = traceback.format_exc()
+
+            try:
+                if broker_tipo == "degiro":
+                    cands_opt = cuadrate.parse_degiro_opciones(
+                        tmp.name, broker_id="preview", cuenta_path=cuenta_path)
+                elif broker_tipo == "ibkr":
+                    cands_opt = cuadrate.parse_ibkr_opciones(
+                        tmp.name, broker_id="preview")
+            except Exception:
+                err_opt = traceback.format_exc()
+
+            if tmp_cuenta is not None:
+                tmp_cuenta.close()
+    except Exception:
+        return {"error_global": traceback.format_exc()}
+
+    return {
+        "broker_tipo": broker_tipo,
+        "avisos_parser": avisos[:50],
+        "transacciones": _resumen_tx(cands_tx, filtro),
+        "opciones": _resumen_opt(cands_opt, filtro),
+        "error_transacciones": err_tx,
+        "error_opciones": err_opt,
+    }
+
+
+def _resumen_tx(cands: list, filtro: str | None) -> dict:
+    f = (filtro or "").upper().strip()
+    todas = [{
+        "fecha": str(getattr(c, "fecha", "")),
+        "tipo": getattr(c, "tipo", ""),
+        "isin": getattr(c, "isin", ""),
+        "nombre": getattr(c, "nombre", ""),
+        "cantidad": str(getattr(c, "cantidad", "")),
+        "precio_local": str(getattr(c, "precio_local", "")),
+        "importe_eur": str(getattr(c, "importe_eur", "")),
+        "external_id": getattr(c, "external_id", None),
+    } for c in cands]
+    if f:
+        todas = [t for t in todas if f in (t["isin"] + " " + t["nombre"]).upper()]
+    return {"total": len(cands), "mostradas": len(todas), "items": todas[:50]}
+
+
+def _resumen_opt(cands: list, filtro: str | None) -> dict:
+    f = (filtro or "").upper().strip()
+    todas = [{
+        "fecha": str(getattr(c, "fecha", "")),
+        "simbolo": getattr(c, "simbolo", ""),
+        "subyacente": getattr(c, "subyacente", ""),
+        "isin": getattr(c, "isin", ""),
+        "tipo_op": getattr(c, "tipo_op", ""),
+        "strike": getattr(c, "strike", ""),
+        "vencimiento": getattr(c, "vencimiento", ""),
+        "accion": getattr(c, "accion", ""),
+        "cantidad": str(getattr(c, "cantidad", "")),
+        "importe_eur": str(getattr(c, "importe_eur", "")),
+        "expirada": getattr(c, "expirada", False),
+        "ejercida": getattr(c, "ejercida", False),
+        "external_id": getattr(c, "external_id", None),
+    } for c in cands]
+    if f:
+        todas = [t for t in todas if f in (
+            t["simbolo"] + " " + t["subyacente"] + " " + t["isin"]).upper()]
+    return {"total": len(cands), "mostradas": len(todas), "items": todas[:50]}
+
+
+@router.post(
     "",
     response_model=ImportResultado,
     summary="Importar extracto(s) CSV de un broker",
@@ -252,12 +374,32 @@ async def importar_extracto(
                 )
             elif broker_tipo == "ibkr":
                 opciones_cands = cuadrate.parse_ibkr_opciones(
-                    tmp_main.name, broker_id=broker.id,
+                    tmp_main.name, broker_id=broker.id, avisos=avisos_parser,
                 )
             if opciones_cands:
                 r_opt = reconciliar_opciones(db, cartera.id, opciones_cands)
                 resultado.opciones_insertadas = r_opt.insertadas
                 resultado.opciones_deduplicadas = r_opt.deduplicadas
+                # Diagnóstico: si hay deduplicadas, listarlas para que el usuario
+                # vea CUÁLES (descubre si el dedup fue correcto o si está
+                # colapsando opciones legítimamente nuevas — caso típico:
+                # mismo simbolo+fecha+importe+cantidad por colisión del
+                # external_id sintético).
+                if r_opt.duplicadas_detalle:
+                    muestra = r_opt.duplicadas_detalle[:8]
+                    extra = (f" (+{len(r_opt.duplicadas_detalle) - 8} más)"
+                             if len(r_opt.duplicadas_detalle) > 8 else "")
+                    avisos_parser.append(
+                        f"[OPCIONES] {len(r_opt.duplicadas_detalle)} deduplicadas: "
+                        + " · ".join(muestra) + extra
+                    )
+            elif broker_tipo == "tr":
+                # TR todavía no tiene parser de opciones — si alguna vez el
+                # extracto trae alguna, se ignoraría en silencio. Aviso preventivo.
+                avisos_parser.append(
+                    "[OPCIONES] Trade Republic no tiene parser de opciones en Cima — "
+                    "si el extracto contiene alguna, no se importará. Reporta el caso si te ocurre."
+                )
         except Exception as e:
             avisos_parser.append(f"[OPCIONES] No se pudieron procesar: {e}")
 

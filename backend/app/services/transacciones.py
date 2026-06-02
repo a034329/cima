@@ -34,7 +34,8 @@ from app.services import fifo
 
 # Tolerancias para matching tolerante entre manual y extracto
 TOL_DIAS = 2                            # ±2 días naturales
-TOL_PRECIO_PCT = Decimal("0.005")       # ±0.5% precio
+TOL_PRECIO_PCT = Decimal("0.005")       # ±0.5% precio (secundario)
+TOL_IMPORTE_PCT = Decimal("0.02")       # ±2% importe_eur (firma fiscal real)
 TOL_CANTIDAD = Decimal("0.000001")      # cantidad ha de ser exacta (margen redondeo)
 DIAS_HUERFANA = 30                      # avisar si manual sin confirmar >30 días
 
@@ -109,35 +110,29 @@ def _matching_tolerante(
 
     Devuelve (es_match_exacto, lista_de_diferencias).
 
-    `es_match_exacto=True` significa que el match es lo suficientemente
-    cercano para promover la manual a confirmada sin pedir al usuario.
-
+    `es_match_exacto=True` → reconciliar sin preguntar (extracto reemplaza).
     `es_match_exacto=False` con diferencias → conflicto: pedir decisión.
+
+    Firma de match: **tipo + cantidad + fecha (±2d) + importe_eur (±2%)**.
+    El `importe_eur` es la verdad fiscal (lo que entra/sale de la cuenta tras FX);
+    el `precio_local` puede diferir por unidades del broker (caso real Angel: la
+    misma venta de Zegona con manual a 1834 GBX vs extracto a 21,17 GBP — son la
+    misma operación porque el importe_eur casa al 0,28%). Si el precio_local
+    diverge mucho pero el resto casa, lo dejamos como aviso informativo, no
+    rompe el match.
     """
     diferencias: list[str] = []
 
-    # Tipo: tiene que coincidir (BUY/SELL/DIVIDEND/...)
     if candidata.tipo != manual.tipo:
         diferencias.append(f"tipo difiere ({manual.tipo} vs {candidata.tipo})")
         return False, diferencias
 
-    # Cantidad: exacta (ya tolerada por TOL_CANTIDAD redondeo)
     if abs(candidata.cantidad - manual.cantidad) > TOL_CANTIDAD:
         diferencias.append(
             f"cantidad difiere ({manual.cantidad} vs {candidata.cantidad})"
         )
         return False, diferencias
 
-    # Precio: ±0.5%
-    if manual.precio_local > 0:
-        ratio = abs(candidata.precio_local - manual.precio_local) / manual.precio_local
-        if ratio > TOL_PRECIO_PCT:
-            diferencias.append(
-                f"precio difiere {ratio * 100:.2f}% "
-                f"({manual.precio_local} vs {candidata.precio_local})"
-            )
-
-    # Fecha: ±2 días
     delta_dias = abs((candidata.fecha - manual.fecha).days)
     if delta_dias > TOL_DIAS:
         diferencias.append(
@@ -145,16 +140,48 @@ def _matching_tolerante(
         )
         return False, diferencias
 
-    # Si llegamos aquí: misma posición, misma cantidad, misma fecha aproximada,
-    # tipo coincide. Si el precio cae dentro del 0.5% es match exacto.
-    es_match_exacto = not diferencias
+    # Importe EUR: la firma fiscal. Si casa, son la misma operación aunque el
+    # precio_local difiera por unidades del broker (GBX vs GBP, ADR ratio…).
+    if manual.importe_eur > 0:
+        ratio_eur = abs(candidata.importe_eur - manual.importe_eur) / manual.importe_eur
+        if ratio_eur > TOL_IMPORTE_PCT:
+            diferencias.append(
+                f"importe_eur difiere {ratio_eur * 100:.2f}% "
+                f"({manual.importe_eur} vs {candidata.importe_eur})"
+            )
+            return False, diferencias
+
+    # Precio local: chequeo informativo, no determina el match. Solo se reporta
+    # como diferencia si difiere mucho — útil para auditar unidades raras.
+    if manual.precio_local > 0:
+        ratio_px = abs(candidata.precio_local - manual.precio_local) / manual.precio_local
+        if ratio_px > TOL_PRECIO_PCT:
+            diferencias.append(
+                f"precio_local difiere {ratio_px * 100:.2f}% "
+                f"({manual.precio_local} vs {candidata.precio_local}) — "
+                f"posible diferencia de unidades (GBX/GBP, ADR, etc.)"
+            )
+
+    # Tipo + cantidad + fecha + importe_eur casaron → match exacto, aunque haya
+    # avisos informativos sobre precio_local.
+    es_match_exacto = all(
+        not d.startswith(("tipo ", "cantidad ", "fecha ", "importe_eur "))
+        for d in diferencias
+    )
     return es_match_exacto, diferencias
 
 
 def _candidatos_manual(
     db: Session, candidata: TxCandidata, cartera_id: str
 ) -> list[models.Transaccion]:
-    """Manuales pendientes que podrían casar: misma posición, ±2 días, sin external_id."""
+    """Manuales candidatas a reconciliarse con esta fila del extracto.
+
+    Doctrina: **toda operación manual es provisional hasta que un extracto la
+    confirme**. No basta con buscar `pendiente_confirmar`: las manuales que
+    se introdujeron con `confirmar_directo=True` también son candidatas
+    mientras `origen='manual'` y `external_id IS NULL` (= aún no las ha tocado
+    ningún extracto). Filtros: mismo ISIN, mismo tipo, ±2 días.
+    """
     fecha_min = candidata.fecha - timedelta(days=TOL_DIAS)
     fecha_max = candidata.fecha + timedelta(days=TOL_DIAS)
     return list(
@@ -163,11 +190,12 @@ def _candidatos_manual(
             .join(models.Posicion)
             .where(models.Posicion.cartera_id == cartera_id)
             .where(models.Posicion.isin == candidata.isin)
-            .where(models.Transaccion.estado == "pendiente_confirmar")
+            .where(models.Transaccion.origen == "manual")
+            .where(models.Transaccion.external_id.is_(None))
+            .where(models.Transaccion.estado.in_(("pendiente_confirmar", "confirmada")))
             .where(models.Transaccion.tipo == candidata.tipo)
             .where(models.Transaccion.fecha >= fecha_min)
             .where(models.Transaccion.fecha <= fecha_max)
-            .where(models.Transaccion.external_id.is_(None))
         ).scalars()
     )
 
@@ -292,19 +320,42 @@ def reconciliar_extracto(
                 conflictos_locales.append((m, diferencias))
 
         if match_exacto is not None:
-            # Promover manual a confirmada, heredar metadatos del extracto
+            # El extracto es la fuente de verdad: sobreescribimos los campos
+            # numéricos y de procedencia, manteniendo el `id` (los lots/FIFO
+            # ya referencian a este registro). Si el usuario introdujo la
+            # manual como `confirmada` (confirmar_directo=True), aquí se
+            # promueve a confirmada con origen del extracto y external_id real.
+            era_manual_confirmada = (
+                match_exacto.origen == "manual" and match_exacto.estado == "confirmada"
+            )
             match_exacto.estado = "confirmada"
             match_exacto.origen = f"extracto_{broker_tipo}"
             match_exacto.external_id = candidata.external_id
             match_exacto.broker_id = candidata.broker_id
+            match_exacto.fecha = candidata.fecha
+            match_exacto.cantidad = candidata.cantidad
+            match_exacto.precio_local = candidata.precio_local
+            match_exacto.divisa_local = candidata.divisa_local
+            match_exacto.importe_local = candidata.importe_local
+            match_exacto.fx_rate = candidata.fx_rate
+            match_exacto.importe_eur = candidata.importe_eur
             match_exacto.gastos_eur = candidata.gastos_eur
             match_exacto.tasas_externas_eur = candidata.tasas_externas_eur
             match_exacto.retencion_eur = candidata.retencion_eur
-            match_exacto.fx_rate = candidata.fx_rate
-            match_exacto.importe_eur = candidata.importe_eur
+            match_exacto.retencion_pais = candidata.retencion_pais
             db.flush()
             posiciones_tocadas.add(match_exacto.posicion_id)
             resultado.reconciliadas += 1
+            if era_manual_confirmada:
+                # Caso real (Angel, Zegona): el usuario registró la venta a mano
+                # con `confirmar_directo=True`; al llegar el extracto, antes
+                # quedaba huérfana y se insertaba otra fila duplicando. Ahora
+                # la reconciliamos in-place y avisamos para que el usuario sepa.
+                resultado.avisos.append(
+                    f"[RECONCILIADA] Manual confirmada del {match_exacto.fecha} "
+                    f"({candidata.isin} {candidata.tipo}) reemplazada por la fila "
+                    f"del extracto {broker_tipo} (misma operación)."
+                )
             continue
 
         if conflictos_locales:
@@ -340,22 +391,31 @@ def reconciliar_extracto(
         posiciones_tocadas.add(pos.id)
         resultado.insertadas += 1
 
-    # Manuales huérfanas (>DIAS_HUERFANA sin confirmar)
+    # Manuales huérfanas: cualquier manual sin contrapartida del extracto del
+    # mismo broker (origen='manual', external_id NULL) registrada hace más de
+    # `DIAS_HUERFANA` días que no se haya cazado en esta importación. Cubre
+    # tanto `pendiente_confirmar` como `confirmada` (`confirmar_directo=True`):
+    # ambas son provisionales hasta que el broker las refleje.
     limite = date.today() - timedelta(days=DIAS_HUERFANA)
     huerfanas = list(
         db.execute(
             select(models.Transaccion)
             .join(models.Posicion)
             .where(models.Posicion.cartera_id == cartera_id)
-            .where(models.Transaccion.estado == "pendiente_confirmar")
+            .where(models.Transaccion.origen == "manual")
+            .where(models.Transaccion.external_id.is_(None))
+            .where(models.Transaccion.estado.in_(("pendiente_confirmar", "confirmada")))
             .where(models.Transaccion.fecha <= limite)
         ).scalars()
     )
     for h in huerfanas:
         resultado.huerfanas_manuales += 1
+        estado_lbl = ("confirmada manualmente" if h.estado == "confirmada"
+                      else "pendiente de confirmar")
         resultado.avisos.append(
-            f"Manual huérfana id={h.id[:8]} ({h.fecha}): registrada hace >{DIAS_HUERFANA} "
-            f"días pero no aparece en el extracto. Verifica si fue cancelada."
+            f"Manual huérfana id={h.id[:8]} ({h.fecha}, {estado_lbl}): registrada "
+            f"hace >{DIAS_HUERFANA} días pero no aparece en el extracto. Verifica "
+            f"si fue cancelada o si necesitas un extracto del broker correcto."
         )
 
     # Rebuild FIFO por posición tocada — el orden cronológico vence al

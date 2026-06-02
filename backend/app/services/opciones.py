@@ -11,7 +11,7 @@ CSV no duplica.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Iterable
@@ -48,14 +48,41 @@ class OpcionCandidata:
 class ImportOpcionesResultado:
     insertadas: int = 0
     deduplicadas: int = 0
+    # Para diagnóstico: lista compacta de los duplicados detectados
+    # (`simbolo @ fecha`). Cuando el usuario espera ver opciones nuevas y el
+    # importer las cuenta como "duplicadas", esto le permite saber CUÁLES.
+    duplicadas_detalle: list[str] = field(default_factory=list)
 
 
-def _existe(db: Session, broker_id: str, external_id: str) -> bool:
+def _existe(db: Session, broker_id: str, external_id: str) -> models.Opcion | None:
     return db.execute(
         select(models.Opcion)
         .where(models.Opcion.broker_id == broker_id)
         .where(models.Opcion.external_id == external_id)
-    ).scalar_one_or_none() is not None
+    ).scalar_one_or_none()
+
+
+def _dedupe_o_upgrade(
+    db: Session, broker_id: str, external_id: str,
+) -> models.Opcion | None:
+    """Match exacto por external_id; si no, fallback al external_id LEGACY
+    (sin sufijo `-ord<order_id>`) para preservar dedupe de opciones importadas
+    antes del fix de propagación del order_id/TransactionID. Si casa por
+    legacy, ACTUALIZA el external_id al nuevo formato (upgrade transparente:
+    en sucesivos re-imports ya casará por el nuevo)."""
+    op = _existe(db, broker_id, external_id)
+    if op is not None:
+        return op
+    # Si el external_id no lleva sufijo `-ord...` no hay legacy alternativo.
+    if "-ord" not in external_id:
+        return None
+    legacy = external_id.rsplit("-ord", 1)[0]
+    op = _existe(db, broker_id, legacy)
+    if op is not None:
+        op.external_id = external_id
+        db.flush()
+        return op
+    return None
 
 
 def reconciliar_opciones(
@@ -63,11 +90,14 @@ def reconciliar_opciones(
     cartera_id: str,
     candidatas: Iterable[OpcionCandidata],
 ) -> ImportOpcionesResultado:
-    """Inserta opciones nuevas, deduplica por (broker_id, external_id)."""
+    """Inserta opciones nuevas, deduplica por (broker_id, external_id) con
+    fallback al external_id legacy (sin sufijo de order_id) para opciones
+    importadas antes del fix."""
     res = ImportOpcionesResultado()
     for c in candidatas:
-        if c.external_id and _existe(db, c.broker_id, c.external_id):
+        if c.external_id and _dedupe_o_upgrade(db, c.broker_id, c.external_id) is not None:
             res.deduplicadas += 1
+            res.duplicadas_detalle.append(f"{c.simbolo} @ {c.fecha.isoformat()}")
             continue
         db.add(models.Opcion(
             cartera_id=cartera_id,

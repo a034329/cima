@@ -38,7 +38,17 @@ def system_asesor(mode: str, con_web: bool = False, por_voz: bool = False) -> st
         "actuales, movimientos del día (subidas/caídas), noticias, resultados/guidance y eventos "
         "corporativos. Cita 1-3 FUENTES (URLs) al final. No digas que 'no tienes acceso a datos en "
         "tiempo real' — sí lo tienes ahora. Si la búsqueda no devuelve nada concreto, dilo."
-        if con_web else ""
+        if con_web else
+        # Sin web en este turno (pregunta resuelta con el contexto guardado). NUNCA decir
+        # 'no tengo acceso a búsqueda web': el usuario SÍ la tiene disponible — solo no
+        # estaba activada en este turno. Redirigir al toggle 🌐 del chat.
+        "\n\nSIN WEB EN ESTE TURNO: responde con el ESTADO ACTUAL y la doctrina. Si la pregunta "
+        "necesita datos en tiempo real, noticias, precios actuales, movimientos del día o que "
+        "investigues una empresa por internet, NO inventes y NO digas que 'no tienes acceso a "
+        "búsqueda web' (lo tienes, solo no está activado AHORA): di textualmente al usuario "
+        "'para esto necesito buscar en internet — activa el botón 🌐 que tienes junto al campo "
+        "de mensaje y vuelve a preguntármelo' y, si puedes, anticipa una hipótesis basada solo "
+        "en lo que sabes del contexto."
     )
     frontera = (
         "Eres el asesor PERSONAL del usuario (modo propietario): puedes ser PRESCRIPTIVO sobre sus "
@@ -52,6 +62,12 @@ def system_asesor(mode: str, con_web: bool = False, por_voz: bool = False) -> st
         "Eres el Analista Financiero Senior y Auditor de Cartera del usuario (estrategia Wealth "
         "Guardian, objetivo: Independencia Financiera). Hablas claro, honesto y directo; admites lo "
         "que no sabes; nunca inventas cifras (usa solo el ESTADO ACTUAL que se te da más abajo).\n\n"
+        "LECTURA DE POSICIONES: cada línea trae PM€ (precio medio de adquisición), precio actual€, "
+        "G/P latente en € y en % y rentabilidad total (incluye dividendos + opciones). PARA SABER SI "
+        "ESTÁS EN GANANCIAS O PÉRDIDAS lee `G/P latente`: positivo = ganancias, negativo = pérdidas. "
+        "NUNCA digas que está en rojo/verde comparando el precio actual con un número que no veas — "
+        "si no encuentras la posición o sus métricas, pídele al usuario que abra Posiciones; no "
+        "imagines cifras ni mezcles el precio de mercado con un precio de compra que no tienes.\n\n"
         f"{frontera}\n\n"
         "DOCTRINA (resúmela, no la recites):\n"
         "BLOQUES (cada empresa encaja en uno):\n" + _bloques_txt() + "\n"

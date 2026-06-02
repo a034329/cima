@@ -899,6 +899,28 @@ class MensajeAsesor(Base):
     )
 
 
+class PropuestaRegimen(Base):
+    """Última propuesta de auto-clasificación del régimen macro (4 indicadores
+    + razón + fuentes + datos objetivos). Se persiste sin tocar el régimen
+    vigente (`Cartera.regimen_macro_json`) hasta que el usuario la firme. Una
+    fila por cartera; upsert al regenerar."""
+
+    __tablename__ = "propuestas_regimen"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("cartera_id", name="uq_propuestas_regimen_cartera"),
+    )
+
+
 class SnapshotPrecio(Base):
     """Precio base por posición = la última vez que el usuario dio por 'visto' la
     vigilancia. La alerta es el cambio del precio actual frente a este baseline."""

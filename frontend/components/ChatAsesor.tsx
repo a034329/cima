@@ -34,6 +34,21 @@ export function ChatAsesor({ subtitulo = true }: { subtitulo?: boolean }) {
     finRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, pensando]);
 
+  // Toggle 🌐 "buscar en internet": fuerza el modo `investigar` (web) en el
+  // backend. La heurística de keywords no cubre todo (p.ej. "investiga X" /
+  // "qué herramientas tienes"); con este flag el usuario es explícito y la
+  // respuesta usa siempre WebSearch.
+  const [forzarWeb, setForzarWeb] = useState(false);
+  // AbortController de la petición en vuelo. Permite cancelar el "pensando..."
+  // cuando el backend tarda demasiado (sobre todo en modo web, hasta 3 min).
+  const abortRef = useRef<AbortController | null>(null);
+
+  const cancelar = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setPensando(false);
+  };
+
   const enviar = async (texto: string, porVoz = false) => {
     const t = texto.trim();
     if (!t || pensando) return;
@@ -42,13 +57,21 @@ export function ChatAsesor({ subtitulo = true }: { subtitulo?: boolean }) {
     setMensajes((m) => [...m, { rol: 'user', contenido: t, created_at: new Date().toISOString() }]);
     setAcciones([]);
     setPensando(true);
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
-      const r = await enviarMensajeAsesor(t, porVoz);
+      const r = await enviarMensajeAsesor(t, porVoz, forzarWeb, ac.signal);
       setMensajes((m) => [...m, r.mensaje]);
       setAcciones(r.acciones);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Si el usuario canceló, no lo trato como error; lo silencio.
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        // nada — `cancelar` ya cerró el estado
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
+      abortRef.current = null;
       setPensando(false);
     }
   };
@@ -213,10 +236,17 @@ export function ChatAsesor({ subtitulo = true }: { subtitulo?: boolean }) {
           </div>
         ))}
         {pensando && (
-          <div className="flex justify-start">
+          <div className="flex justify-start items-center gap-2">
             <div className="rounded-lg px-3 py-2 text-sm text-[rgb(var(--muted))] bg-[rgb(var(--bg))] border border-[rgb(var(--border))] animate-pulse">
-              pensando…
+              pensando{forzarWeb ? ' (buscando en internet, hasta 3 min)' : ''}…
             </div>
+            <button
+              onClick={cancelar}
+              className="text-xs text-rose-600 dark:text-rose-400 hover:underline"
+              title="Cancelar la espera"
+            >
+              cancelar
+            </button>
           </div>
         )}
         {acciones.length > 0 && !pensando && (
@@ -233,6 +263,27 @@ export function ChatAsesor({ subtitulo = true }: { subtitulo?: boolean }) {
       {error && <p className="mt-2 text-sm text-rose-600 dark:text-rose-400">{error}</p>}
 
       <div className="mt-3 flex items-end gap-2">
+        <button
+          onClick={() => setForzarWeb((v) => !v)}
+          disabled={pensando}
+          title={forzarWeb
+            ? 'Buscar en internet: ON (la próxima pregunta usa WebSearch)'
+            : 'Activar búsqueda en internet para la próxima pregunta'}
+          aria-label={forzarWeb ? 'Búsqueda web activada' : 'Activar búsqueda web'}
+          aria-pressed={forzarWeb}
+          className={`h-[42px] w-[42px] rounded inline-flex items-center justify-center border transition-colors disabled:opacity-50 ${
+            forzarWeb
+              ? 'bg-emerald-600 text-white border-emerald-700'
+              : 'border-[rgb(var(--border))] bg-[rgb(var(--bg))] text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))]'
+          }`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="10" />
+            <line x1="2" y1="12" x2="22" y2="12" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+        </button>
         {puedeEscuchar && (
           <button
             onClick={toggleEscuchar}
@@ -272,6 +323,11 @@ export function ChatAsesor({ subtitulo = true }: { subtitulo?: boolean }) {
       </div>
       <p className="mt-1 text-[11px] text-[rgb(var(--muted))]">
         Orientativo. La decisión final es tuya.
+        {forzarWeb && (
+          <span className="ml-2 text-emerald-600 dark:text-emerald-400">
+            · Búsqueda en internet activada (la próxima respuesta puede tardar minutos)
+          </span>
+        )}
       </p>
     </div>
   );

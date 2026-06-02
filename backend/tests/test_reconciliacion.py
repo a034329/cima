@@ -151,10 +151,12 @@ def test_reconciliacion_fuera_tolerancia_fecha_inserta_aparte(
 
 # ── 3. Match parcial (precio fuera de tolerancia) → conflicto ──────────────
 
-def test_match_parcial_precio_genera_conflicto(
+def test_match_parcial_genera_conflicto(
     db: Session, cartera: models.Cartera, broker_tr: models.Broker
 ) -> None:
-    """Manual a 24,71 €, extracto a 30,00 € — precio difiere 21,4% → conflicto."""
+    """Manual 24,71 €, extracto 30,00 € — el `importe_eur` también difiere 21,4%
+    (cant×precio), supera el TOL_IMPORTE_PCT → conflicto. Si fuera solo el precio
+    el que difiere (caso GBX↔GBP) y el importe_eur cuadrara, sería match exacto."""
     fecha_reciente = date.today() - timedelta(days=2)
     manual = _tx_candidata(
         fecha=fecha_reciente,
@@ -176,7 +178,8 @@ def test_match_parcial_precio_genera_conflicto(
     assert r.insertadas == 1   # se inserta la del extracto
     assert r.reconciliadas == 0
     assert len(r.avisos) >= 1
-    assert "precio" in r.avisos[0].lower()
+    # Acepta el aviso por importe_eur (firma fiscal real) o por precio_local
+    assert any(s in r.avisos[0].lower() for s in ("importe", "precio"))
 
     # Hay dos transacciones: la manual pendiente y la del extracto confirmada
     todas = list(db.execute(select(models.Transaccion)).scalars())
@@ -266,3 +269,100 @@ def test_manual_huerfana_antigua_genera_aviso(
 
     assert r.huerfanas_manuales >= 1
     assert any("huérfana" in a.lower() for a in r.avisos)
+
+
+# ── 7. Manual CONFIRMADA (confirmar_directo=True) también reconcilia ──────
+
+def test_manual_confirmada_reconcilia_con_extracto_no_duplica(
+    db: Session, cartera: models.Cartera, broker_tr: models.Broker,
+) -> None:
+    """Caso real (Angel, venta de Zegona): el usuario registra la operación a
+    mano con `confirmar_directo=True` (la operativa flexible: alta directa +
+    rebuild FIFO al instante). Días después llega el extracto del mismo broker
+    con la misma operación. Antes: la manual quedaba como "huérfana funcional"
+    y el extracto insertaba una segunda fila → duplicado. Ahora: la manual SÍ
+    es candidata aunque esté `confirmada`, se reconcilia in-place y el aviso
+    `[RECONCILIADA]` la marca."""
+    manual = _tx_candidata(
+        fecha=date(2025, 1, 27), tipo="SELL", broker_id=broker_tr.id, external_id=None,
+    )
+    tx_manual = crear_manual(db, cartera.id, manual, confirmar_directo=True)
+    manual_id = tx_manual.id
+    assert tx_manual.estado == "confirmada"
+    assert tx_manual.origen == "manual"
+    assert tx_manual.external_id is None
+
+    fila = _tx_candidata(
+        fecha=date(2025, 1, 27), tipo="SELL", broker_id=broker_tr.id,
+        external_id="extracto-zegona-real",
+    )
+    r = reconciliar_extracto(db, cartera.id, "tr", [fila])
+    assert r.reconciliadas == 1 and r.insertadas == 0
+    assert any("[RECONCILIADA]" in a for a in r.avisos)
+
+    # Solo hay 1 transacción y conserva su id original (FIFO/lots intactos);
+    # los campos del extracto la han sobrescrito.
+    todas = db.execute(select(models.Transaccion)).scalars().all()
+    assert len(todas) == 1
+    assert todas[0].id == manual_id
+    assert todas[0].estado == "confirmada"
+    assert todas[0].origen == "extracto_tr"
+    assert todas[0].external_id == "extracto-zegona-real"
+
+
+def test_precio_local_distinto_pero_importe_eur_casa_es_match_exacto(
+    db: Session, cartera: models.Cartera, broker_tr: models.Broker,
+) -> None:
+    """Caso real Zegona: la manual quedó con precio_local=1834 (GBX raro,
+    interpretación del usuario) y el extracto trae 21,17 (GBP/EUR del broker).
+    El precio difiere 98% pero ambos generan ~2.470 € — son la misma operación
+    fiscalmente. Debe ser match exacto, no conflicto."""
+    fecha = date(2026, 5, 28)
+    # Manual: precio_local "raro" (ej. en peniques) pero importe_eur correcto
+    manual = _tx_candidata(
+        fecha=fecha, tipo="SELL", broker_id=broker_tr.id, external_id=None,
+        cantidad=Decimal("117"), precio=Decimal("1834.00"),
+    )
+    # Sobreescribimos importe_eur para que represente la verdad fiscal
+    manual.importe_eur = Decimal("2470.00")
+    manual.importe_local = Decimal("214578.00")
+    tx_m = crear_manual(db, cartera.id, manual, confirmar_directo=True)
+    manual_id = tx_m.id
+
+    extracto = _tx_candidata(
+        fecha=fecha, tipo="SELL", broker_id=broker_tr.id,
+        external_id="dg-extracto-zegona",
+        cantidad=Decimal("117"), precio=Decimal("21.17"),
+    )
+    extracto.importe_eur = Decimal("2476.96")    # 0,28% de diferencia → tolerado
+    r = reconciliar_extracto(db, cartera.id, "tr", [extracto])
+
+    assert r.reconciliadas == 1 and r.insertadas == 0 and r.conflictos == 0
+    todas = db.execute(select(models.Transaccion)).scalars().all()
+    assert len(todas) == 1
+    assert todas[0].id == manual_id    # se reemplazó in-place
+    assert todas[0].precio_local == Decimal("21.17")   # el extracto manda
+    assert todas[0].importe_eur == Decimal("2476.96")
+    assert todas[0].external_id == "dg-extracto-zegona"
+
+
+def test_huerfana_incluye_manuales_confirmadas_viejas_no_casadas(
+    db: Session, cartera: models.Cartera, broker_tr: models.Broker,
+) -> None:
+    """Una manual `confirmada` registrada hace >30 días sin contrapartida del
+    broker también debe figurar como huérfana — el usuario tiene que saber
+    qué piezas siguen sin reconciliarse para que el plan fiscal sea íntegro."""
+    fecha_vieja = date.today() - timedelta(days=40)
+    manual = _tx_candidata(
+        fecha=fecha_vieja, broker_id=broker_tr.id, external_id=None,
+    )
+    crear_manual(db, cartera.id, manual, confirmar_directo=True)
+
+    otra = _tx_candidata(
+        fecha=date.today(), broker_id=broker_tr.id,
+        isin="IE00B14X4S71", external_id="ext-otro",
+    )
+    r = reconciliar_extracto(db, cartera.id, "tr", [otra])
+    assert r.huerfanas_manuales >= 1
+    assert any("huérfana" in a.lower() and "confirmada" in a.lower()
+               for a in r.avisos)

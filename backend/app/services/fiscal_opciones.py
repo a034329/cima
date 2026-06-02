@@ -313,7 +313,13 @@ def opciones_abiertas(db: Session, cartera_id: str) -> list[OpcionAbierta]:
     fx_cache = _leer_cache()
     out: list[OpcionAbierta] = []
     for c in op.por_contrato:
-        n = int(c.get("n_net_abiertos", 0) or 0)
+        # `n_net_abiertos` viene clipado por Cuádrate (`max(0, vend - comp)`) →
+        # cualquier opción COMPRADA neta queda como 0 y desaparecería de
+        # "abiertas". Recalculamos sin clipar: positivo = corto (vendido neto),
+        # negativo = largo (comprado neto). 0 = cerrado.
+        vendidos = int(Decimal(str(c.get("contratos_vendidos") or 0)))
+        comprados = int(Decimal(str(c.get("contratos_comprados") or 0)))
+        n = vendidos - comprados
         if n == 0:
             continue
         venc = str(c.get("vencimiento", ""))

@@ -139,10 +139,12 @@ export interface AlertaVigilancia {
   precio_actual: string;
   cambio_pct: string;
   nivel: 'ALERTA' | 'CRITICA';
+  modo?: 'baseline' | 'intradia';
 }
 
 export interface Vigilancia {
-  alertas: AlertaVigilancia[];
+  alertas: AlertaVigilancia[];                     // vs último "visto" (baseline)
+  alertas_intradia?: AlertaVigilancia[];           // vs cierre de ayer (intra-día)
   desde: string | null;
 }
 
@@ -311,6 +313,30 @@ export interface RegimenEstado {
   correccion: CorreccionVentana | null;
 }
 
+export type ClaveIndicadorMacro = 'ciclo' | 'inflacion' | 'geopolitica' | 'mercado';
+
+export interface IndicadorPropuesta {
+  senal: SenalMacro;
+  razon: string;
+  fuentes: string[];
+  datos: Record<string, number | string | null>;
+}
+
+export interface PropuestaRegimen {
+  indicadores: Record<ClaveIndicadorMacro, IndicadorPropuesta>;
+  regimen: 'VERDE' | 'AMARILLO' | 'ROJO';
+  datos_objetivos: Record<string, number | null>;
+  proveedor: string;
+  modelo: string;
+  created_at: string;
+}
+
+export interface RegimenAutoEstado {
+  estado: 'ninguno' | 'en_curso' | 'ok' | 'error';
+  error: string | null;
+  propuesta: PropuestaRegimen | null;
+}
+
 export interface PasoResumen {
   isin: string;
   nombre: string;
@@ -335,7 +361,9 @@ export interface DashboardData {
   capital_mercado_eur: string;
   gp_no_realizada_eur: string;
   gp_no_realizada_pct: string;
-  liquidez_eur: string;
+  liquidez_eur: string;                       // disponible = total − fuera_estrategia
+  liquidez_total_eur: string;
+  liquidez_fuera_estrategia_eur: string;
   progreso_if_pct: string;
   anios_if: string | null;
   retorno_if_pct: string;

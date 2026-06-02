@@ -41,6 +41,8 @@ cache_*.json
 # …pero el motor vendorizado SÍ va al repo, incluida su caché BCE de tipos
 # históricos (dato de referencia, necesario para la conversión FX en el contenedor):
 !backend/vendor/cuadrate/irpf/ecb_fx_cache.json
+# El lock del cache BCE es runtime; nunca entra al repo.
+*.json.lock
 
 # ── Datos personales (PII): extractos de broker reales ─────────────
 test_data/

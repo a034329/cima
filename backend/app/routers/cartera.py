@@ -140,8 +140,10 @@ def get_cartera(db: Session = Depends(get_db)) -> CarteraResumen:
     except Exception:
         aportacion_neta = Decimal("0")
     try:
-        from app.services.liquidez import calcular_liquidez
-        liquidez_eur = calcular_liquidez(db, cartera.id).total_disponible
+        from app.services.liquidez import liquidez_para_invertir
+        # Disponible para invertir = total − liquidez de bloques fuera de
+        # estrategia (colchón etc.). Refleja lo que de verdad puede desplegar.
+        liquidez_eur, _, _ = liquidez_para_invertir(db, cartera.id)
     except Exception:
         liquidez_eur = Decimal("0")
 

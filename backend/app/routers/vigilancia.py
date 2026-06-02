@@ -26,10 +26,12 @@ class AlertaOut(BaseModel):
     precio_actual: Decimal = Field(decimal_places=2)
     cambio_pct: Decimal = Field(decimal_places=4)
     nivel: str
+    modo: str = "baseline"          # baseline | intradia
 
 
 class VigilanciaOut(BaseModel):
-    alertas: list[AlertaOut]
+    alertas: list[AlertaOut]                # baseline (compatibilidad)
+    alertas_intradia: list[AlertaOut] = []  # vs cierre de ayer
     desde: str | None = None
 
 
@@ -41,14 +43,24 @@ def _cartera(db: Session) -> models.Cartera:
     return c
 
 
-@router.get("", response_model=VigilanciaOut, summary="Alertas de movimiento de precio desde el último 'visto'")
+def _alerta_out(a: svc.Alerta) -> AlertaOut:
+    return AlertaOut(
+        isin=a.isin, nombre=a.nombre,
+        precio_anterior=_q2(a.precio_anterior), precio_actual=_q2(a.precio_actual),
+        cambio_pct=Decimal(str(a.cambio_pct)).quantize(Decimal("0.0001"), ROUND_HALF_UP),
+        nivel=a.nivel, modo=a.modo,
+    )
+
+
+@router.get("", response_model=VigilanciaOut,
+            summary="Alertas de movimiento: vs último 'visto' (baseline) y vs cierre de ayer (intradia)")
 def get_vigilancia(db: Session = Depends(get_db)) -> VigilanciaOut:
-    alertas, desde = svc.evaluar(db, _cartera(db).id)
+    cid = _cartera(db).id
+    alertas, desde = svc.evaluar(db, cid)
+    intradia = svc.evaluar_intradia(db, cid)
     return VigilanciaOut(
-        alertas=[AlertaOut(isin=a.isin, nombre=a.nombre, precio_anterior=_q2(a.precio_anterior),
-                           precio_actual=_q2(a.precio_actual),
-                           cambio_pct=Decimal(str(a.cambio_pct)).quantize(Decimal("0.0001"), ROUND_HALF_UP),
-                           nivel=a.nivel) for a in alertas],
+        alertas=[_alerta_out(a) for a in alertas],
+        alertas_intradia=[_alerta_out(a) for a in intradia],
         desde=desde,
     )
 

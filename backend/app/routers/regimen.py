@@ -1,4 +1,5 @@
-"""Régimen macro: el usuario fija 4 indicadores → régimen + calibración de tramo."""
+"""Régimen macro: el usuario fija 4 indicadores → régimen + calibración de tramo.
+Auto-clasificación híbrida (números + IA con web) detrás de un job firmable."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,10 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, models
+from app.services import jobs
 from app.services import regimen as svc
+from app.services import regimen_auto
 
 
 router = APIRouter(prefix="/regimen", tags=["regimen"])
+
+_TIPO_AUTO = "regimen_auto"
 
 
 class CorreccionOut(BaseModel):
@@ -76,3 +81,78 @@ def put_regimen(payload: RegimenIn, db: Session = Depends(get_db)) -> RegimenOut
             f"Señal inválida {invalidas}; usa una de {svc.SENALES}",
         )
     return _out(svc.guardar_regimen(db, _cartera(db).id, indicadores))
+
+
+# ── Auto-clasificación (híbrido números + IA, propuesta firmable) ──────────
+
+class IndicadorPropuestaOut(BaseModel):
+    senal: str                                  # VERDE | AMARILLA | ROJA
+    razon: str
+    fuentes: list[str] = []
+    datos: dict = {}
+
+
+class PropuestaOut(BaseModel):
+    indicadores: dict[str, IndicadorPropuestaOut]
+    regimen: str
+    datos_objetivos: dict
+    proveedor: str
+    modelo: str
+    created_at: str
+
+
+class AutoEstadoOut(BaseModel):
+    estado: str                                 # ninguno | en_curso | ok | error
+    error: str | None = None
+    propuesta: PropuestaOut | None = None
+
+
+def _propuesta_out(p: regimen_auto.Propuesta) -> PropuestaOut:
+    return PropuestaOut(
+        indicadores={k: IndicadorPropuestaOut(
+            senal=v.senal, razon=v.razon, fuentes=list(v.fuentes), datos=dict(v.datos),
+        ) for k, v in p.indicadores.items()},
+        regimen=p.regimen, datos_objetivos=dict(p.datos_objetivos),
+        proveedor=p.proveedor, modelo=p.modelo, created_at=p.created_at,
+    )
+
+
+@router.get("/auto", response_model=AutoEstadoOut,
+            summary="Estado del job de auto-clasificación + última propuesta")
+def get_auto(db: Session = Depends(get_db)) -> AutoEstadoOut:
+    cid = _cartera(db).id
+    job = jobs.estado(db, cid, "", _TIPO_AUTO)
+    p = regimen_auto.cargar_propuesta(db, cid)
+    out = _propuesta_out(p) if p else None
+    if job and job.estado == jobs.EN_CURSO:
+        return AutoEstadoOut(estado="en_curso", propuesta=out)
+    if out:
+        return AutoEstadoOut(estado="ok", propuesta=out)
+    if job and job.estado == jobs.ERROR:
+        return AutoEstadoOut(estado="error", error=job.error)
+    return AutoEstadoOut(estado="ninguno")
+
+
+@router.post("/auto", response_model=AutoEstadoOut,
+             status_code=status.HTTP_202_ACCEPTED,
+             summary="Lanza la auto-clasificación en segundo plano (números + IA)")
+def post_auto(db: Session = Depends(get_db)) -> AutoEstadoOut:
+    jobs.lanzar(db, _cartera(db).id, "", _TIPO_AUTO, regimen_auto.proponer)
+    return AutoEstadoOut(estado="en_curso")
+
+
+@router.post("/firmar", response_model=RegimenOut,
+             summary="Firma la propuesta vigente y la aplica al régimen")
+def firmar(db: Session = Depends(get_db)) -> RegimenOut:
+    cid = _cartera(db).id
+    try:
+        estado = regimen_auto.firmar(db, cid)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return _out(estado)
+
+
+@router.delete("/auto", status_code=status.HTTP_204_NO_CONTENT,
+               summary="Descarta la propuesta sin firmarla")
+def delete_auto(db: Session = Depends(get_db)) -> None:
+    regimen_auto.descartar_propuesta(db, _cartera(db).id)

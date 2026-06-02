@@ -56,41 +56,33 @@ export function Dashboard() {
         </Link>
       )}
 
-      {vig && vig.alertas.length > 0 && (
-        <section className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/15 p-4">
-          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+      {vig && (vig.alertas.length > 0 || (vig.alertas_intradia?.length ?? 0) > 0) && (
+        <section className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/15 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">
-              Vigilancia · {vig.alertas.length} movimiento(s){vig.desde ? ` desde ${vig.desde}` : ''}
+              Vigilancia
             </h3>
-            <button
-              onClick={async () => { await marcarVistoVigilancia(); notificarDatosActualizados(); }}
-              className="text-xs text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))]"
-            >
-              marcar visto
-            </button>
+            {vig.alertas.length > 0 && (
+              <button
+                onClick={async () => { await marcarVistoVigilancia(); notificarDatosActualizados(); }}
+                className="text-xs text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))]"
+              >
+                marcar visto
+              </button>
+            )}
           </div>
-          <ul className="space-y-1">
-            {vig.alertas.map((a) => {
-              const ch = parseFloat(a.cambio_pct);
-              return (
-                <li key={a.isin} className="flex items-center gap-2 text-sm">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                    a.nivel === 'CRITICA'
-                      ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300'
-                      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
-                  }`}>{a.nivel}</span>
-                  <span className="truncate">{a.nombre}</span>
-                  <span className={`font-mono ${ch >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                    {ch >= 0 ? '+' : ''}{(ch * 100).toFixed(1)}%
-                  </span>
-                  <Link href={`/estrategia/analisis?isin=${encodeURIComponent(a.isin)}`}
-                    className="ml-auto text-xs text-brand-600 dark:text-brand-400 hover:underline">
-                    analizar →
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
+          {(vig.alertas_intradia?.length ?? 0) > 0 && (
+            <ListaAlertas
+              titulo={`Hoy · ${vig.alertas_intradia!.length} movimiento(s) vs cierre de ayer`}
+              alertas={vig.alertas_intradia!}
+            />
+          )}
+          {vig.alertas.length > 0 && (
+            <ListaAlertas
+              titulo={`Desde la última vez · ${vig.alertas.length} movimiento(s)${vig.desde ? ` desde ${vig.desde}` : ''}`}
+              alertas={vig.alertas}
+            />
+          )}
         </section>
       )}
       {/* ── ¿Cómo voy? ── */}
@@ -111,7 +103,14 @@ export function Dashboard() {
               : 'objetivo no alcanzable con estos supuestos'}
             barra={parseFloat(d.progreso_if_pct)}
           />
-          <KPI label="Liquidez" value={fmtEUR(d.liquidez_eur)} sub="disponible" />
+          {(() => {
+            const fuera = parseFloat(d.liquidez_fuera_estrategia_eur || '0');
+            const total = parseFloat(d.liquidez_total_eur || '0');
+            const sub = fuera > 0
+              ? `de ${fmtEUR(total, { maximumFractionDigits: 0 })} · ${fmtEUR(fuera, { maximumFractionDigits: 0 })} en colchón`
+              : 'disponible para invertir';
+            return <KPI label="Liquidez" value={fmtEUR(d.liquidez_eur)} sub={sub} />;
+          })()}
         </div>
       </Grupo>
 
@@ -392,6 +391,40 @@ function Fila({ label, valor, colored, dim }: { label: string; valor: string; co
     <div className="flex justify-between gap-3">
       <span className="text-[rgb(var(--muted))]">{label}</span>
       <span className={`font-mono tabular-nums ${css}`}>{fmtEUR(valor, { maximumFractionDigits: 0 })}</span>
+    </div>
+  );
+}
+
+function ListaAlertas({
+  titulo, alertas,
+}: { titulo: string; alertas: import('@/lib/types').AlertaVigilancia[] }) {
+  return (
+    <div>
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-1">
+        {titulo}
+      </h4>
+      <ul className="space-y-1">
+        {alertas.map((a) => {
+          const ch = parseFloat(a.cambio_pct);
+          return (
+            <li key={`${a.modo ?? ''}-${a.isin}`} className="flex items-center gap-2 text-sm">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                a.nivel === 'CRITICA'
+                  ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300'
+                  : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+              }`}>{a.nivel}</span>
+              <span className="truncate">{a.nombre}</span>
+              <span className={`font-mono ${ch >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                {ch >= 0 ? '+' : ''}{(ch * 100).toFixed(1)}%
+              </span>
+              <Link href={`/estrategia/analisis?isin=${encodeURIComponent(a.isin)}`}
+                className="ml-auto text-xs text-brand-600 dark:text-brand-400 hover:underline">
+                analizar →
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

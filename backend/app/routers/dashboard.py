@@ -66,6 +66,10 @@ class DashboardOut(BaseModel):
     gp_no_realizada_eur: Decimal = Field(decimal_places=2)
     gp_no_realizada_pct: Decimal = Field(decimal_places=4)
     liquidez_eur: Decimal = Field(decimal_places=2)
+    # Desglose: total real en cuentas y cuánto está apartado en bloques fuera
+    # de estrategia (colchón etc.). `liquidez_eur` = total − fuera_estrategia.
+    liquidez_total_eur: Decimal = Field(decimal_places=2)
+    liquidez_fuera_estrategia_eur: Decimal = Field(decimal_places=2)
     progreso_if_pct: Decimal = Field(decimal_places=4)
     anios_if: Decimal | None
     retorno_if_pct: Decimal = Field(decimal_places=4)
@@ -102,6 +106,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> DashboardOut:
         gp_no_realizada_eur=_q2(r.gp_no_realizada_eur),
         gp_no_realizada_pct=_q4(r.gp_no_realizada_pct),
         liquidez_eur=_q2(r.liquidez_eur),
+        liquidez_total_eur=_q2(r.liquidez_total_eur),
+        liquidez_fuera_estrategia_eur=_q2(r.liquidez_fuera_estrategia_eur),
         progreso_if_pct=_q4(r.progreso_if_pct),
         anios_if=(_q2(r.anios_if) if r.anios_if is not None else None),
         retorno_if_pct=_q4(r.retorno_if_pct),

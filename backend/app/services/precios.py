@@ -172,10 +172,11 @@ def _precio_fmp_us(simbolo: str) -> tuple[float, str] | None:
     return None
 
 
-def _precio_y_divisa(simbolo: str, usar_ia: bool = False) -> tuple[float, str] | None:
-    """Yahoo → FMP (US). `usar_ia=True` añade el fallback IA (lento, minutos).
-    Por defecto SIN IA — para no colgar las lecturas si Yahoo/FMP fallan. El
-    refresco explícito (prefill / `forzar`) sí pasa `usar_ia=True`."""
+def _precio_divisa_y_cierre_anterior(simbolo: str) -> tuple[float, str, float | None] | None:
+    """Yahoo: precio actual + divisa + cierre del día ANTERIOR (sin coste extra,
+    mismo `history(period='5d')`). El cierre anterior es la base del cambio
+    intra-día para la vigilancia (alertas de "está subiendo X% HOY").
+    """
     try:
         import yfinance as yf  # type: ignore[import-not-found]
         with warnings.catch_warnings():
@@ -184,9 +185,21 @@ def _precio_y_divisa(simbolo: str, usar_ia: bool = False) -> tuple[float, str] |
             serie = t.history(period="5d")["Close"].dropna()
             if len(serie):
                 cur = (t.history_metadata or {}).get("currency") or "USD"
-                return float(serie.iloc[-1]), cur
+                px = float(serie.iloc[-1])
+                prev = float(serie.iloc[-2]) if len(serie) >= 2 else None
+                return px, cur, prev
     except Exception:
-        pass
+        return None
+    return None
+
+
+def _precio_y_divisa(simbolo: str, usar_ia: bool = False) -> tuple[float, str] | None:
+    """Yahoo → FMP (US). `usar_ia=True` añade el fallback IA (lento, minutos).
+    Por defecto SIN IA — para no colgar las lecturas si Yahoo/FMP fallan. El
+    refresco explícito (prefill / `forzar`) sí pasa `usar_ia=True`."""
+    r = _precio_divisa_y_cierre_anterior(simbolo)
+    if r is not None:
+        return r[0], r[1]
     r = _precio_fmp_us(simbolo)      # fallback determinista (FMP plan gratuito: US)
     if r is not None:
         return r
@@ -294,11 +307,21 @@ def obtener_precios_eur(
         # el precio cacheado (rápido: solo Yahoo+FMP, sin IA → no cuelga la lectura).
         # La antigüedad NO dispara fetch — para eso está "Actualizar desde el feed".
         if forzar or entry.get("precio") is None:
-            pv = _precio_y_divisa(sim, usar_ia=forzar)
-            if pv is None:
-                no_resueltos.append(pos.isin)
-                continue
-            entry = {"precio": pv[0], "divisa": pv[1], "ts": ahora}
+            # Intentamos Yahoo (que también nos da `prev_close` sin coste extra
+            # para alertas intra-día); si falla, fallback a FMP (sin prev_close)
+            # y, si se pidió, a IA. El `prev_close` puede quedar None — la
+            # vigilancia intra-día simplemente se la salta para ese ISIN.
+            r = _precio_divisa_y_cierre_anterior(sim)
+            if r is None:
+                pv = _precio_y_divisa(sim, usar_ia=forzar)
+                if pv is None:
+                    no_resueltos.append(pos.isin)
+                    continue
+                entry = {"precio": pv[0], "divisa": pv[1],
+                         "prev_close": None, "ts": ahora}
+            else:
+                entry = {"precio": r[0], "divisa": r[1],
+                         "prev_close": r[2], "ts": ahora}
             cache[f"px:{sim}"] = entry
         if entry.get("precio") is None:                # sin caché y sin forzar → no_resuelto, no romper
             no_resueltos.append(pos.isin)
@@ -311,6 +334,41 @@ def obtener_precios_eur(
 
     _guardar_cache(cache)
     return precios, no_resueltos
+
+
+def obtener_cierres_anteriores_eur(
+    db: Session, cartera_id: str,
+) -> dict[str, Decimal]:
+    """Precio de cierre del DÍA ANTERIOR para cada ISIN de la cartera, en EUR.
+
+    Lee SOLO del cache (no fuerza fetch). Asume que `obtener_precios_eur` se
+    ha llamado antes (siempre se llama al dibujar dashboard / vigilancia) y ya
+    pobló `prev_close`. Para ISINes sin prev_close cacheado, simplemente no
+    aparecen en el dict — la vigilancia intra-día los omite sin error.
+
+    Útil para alertas intra-día (cambio % desde el cierre de ayer)."""
+    posiciones = [
+        pos for pos in db.execute(
+            select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
+        ).scalars()
+        if estado_posicion(db, pos.id)["cantidad"] > 0
+    ]
+    cache = _leer_cache()
+    out: dict[str, Decimal] = {}
+    for pos in posiciones:
+        figi = cache.get(f"figi:{pos.isin}", {})
+        sim = _ISIN_OVERRIDE.get(pos.isin) or _yf_simbolo(figi.get("ticker"), figi.get("exch"))
+        if sim is None:
+            continue
+        entry = cache.get(f"px:{sim}", {})
+        prev = entry.get("prev_close")
+        if prev is None:
+            continue
+        fac = _fx_eur(entry.get("divisa", "EUR"), cache)
+        if fac is None:
+            continue
+        out[pos.isin] = Decimal(str(prev)) * fac
+    return out
 
 
 _TTL_FUND = 7 * 24 * 3600   # fundamentales cambian lento
@@ -469,26 +527,49 @@ def _fetch_cagr_historico(sim: str, max_anios: int = 20) -> float | None:
 
 
 def _fetch_mercado() -> dict | None:
-    """S&P 500 (caída desde su máximo de 52 semanas) + VIX, vía yfinance.
-    Para la regla del −14%: distinguir corrección de bear market. Best-effort."""
+    """Datos macro objetivos vía yfinance — ancla numérica para el régimen auto.
+
+    Devuelve: SP500 drawdown (52 semanas) + VIX (regla −14%), Brent y WTI (señal
+    geopolítica/m. primas), spread 10y-3m de la curva (señal de recesión: <0 =
+    inversión, antesala histórica), tendencia SP500 vs SMA200 (señal mercado).
+    Best-effort: si yfinance falla, None. Indicadores individuales pueden venir
+    null sin invalidar el resto."""
     try:
         import yfinance as yf  # type: ignore[import-not-found]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sp = yf.Ticker("^GSPC").history(period="1y")["Close"].dropna()
             vix_s = yf.Ticker("^VIX").history(period="5d")["Close"].dropna()
+            brent_s = yf.Ticker("BZ=F").history(period="5d")["Close"].dropna()
+            wti_s = yf.Ticker("CL=F").history(period="5d")["Close"].dropna()
+            tnx_s = yf.Ticker("^TNX").history(period="5d")["Close"].dropna()    # 10y note yield (x10)
+            irx_s = yf.Ticker("^IRX").history(period="5d")["Close"].dropna()    # 13w bill yield
     except Exception:
         return None
     if len(sp) < 2:
         return None
     maxv, cur = float(sp.max()), float(sp.iloc[-1])
     drawdown = (cur - maxv) / maxv if maxv > 0 else 0.0
-    return {"sp_drawdown": drawdown, "vix": float(vix_s.iloc[-1]) if len(vix_s) else None}
+    sma200 = float(sp.tail(200).mean()) if len(sp) >= 50 else None
+    spread = None
+    if len(tnx_s) and len(irx_s):
+        # ^TNX y ^IRX cotizan en %×10 (yfinance: 42.50 = 4,25%). Spread en pp.
+        spread = (float(tnx_s.iloc[-1]) - float(irx_s.iloc[-1])) / 10.0
+    return {
+        "sp_drawdown": drawdown,
+        "sp_precio": cur,
+        "sp_sma200": sma200,
+        "vix": float(vix_s.iloc[-1]) if len(vix_s) else None,
+        "brent_usd": float(brent_s.iloc[-1]) if len(brent_s) else None,
+        "wti_usd": float(wti_s.iloc[-1]) if len(wti_s) else None,
+        "yield_curve_spread_pp": spread,
+    }
 
 
-def mercado_correccion() -> dict | None:
-    """{sp_drawdown: fracción negativa, vix: float|None} cacheado 6h. Datos de
-    mercado globales (no por cartera). None si no hay datos."""
+def _macro_datos() -> dict | None:
+    """Datos macro objetivos completos cacheados 6h (SP/VIX/Brent/WTI/curva).
+    Es el cache base; `mercado_correccion()` extrae solo lo que la regla −14%
+    necesita, y `datos_macro_objetivos()` lo expone entero al régimen auto."""
     cache = _leer_cache()
     entry = cache.get("mercado:sp_vix", {})
     if not _fresco(entry, _TTL_PX) or "sp_drawdown" not in entry:
@@ -497,9 +578,24 @@ def mercado_correccion() -> dict | None:
             entry = {**m, "ts": time.time()}
             cache["mercado:sp_vix"] = entry
             _guardar_cache(cache)
-    if "sp_drawdown" in entry:
-        return {"sp_drawdown": entry["sp_drawdown"], "vix": entry.get("vix")}
-    return None
+    return entry if "sp_drawdown" in entry else None
+
+
+def mercado_correccion() -> dict | None:
+    """{sp_drawdown: fracción negativa, vix: float|None} cacheado 6h. Datos de
+    mercado globales (no por cartera). None si no hay datos."""
+    entry = _macro_datos()
+    if entry is None:
+        return None
+    return {"sp_drawdown": entry["sp_drawdown"], "vix": entry.get("vix")}
+
+
+def datos_macro_objetivos() -> dict | None:
+    """Snapshot completo de datos macro auto-fetcheados para el régimen auto.
+    Mismo cache que `mercado_correccion`: una sola petición a yfinance/día.
+    Claves: sp_drawdown, sp_precio, sp_sma200, vix, brent_usd, wti_usd,
+    yield_curve_spread_pp. Cada una puede ser None si no se pudo recuperar."""
+    return _macro_datos()
 
 
 def cagr_historico_por_isin(

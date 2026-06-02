@@ -24,6 +24,10 @@ class Alerta:
     precio_actual: Decimal
     cambio_pct: Decimal          # fracción (−0.12 = −12%)
     nivel: str                   # ALERTA | CRITICA
+    # Dos carriles complementarios:
+    #   'baseline' = vs el último "visto" (cubre lapsos entre sesiones)
+    #   'intradia' = vs cierre del día anterior (cubre "está subiendo HOY")
+    modo: str = "baseline"
 
 
 def _precios_actuales(db: Session, cartera_id: str) -> dict[str, Decimal]:
@@ -65,9 +69,39 @@ def evaluar(db: Session, cartera_id: str) -> tuple[list[Alerta], str | None]:
             isin=isin, nombre=nombres.get(isin, isin),
             precio_anterior=snap.precio_eur, precio_actual=px, cambio_pct=cambio,
             nivel="CRITICA" if abs(cambio) >= _CRITICA else "ALERTA",
+            modo="baseline",
         ))
     alertas.sort(key=lambda a: abs(a.cambio_pct), reverse=True)
     return alertas, (desde.date().isoformat() if desde else None)
+
+
+def evaluar_intradia(db: Session, cartera_id: str) -> list[Alerta]:
+    """Alertas de movimiento del DÍA: precio actual vs cierre del día anterior.
+    Complementario a `evaluar()` (baseline run-to-run). Útil para reaccionar a
+    movimientos del día aunque no hayas marcado "visto" hace tiempo. Sin
+    persistencia: cada llamada lo recalcula desde el cache de precios.
+    Las posiciones sin `prev_close` cacheado se omiten en silencio."""
+    from app.services.precios import obtener_cierres_anteriores_eur
+    precios = _precios_actuales(db, cartera_id)
+    cierres = obtener_cierres_anteriores_eur(db, cartera_id)
+    nombres = {p.isin: p.nombre for p in db.execute(
+        select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)).scalars()}
+    alertas: list[Alerta] = []
+    for isin, px in precios.items():
+        prev = cierres.get(isin)
+        if prev is None or prev <= 0:
+            continue
+        cambio = (px - prev) / prev
+        if abs(cambio) < _ALERTA:
+            continue
+        alertas.append(Alerta(
+            isin=isin, nombre=nombres.get(isin, isin),
+            precio_anterior=prev, precio_actual=px, cambio_pct=cambio,
+            nivel="CRITICA" if abs(cambio) >= _CRITICA else "ALERTA",
+            modo="intradia",
+        ))
+    alertas.sort(key=lambda a: abs(a.cambio_pct), reverse=True)
+    return alertas
 
 
 def marcar_visto(db: Session, cartera_id: str) -> None:

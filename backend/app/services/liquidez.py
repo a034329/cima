@@ -124,3 +124,26 @@ def calcular_liquidez(db: Session, cartera_id: str) -> LiquidezResultado:
         total_disponible=total_disp.quantize(Decimal("0.01")),
         por_broker=por_broker,
     )
+
+
+def liquidez_fuera_estrategia(db: Session, cartera_id: str) -> Decimal:
+    """Liquidez asignada a bloques fuera de estrategia (colchón S1 y cualquier
+    otro `en_estrategia=False`). Doctrina WG: intocable para reinversión."""
+    total = Decimal("0")
+    for b in db.execute(
+        select(models.Bloque).where(models.Bloque.cartera_id == cartera_id)
+    ).scalars():
+        if not b.en_estrategia and b.liquidez_asignada_eur:
+            total += Decimal(str(b.liquidez_asignada_eur))
+    return total.quantize(Decimal("0.01"))
+
+
+def liquidez_para_invertir(db: Session, cartera_id: str) -> tuple[Decimal, Decimal, Decimal]:
+    """Tripleta `(disponible, total, fuera_estrategia)`. La `disponible` es lo
+    que el usuario puede realmente desplegar hoy: total real en cuentas menos
+    la liquidez apartada en bloques fuera de estrategia. Clamp >= 0 si el
+    usuario asignó más colchón del que tiene en cuentas."""
+    total = calcular_liquidez(db, cartera_id).total_disponible
+    fuera = liquidez_fuera_estrategia(db, cartera_id)
+    disponible = max(total - fuera, Decimal("0"))
+    return disponible, total, fuera

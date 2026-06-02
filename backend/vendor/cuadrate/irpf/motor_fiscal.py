@@ -323,6 +323,15 @@ class FIFOResults:
     # El frontend las muestra como informativo: "estos importes aflorarán
     # cuando vendas los lotes X sin nueva recompra".
     perdidas_diferidas_latentes: list[PerdidaDiferida] = field(default_factory=list)
+    # Posiciones cortas abiertas al cierre del histórico procesado que NO se
+    # cubrieron dentro del rango. Solo se popula cuando el tracker se inicia
+    # con `persistir_shorts_al_cierre=True` (modo cross-año). En modo legacy
+    # (default) los shorts no cubiertos se reclasifican como orphan_sales y
+    # esta lista queda vacía.
+    # El orquestador externo serializa esto en shorts_pendientes_YYYY.json y
+    # los pasa via `restore_open_shorts()` al tracker del año siguiente para
+    # que las compras de cobertura cross-año cierren correctamente.
+    shorts_pendientes: list[OpenShort] = field(default_factory=list)
     # Operaciones ignoradas por el corte temporal (solo se popula si el
     # caller pasó `corte_fecha` a calcular_fifo). El frontend lo usa para
     # avisar al usuario de que su CSV incluía datos posteriores al
@@ -483,6 +492,9 @@ def parse_csv_irpf(filepath: str | Path, apply_year_filter: bool = True) -> list
         elif _ta_low in ("bono", "bond", "obligación", "obligacion"):
             instrument_type = "BOND"
             instrument_type_unknown = False
+        elif _ta_up == "ETC":
+            instrument_type = "ETC"
+            instrument_type_unknown = False
         else:
             # Fallback: el classifier intenta clasificar desde el nombre+ISIN.
             try:
@@ -636,7 +648,15 @@ class FIFOTracker:
     las ventas los consumen por FIFO, los splits ajustan lotes existentes.
     """
 
-    def __init__(self):
+    def __init__(self, persistir_shorts_al_cierre: bool = False):
+        # `persistir_shorts_al_cierre` (default False, comportamiento legacy):
+        # los _open_shorts sin cubrir al final del proceso se reclasifican
+        # como orphan_sales y se emite warning "Venta corta sin cobertura".
+        # Cuando es True (modo cross-año), los shorts se conservan en
+        # FIFOResults.shorts_pendientes para que el orquestador los persista
+        # en un sidecar shorts_pendientes_YYYY.json y los restaure en el
+        # tracker del año siguiente vía `restore_open_shorts`.
+        self._persistir_shorts_al_cierre = persistir_shorts_al_cierre
         # {isin: deque[Lot]} — lotes abiertos ordenados por fecha (FIFO)
         self._lots: dict[str, deque[Lot]] = defaultdict(deque)
         # Todas las compras registradas (para regla 2 meses)
@@ -692,30 +712,43 @@ class FIFOTracker:
         """Procesa todas las operaciones (deben estar ordenadas cronológicamente)."""
         for op in ops:
             self.process(op)
-        # Cortos sin cubrir al final del proceso → reclasificar como orphans.
-        # Significa que el flag de apertura se activó pero no llegó cobertura
-        # (posible CSV incompleto en años posteriores, o detección errónea
-        # del caller). Conservador: tratarlos como ventas sin lotes para que
-        # el usuario los revise manualmente.
-        for shorts in self._open_shorts.values():
-            for short in shorts:
-                self._warnings.append(
-                    f"Venta corta sin cobertura: {short.nombre} ({short.isin}) "
-                    f"{_format_es_date(short.fecha_apertura)} x{short.cantidad} "
-                    f"— sin compra de cobertura posterior; reclasificada como "
-                    f"venta sin lotes"
-                )
-                self._orphan_sales.append(OrphanSale(
-                    isin=short.isin,
-                    nombre=short.nombre,
-                    fecha=short.fecha_apertura,
-                    cantidad=short.cantidad,
-                    importe_eur=short.importe_eur,
-                    broker=short.broker,
-                    parcial=False,
-                    cantidad_faltante=short.cantidad,
-                ))
-        self._open_shorts.clear()
+        # Cortos sin cubrir al final del proceso. Dos comportamientos según
+        # el modo del tracker:
+        #
+        # (a) Modo legacy (`persistir_shorts_al_cierre=False`, default):
+        #     reclasificar como orphans. Asume que la falta de cobertura es
+        #     CSV incompleto en años posteriores o detección errónea — el
+        #     usuario revisa manualmente.
+        #
+        # (b) Modo cross-año (`persistir_shorts_al_cierre=True`): los shorts
+        #     quedan vivos en `_open_shorts` y se exponen en
+        #     FIFOResults.shorts_pendientes. El orquestador externo los
+        #     serializa al sidecar `shorts_pendientes_YYYY.json` y los
+        #     restaura en el tracker del año siguiente vía
+        #     `restore_open_shorts()`. Así una venta corta abierta en 2024
+        #     y cubierta en 2025 se procesa correctamente.
+        if not self._persistir_shorts_al_cierre:
+            for shorts in self._open_shorts.values():
+                for short in shorts:
+                    self._warnings.append(
+                        f"Venta corta sin cobertura: {short.nombre} ({short.isin}) "
+                        f"{_format_es_date(short.fecha_apertura)} x{short.cantidad} "
+                        f"— sin compra de cobertura posterior; reclasificada como "
+                        f"venta sin lotes"
+                    )
+                    self._orphan_sales.append(OrphanSale(
+                        isin=short.isin,
+                        nombre=short.nombre,
+                        fecha=short.fecha_apertura,
+                        cantidad=short.cantidad,
+                        importe_eur=short.importe_eur,
+                        broker=short.broker,
+                        parcial=False,
+                        cantidad_faltante=short.cantidad,
+                    ))
+            self._open_shorts.clear()
+        # En modo cross-año, get_results() leerá self._open_shorts intacto y
+        # los devolverá como shorts_pendientes (ver más abajo).
         # Aplicar regla 2 meses al final (necesita ver todas las compras).
         self._apply_regla_2_meses()
         # Aplicar integración diferida (Art. 33.5.f LIRPF último párrafo):
@@ -737,13 +770,58 @@ class FIFOTracker:
         # transmitidos pero con nueva recompra en 2M que prolonga el
         # diferimiento). El frontend las muestra como informativo.
         latentes = list(self._perdidas_diferidas.values())
+        # Shorts vivos al cierre — solo en modo cross-año (persistir=True).
+        # En modo legacy ya se vaciaron en process_all reclasificándolos
+        # como orphan_sales.
+        shorts_pendientes: list[OpenShort] = []
+        if self._persistir_shorts_al_cierre:
+            for queue in self._open_shorts.values():
+                shorts_pendientes.extend(queue)
         return FIFOResults(
             matches=list(self._matches),
             positions=self._get_all_summaries(),
             warnings=list(self._warnings),
             orphan_sales=list(self._orphan_sales),
             perdidas_diferidas_latentes=latentes,
+            shorts_pendientes=shorts_pendientes,
         )
+
+    def restore_open_shorts(self, shorts: list) -> None:
+        """Restaura posiciones cortas abiertas heredadas de un ejercicio
+        previo. El caller pasa una lista de OpenShort (o dicts con las
+        mismas claves) cargada típicamente de un sidecar
+        `shorts_pendientes_YYYY.json` del año anterior.
+
+        Debe llamarse ANTES de `process_all` para que las compras de
+        cobertura del año actual cierren primero los shorts heredados.
+
+        Acepta tanto OpenShort dataclass como dict con keys equivalentes
+        (para facilitar la deserialización del JSON sin tener que
+        reconstruir el dataclass en el caller).
+        """
+        for s in shorts:
+            if isinstance(s, OpenShort):
+                short_obj = s
+            else:
+                # Dict de sidecar JSON — reconstruir OpenShort.
+                fecha = s.get('fecha_apertura')
+                if isinstance(fecha, str):
+                    fecha = date.fromisoformat(fecha)
+                short_obj = OpenShort(
+                    isin=s.get('isin', ''),
+                    nombre=s.get('nombre', ''),
+                    fecha_apertura=fecha,
+                    cantidad=Decimal(str(s.get('cantidad', '0'))),
+                    importe_eur=Decimal(str(s.get('importe_eur', '0'))),
+                    gastos_eur=Decimal(str(s.get('gastos_eur', '0'))),
+                    broker=s.get('broker', ''),
+                    ejercicio_opcion=bool(s.get('ejercicio_opcion', False)),
+                    instrument_type=s.get('instrument_type', 'STOCK'),
+                    instrument_type_unknown=bool(
+                        s.get('instrument_type_unknown', False)),
+                )
+            key = (short_obj.isin, short_obj.broker or '')
+            self._open_shorts[key].append(short_obj)
 
     # ── Compras ──────────────────────────────────────────────────────────
 
@@ -1192,6 +1270,13 @@ class FIFOTracker:
             if match.ganancia_perdida >= 0:
                 continue  # solo afecta a pérdidas
 
+            # ETCs físicos tributan como RCM (Art. 25.2 LIRPF, DGT V0267-25),
+            # no como G/P patrimonial. La regla 2M del Art. 33.5.f LIRPF habla
+            # explícitamente de "pérdidas patrimoniales" → NO aplica a RCM.
+            # Por eso saltamos los matches con instrument_type='ETC'.
+            if getattr(match, 'instrument_type', 'STOCK') == 'ETC':
+                continue
+
             isin = match.isin
             fv = match.fecha_venta
 
@@ -1311,6 +1396,21 @@ class FIFOTracker:
         window_start = _subtract_months(fecha_v, window_months)
         window_end = _add_months(fecha_v, window_months)
 
+        # Recolectar todos los candidatos en ventana (excluyendo el lote
+        # consumido por el match). Hay tres categorías en orden de
+        # preferencia para mantener la cadena 2M doctrinalmente correcta:
+        #   1. VIVOS al final del proceso → la cadena sigue activa.
+        #   2. MUERTOS post-fecha-del-match → un match futuro los consume y
+        #      aflorará la PD en cadena cuando se procese (caso Nagarro).
+        #   3. MUERTOS pre-fecha → compras previas ya consumidas, sin futuro
+        #      consumo. Atar la PD aquí es archivarla en un cementerio: el
+        #      sweep huérfano la perdería. Doctrinalmente equivale a falta
+        #      de cadena viva → la PD debe AFLORAR en el match actual.
+        # Fix del bug de PD huérfanas en daytraders con cascadas largas:
+        # antes este método devolvía el primer candidato cronológico (a
+        # menudo un lote pre-fecha consumido) y la PD acababa archivada
+        # en un lote muerto.
+        candidatos: list[tuple[int, date]] = []
         for buy in self._all_buys:
             if buy["isin"] != isin:
                 continue
@@ -1318,7 +1418,18 @@ class FIFOTracker:
                 continue
             bd = buy["fecha"]
             if window_start <= bd <= window_end:
-                return (True, buy["lote_id"])
+                candidatos.append((buy["lote_id"], bd))
+        if not candidatos:
+            return (False, 0)
+        lotes_vivos = {lot.lote_id for lot in self._lots.get(isin, ())
+                       if lot.cantidad > 0}
+        vivos = [lid for lid, _ in candidatos if lid in lotes_vivos]
+        if vivos:
+            return (True, vivos[0])
+        muertos_post = [lid for lid, bd in candidatos if bd > fecha_v]
+        if muertos_post:
+            return (True, muertos_post[0])
+        # Solo quedan candidatos pre-fecha consumidos → no hay cadena viable.
         return (False, 0)
 
     def _apply_perdidas_diferidas(self) -> None:
@@ -1561,10 +1672,70 @@ def _subtract_months(d: date, months: int) -> date:
     return date(y, m, min(d.day, max_day))
 
 
+# ── Helpers sidecar shorts cross-año ────────────────────────────────────────
+
+def save_shorts_sidecar(path: str | Path, ejercicio: int,
+                        shorts: list) -> None:
+    """Serializa la lista de OpenShort al sidecar JSON
+    `shorts_pendientes_YYYY.json`. Acepta tanto OpenShort como dicts.
+
+    El sidecar permite al motor del año siguiente restaurar el estado de
+    posiciones cortas abiertas que crucen el cierre del ejercicio actual,
+    vía `FIFOTracker.restore_open_shorts(shorts)`.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    def _ser(s):
+        if isinstance(s, OpenShort):
+            return {
+                'isin': s.isin,
+                'nombre': s.nombre,
+                'fecha_apertura': (s.fecha_apertura.isoformat()
+                                   if s.fecha_apertura else ''),
+                'cantidad': str(s.cantidad),
+                'importe_eur': str(s.importe_eur),
+                'gastos_eur': str(s.gastos_eur),
+                'broker': s.broker,
+                'ejercicio_opcion': s.ejercicio_opcion,
+                'instrument_type': s.instrument_type,
+                'instrument_type_unknown': s.instrument_type_unknown,
+            }
+        return dict(s)
+
+    payload = {
+        'schema_version': 1,
+        'ejercicio': int(ejercicio),
+        'fecha_generacion': datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"),
+        'shorts': [_ser(s) for s in shorts],
+    }
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def load_shorts_sidecar(path: str | Path) -> list:
+    """Lee el sidecar y devuelve la lista de dicts de shorts. Lista vacía
+    si el fichero no existe (caso normal cuando es la primera vez que se
+    procesa un ejercicio con el código de cross-año activo)."""
+    import json
+    import os as _os
+    if not _os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding='utf-8') as f:
+            payload = json.load(f)
+        return list(payload.get('shorts', []))
+    except Exception:
+        return []
+
+
 # ── Función de conveniencia ──────────────────────────────────────────────────
 
 def calcular_fifo(csv_paths: list[str | Path],
-                  corte_fecha: date | None = None) -> FIFOResults:
+                  corte_fecha: date | None = None,
+                  shorts_iniciales: list | None = None,
+                  persistir_shorts_al_cierre: bool = False) -> FIFOResults:
     """Procesa múltiples CSVs/XLSXs en orden y devuelve resultados FIFO.
 
     Args:
@@ -1577,13 +1748,25 @@ def calcular_fifo(csv_paths: list[str | Path],
             ventana de la regla 2M post-año (Art. 33.5.f LIRPF) sin
             arrastrar al informe operaciones que pertenecen al ejercicio
             siguiente.
+        shorts_iniciales: Lista de shorts heredados del ejercicio previo
+            (cargada del sidecar `shorts_pendientes_<año-previo>.json`
+            vía `load_shorts_sidecar`). Si se pasa, se restauran en el
+            tracker ANTES de procesar las ops, así las compras de
+            cobertura del año actual pueden cerrar shorts cross-año.
+        persistir_shorts_al_cierre: Si True, los shorts no cubiertos al
+            final NO se reclasifican como orphan_sales — quedan vivos en
+            FIFOResults.shorts_pendientes para que el caller los serialice
+            al sidecar del año actual. Default False (legacy: reclasificar
+            a orphan).
 
     Returns:
         FIFOResults con matches, posiciones y warnings. Si se aplicó
         corte_fecha, el campo `n_ops_ignoradas` indica cuántas se
         descartaron (informativo para el frontend).
     """
-    tracker = FIFOTracker()
+    tracker = FIFOTracker(persistir_shorts_al_cierre=persistir_shorts_al_cierre)
+    if shorts_iniciales:
+        tracker.restore_open_shorts(shorts_iniciales)
     all_ops: list[dict] = []
 
     # Cuando solo hay un fichero, asumimos que contiene el histórico completo
@@ -1622,7 +1805,9 @@ def calcular_fifo(csv_paths: list[str | Path],
 
 def calcular_fifo_from_ops(ops_actuales: list[dict],
                            paths_anteriores: list[str | Path] | None = None,
-                           return_ops: bool = False):
+                           return_ops: bool = False,
+                           shorts_iniciales: list | None = None,
+                           persistir_shorts_al_cierre: bool = False):
     """Variante de calcular_fifo que acepta operaciones in-memory.
 
     Útil cuando ya tenemos las operaciones del ejercicio actual procesadas
@@ -1638,8 +1823,12 @@ def calcular_fifo_from_ops(ops_actuales: list[dict],
             Cada compra (tipo A) en la lista tiene `_lote_id` anotado para que
             el caller pueda mapearla a su fila en el XLSX maestro y emitir
             fórmulas prorrateadas en la hoja G_P_por_valor.
+        shorts_iniciales: ver `calcular_fifo`.
+        persistir_shorts_al_cierre: ver `calcular_fifo`.
     """
-    tracker = FIFOTracker()
+    tracker = FIFOTracker(persistir_shorts_al_cierre=persistir_shorts_al_cierre)
+    if shorts_iniciales:
+        tracker.restore_open_shorts(shorts_iniciales)
     all_ops: list[dict] = []
 
     # Coherente con calcular_fifo: si solo hay un path previo, lo tratamos
