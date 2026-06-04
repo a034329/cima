@@ -234,21 +234,83 @@ def _enriquecer_etfs_historico(db: Session, cartera_id: str,
 
 
 def calcular_estimaciones_seguimiento(db: Session, cartera_id: str) -> list[EstimacionCalc]:
-    """Estimaciones de las empresas en seguimiento (watchlist). Precio nativo por
-    ticker (no por resolución ISIN, ya conocemos el símbolo)."""
-    from app.services.precios import precio_nativo_simbolo
+    """Estimaciones de las empresas en seguimiento (watchlist). Sin precio
+    actual no hay CAGR4+Div, así que merece la pena fetchar en vivo cuando el
+    cache no tiene el ticker (los seguimientos no entran en `obtener_precios_eur`,
+    que solo procesa posiciones). Estrategia:
+      1. ticker → cache (`precio_nativo_simbolo`, instantáneo si está).
+      2. ticker → red (yfinance) si no está cacheado.
+      3. ISIN → resolución FIGI → símbolo yahoo → red (igual que posiciones)
+         como fallback cuando el ticker no es un símbolo Yahoo válido.
+    """
+    from app.services.precios import (
+        _ISIN_OVERRIDE, _leer_cache, _resolver_figi, _yf_simbolo,
+        precio_nativo_simbolo,
+    )
 
     filas = _filas_estimacion(db, cartera_id)
-    out: list[EstimacionCalc] = []
-    for s in db.execute(
+    seguimientos = list(db.execute(
         select(models.Seguimiento).where(models.Seguimiento.cartera_id == cartera_id)
-    ).scalars():
-        pv = precio_nativo_simbolo(s.ticker)
+    ).scalars())
+    # Resolución FIGI de TODOS los ISINes de seguimiento en una sola pasada
+    # (cachea ticker+exchCode 30d). Solo dispara la red si falta alguno.
+    cache = _leer_cache()
+    _resolver_figi([s.isin for s in seguimientos], cache)
+
+    out: list[EstimacionCalc] = []
+    actualizar_ticker = False
+    for s in seguimientos:
+        pv: tuple[Decimal, str] | None = None
+        # 1) PRIMERO ISIN → FIGI → símbolo Yahoo. El ISIN es identificador
+        # global fiable; los tickers que el usuario teclea pueden ser textos
+        # libres ("MCDONALD", "COSTCO") que Yahoo no reconoce.
+        figi = cache.get(f"figi:{s.isin}", {})
+        sim_yf = _ISIN_OVERRIDE.get(s.isin) or _yf_simbolo(figi.get("ticker"), figi.get("exch"))
+        if sim_yf:
+            pv = precio_nativo_simbolo(sim_yf) or precio_nativo_simbolo(sim_yf, refrescar=True)
+        # 2) Si FIGI no resuelve (cripto, ISIN raro), intento con el ticker manual.
+        if pv is None:
+            pv = precio_nativo_simbolo(s.ticker) or precio_nativo_simbolo(s.ticker, refrescar=True)
+        # 3) Último recurso: buscar en yfinance por nombre. Usamos `nombre` si
+        # existe; si no, el propio `ticker` (el usuario suele teclear ahí el
+        # nombre comercial — caso real: "MCDONALD" en ticker, nombre vacío).
+        if pv is None:
+            termino = (s.nombre or s.ticker or "").strip()
+            if termino:
+                sim_busqueda = _buscar_simbolo_yfinance(termino)
+                if sim_busqueda:
+                    pv = precio_nativo_simbolo(sim_busqueda, refrescar=True)
+                    # Self-healing: guardamos el símbolo bueno en el watchlist
+                    # para que la próxima lectura sea directa (paso 1 acertará).
+                    if pv is not None and s.ticker != sim_busqueda:
+                        s.ticker = sim_busqueda
+                        actualizar_ticker = True
         precio, divisa = (pv[0], pv[1]) if pv else (None, s.divisa)
         out.append(_calc_item(s.isin, s.nombre or s.ticker,
                               filas.get(s.isin), precio, divisa))
+    if actualizar_ticker:
+        db.commit()
     out.sort(key=lambda x: x.nombre.lower())
     return out
+
+
+def _buscar_simbolo_yfinance(nombre: str) -> str | None:
+    """Busca un símbolo Yahoo por nombre de empresa. Útil cuando el ticker
+    del watchlist no es un símbolo Yahoo válido (caso real: usuarios que
+    teclean "MCDONALD" en vez de "MCD"). Best-effort; cualquier error → None."""
+    import warnings
+    try:
+        import yfinance as yf  # type: ignore[import-not-found]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = yf.Search(nombre, max_results=1)
+            quotes = getattr(r, "quotes", None) or []
+            if quotes:
+                sym = quotes[0].get("symbol")
+                return str(sym) if sym else None
+    except Exception:
+        return None
+    return None
 
 
 def prefill_estimaciones(db: Session, cartera_id: str) -> int:
@@ -269,6 +331,13 @@ def prefill_estimaciones(db: Session, cartera_id: str) -> int:
     # El prefill ES el refresco de mercado explícito: repuebla precios + fundamentales
     # en vivo (con refrescar=True). El resto de lecturas usan solo la caché → instantáneas.
     obtener_precios_eur(db, cartera_id, forzar=True)
+    # También seguimientos (no entran en obtener_precios_eur que solo mira posiciones)
+    # — sin esto, los watchlist se quedan sin precio y el CAGR4+Div queda en blanco.
+    from app.services.precios import precio_nativo_simbolo
+    for seg in db.execute(
+        select(models.Seguimiento).where(models.Seguimiento.cartera_id == cartera_id)
+    ).scalars():
+        precio_nativo_simbolo(seg.ticker, refrescar=True)
     funds = fundamentales_por_isin(db, cartera_id, refrescar=True)
     cons = consenso_por_isin(db, cartera_id)
     existentes = _filas_estimacion(db, cartera_id)

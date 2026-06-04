@@ -274,6 +274,24 @@ export interface AnalisisContexto {
   fecha: string;
   proveedor: string;
   disclaimer: string | null;
+  requiere_0b: boolean;
+  motivo_0b: string;
+}
+
+export interface AnalisisCausaRaiz {
+  isin: string;
+  nombre: string;
+  causa_exacta: string;
+  profundidad: 'LIGERA' | 'MEDIA' | 'GRAVE' | 'SIN_DATOS';
+  horizonte_resolucion: string;
+  segmentos_afectados: { nombre: string; peso_pct: number; impacto: string }[];
+  evidencias: string[];
+  conclusion: string;
+  nueva_clasificacion: 'COYUNTURAL' | 'GRIS' | 'ESTRUCTURAL' | '';
+  fuentes: string[];
+  fecha: string;
+  proveedor: string;
+  disclaimer: string | null;
 }
 
 export interface Chequeo {
@@ -793,6 +811,8 @@ export interface PosicionPlan {
   prioridad: PrioridadPlan | null;
   paso_id: string | null;
   en_cartera: boolean;
+  fecha_objetivo: string | null;           // deadline (manual)
+  proximo_tramo_fecha: string | null;      // DCA en curso: estimación próximo tramo
 }
 
 // ── Hueco de asignación (plan de compra top-down) ─────────────────────────
@@ -852,6 +872,10 @@ export interface PasoPlanIn {
   capital_objetivo_eur?: string | null;
   fecha_objetivo?: string | null;
   notas?: string | null;
+  // Datos para auto-añadir al watchlist si el ISIN no está en cartera ni en
+  // seguimiento y la decisión es de compra/hold (watchlist-first).
+  nombre?: string | null;
+  ticker?: string | null;
   friccion_severidad?: string | null;
   friccion_motivo?: string | null;
 }

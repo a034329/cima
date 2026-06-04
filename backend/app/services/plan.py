@@ -30,6 +30,8 @@ class DecisionActiva:
     prioridad: str
     capital_objetivo_eur: Decimal | None
     razon: str | None
+    estado: str = "PENDIENTE"
+    fecha_objetivo: date | None = None
 
 
 @dataclass
@@ -45,6 +47,46 @@ class PosicionPlan:
     prioridad: str | None
     paso_id: str | None
     en_cartera: bool = True          # False = candidato del watchlist (compra planeada)
+    fecha_objetivo: date | None = None        # deadline del paso (manual)
+    proximo_tramo_fecha: date | None = None   # solo DCA en curso: última tx + espaciado régimen
+
+
+# Días promedio del espaciado por régimen (centro de la horquilla WG):
+# VERDE 2-3 sem → 18d · AMARILLO 3-4 sem → 25d · ROJO 4-6 sem → 35d.
+_DIAS_ESPACIADO_REGIMEN = {"VERDE": 18, "AMARILLO": 25, "ROJO": 35}
+
+# Decisiones que "consume" una transacción: una BUY avanza COMPRAR/REFORZAR; una
+# SELL avanza VENDER/RECORTAR. MANTENER/MONITORIZAR/ESPERAR no se ven afectadas.
+_AVANZA_BUY = {"COMPRAR", "REFORZAR"}
+_AVANZA_SELL = {"VENDER", "RECORTAR"}
+_TOLERANCIA_COMPLETADO = Decimal("0.05")   # ±5 % del objetivo = completado
+
+
+def _proximo_tramo_fecha(
+    db: Session, cartera_id: str, isin: str, decision: str, estado: str,
+    regimen: str = "AMARILLO",
+) -> date | None:
+    """Fecha estimada del siguiente tramo de DCA = última operación BUY/SELL del
+    ISIN + espaciado del régimen. Solo aplica a pasos de DCA en marcha (estado
+    EN_CURSO con decisión COMPRAR/REFORZAR/VENDER/RECORTAR). Devuelve None si
+    no aplica o si no hay ninguna operación previa del ISIN."""
+    from datetime import timedelta
+    if estado != "EN_CURSO":
+        return None
+    if decision not in (_AVANZA_BUY | _AVANZA_SELL):
+        return None
+    ultima = db.execute(
+        select(func.max(models.Transaccion.fecha))
+        .join(models.Posicion)
+        .where(models.Posicion.cartera_id == cartera_id)
+        .where(models.Posicion.isin == isin)
+        .where(models.Transaccion.estado == "confirmada")
+        .where(models.Transaccion.tipo.in_(("BUY", "SELL")))
+    ).scalar()
+    if ultima is None:
+        return None
+    dias = _DIAS_ESPACIADO_REGIMEN.get(regimen, 25)
+    return ultima + timedelta(days=dias)
 
 
 def _prio(p: str) -> int:
@@ -83,12 +125,13 @@ def decisiones_activas(db: Session, cartera_id: str) -> dict[str, DecisionActiva
                 Decimal(str(p.capital_objetivo_eur))
                 if p.capital_objetivo_eur is not None else None
             ),
-            razon=p.razon,
+            razon=p.razon, estado=p.estado, fecha_objetivo=p.fecha_objetivo,
         )
     return out
 
 
 def posiciones_con_plan(db: Session, cartera_id: str) -> list[PosicionPlan]:
+    from app.services.regimen import estado_regimen
     bloques = {
         b.id: b.nombre for b in db.execute(
             select(models.Bloque).where(models.Bloque.cartera_id == cartera_id)
@@ -98,6 +141,7 @@ def posiciones_con_plan(db: Session, cartera_id: str) -> list[PosicionPlan]:
     posiciones = list(db.execute(
         select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
     ).scalars())
+    regimen = estado_regimen(db, cartera_id).regimen
 
     out: list[PosicionPlan] = []
     isines_pos: set[str] = set()
@@ -108,6 +152,12 @@ def posiciones_con_plan(db: Session, cartera_id: str) -> list[PosicionPlan]:
         isines_pos.add(pos.isin)
         da = activas.get(pos.isin)
         bid = pos.bloque_id if pos.bloque_id in bloques else None
+        proximo = _proximo_tramo_fecha(
+            db, cartera_id, pos.isin,
+            da.decision if da else DECISION_DEFECTO,
+            da.estado if da else "PENDIENTE",
+            regimen,
+        ) if da else None
         out.append(PosicionPlan(
             isin=pos.isin,
             nombre=pos.nombre or pos.isin,
@@ -119,6 +169,8 @@ def posiciones_con_plan(db: Session, cartera_id: str) -> list[PosicionPlan]:
             razon=da.razon if da else None,
             prioridad=da.prioridad if da else None,
             paso_id=da.paso_id if da else None,
+            fecha_objetivo=da.fecha_objetivo if da else None,
+            proximo_tramo_fecha=proximo,
         ))
     out.sort(key=lambda p: p.valor_eur, reverse=True)
 
@@ -161,10 +213,17 @@ def crear_paso(
     *, razon: str | None = None, capital_objetivo_eur: Decimal | None = None,
     fecha_objetivo: date | None = None, notas: str | None = None,
     reemplazar: bool = True,
+    nombre: str | None = None, ticker: str | None = None,
 ) -> models.PlanPaso:
+    """Crea un paso del plan. `nombre`/`ticker` se usan SOLO cuando el ISIN
+    es nuevo (ni en cartera ni en seguimiento) y la decisión es de compra/hold:
+    en ese caso lo añadimos automáticamente al watchlist con esos datos, en
+    vez de rechazar con 404. Para VENDER/RECORTAR mantenemos el 404 — no se
+    puede vender lo que no se tiene."""
     _validar_enums(decision, prioridad, None)
     # El paso puede ser sobre una posición (cartera) o sobre una empresa del
-    # watchlist (Seguimiento) que planeas comprar. Solo se rechaza si no es ninguna.
+    # watchlist (Seguimiento) que planeas comprar. Solo se rechaza si no es ninguna
+    # Y además la decisión no admite watchlist (vender/recortar).
     es_posicion = db.execute(
         select(models.Posicion)
         .where(models.Posicion.cartera_id == cartera_id)
@@ -177,8 +236,24 @@ def crear_paso(
             .where(models.Seguimiento.isin == isin)
         ).scalars().first() is not None
         if not es_seguimiento:
-            raise HTTPException(status.HTTP_404_NOT_FOUND,
-                                f"No tienes ni sigues {isin}")
+            # VENDER/RECORTAR requieren posición en cartera — no tiene sentido
+            # crear un paso de venta sobre algo que no se tiene.
+            if decision in _AVANZA_SELL:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND,
+                    f"No tienes {isin} en cartera; no se puede crear un paso "
+                    f"de {decision} sobre un valor sin posición.",
+                )
+            # COMPRAR/REFORZAR/MANTENER/MONITORIZAR/ESPERAR: doctrina watchlist-first,
+            # auto-añadir al watchlist con lo que la IA o el usuario nos den.
+            db.add(models.Seguimiento(
+                cartera_id=cartera_id, isin=isin,
+                ticker=(ticker or isin[:8]),     # ticker placeholder; el usuario lo refina
+                nombre=(nombre or None),
+                divisa=None,
+                notas="Añadido automáticamente al crear un paso del plan",
+            ))
+            db.flush()
     # Un valor tiene UNA decisión vigente: el paso nuevo REEMPLAZA a los activos
     # anteriores del mismo ISIN (se cancelan) para que no convivan decisiones
     # contradictorias (p.ej. VENDER viejo + MANTENER tras re-evaluar). El histórico
@@ -344,13 +419,6 @@ def hueco_asignacion(db: Session, cartera_id: str) -> HuecoResultado:
 
 
 # ── Aplicar transacción confirmada a los pasos del plan ─────────────────────
-# Decisiones que "consume" una transacción: una BUY avanza COMPRAR/REFORZAR; una
-# SELL avanza VENDER/RECORTAR. MANTENER/MONITORIZAR/ESPERAR no se ven afectadas.
-_AVANZA_BUY = {"COMPRAR", "REFORZAR"}
-_AVANZA_SELL = {"VENDER", "RECORTAR"}
-_TOLERANCIA_COMPLETADO = Decimal("0.05")   # ±5 % del objetivo = completado
-
-
 def aplicar_transaccion(db: Session, cartera_id: str, isin: str) -> int:
     """Actualiza los pasos activos del ISIN tras una transacción confirmada.
 

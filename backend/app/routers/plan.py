@@ -55,6 +55,8 @@ class PosicionPlanOut(BaseModel):
     prioridad: str | None = None
     paso_id: str | None = None
     en_cartera: bool = True
+    fecha_objetivo: date | None = None        # deadline manual del paso
+    proximo_tramo_fecha: date | None = None   # DCA en curso: última tx + espaciado régimen
 
 
 class HuecoBloqueOut(BaseModel):
@@ -88,6 +90,12 @@ class CrearPasoIn(BaseModel):
     capital_objetivo_eur: Decimal | None = None
     fecha_objetivo: date | None = None
     notas: str | None = None
+    # Si el ISIN aún no está en cartera ni en watchlist y la decisión es de
+    # compra/hold, el servicio lo añade automáticamente al watchlist (doctrina
+    # watchlist-first). `nombre`/`ticker` se usan para enriquecer esa entrada
+    # cuando la IA o el usuario los conocen.
+    nombre: str | None = None
+    ticker: str | None = None
     # Fricción: si el paso se crea tras rebatir un aviso, se registra el override.
     friccion_severidad: str | None = None
     friccion_motivo: str | None = None
@@ -151,6 +159,7 @@ def get_posiciones(db: Session = Depends(get_db)) -> list[PosicionPlanOut]:
             decision=p.decision, capital_objetivo_eur=_q2(p.capital_objetivo_eur),
             razon=p.razon, prioridad=p.prioridad, paso_id=p.paso_id,
             en_cartera=p.en_cartera,
+            fecha_objetivo=p.fecha_objetivo, proximo_tramo_fecha=p.proximo_tramo_fecha,
         )
         for p in svc.posiciones_con_plan(db, _cartera(db).id)
     ]
@@ -216,6 +225,7 @@ def crear(payload: CrearPasoIn, db: Session = Depends(get_db)) -> PasoOut:
         db, cid, payload.isin, payload.decision, payload.prioridad,
         razon=payload.razon, capital_objetivo_eur=payload.capital_objetivo_eur,
         fecha_objetivo=payload.fecha_objetivo, notas=payload.notas,
+        nombre=payload.nombre, ticker=payload.ticker,
     )
     # Si el paso se creó tras rebatir una fricción, registrar el override.
     if payload.friccion_severidad:

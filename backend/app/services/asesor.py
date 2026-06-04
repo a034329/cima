@@ -81,7 +81,13 @@ def _validar_accion(a: dict) -> Accion | None:
         prio = prio if prio in _PRIORIDADES else "MEDIA"
         razon = str(a.get("razon") or "").strip() or None
         cap = a.get("capital_objetivo_eur")
-        params = {"decision": dec, "prioridad": prio, "capital_objetivo_eur": cap, "razon": razon}
+        # `nombre`/`ticker` opcionales: si la IA los conoce los pasa para que
+        # el backend pueda añadir el valor al watchlist (cuando el ISIN aún
+        # no está en cartera ni en seguimiento y la decisión es de compra/hold).
+        nombre = str(a.get("nombre") or "").strip() or None
+        ticker = str(a.get("ticker") or "").strip() or None
+        params = {"decision": dec, "prioridad": prio, "capital_objetivo_eur": cap,
+                  "razon": razon, "nombre": nombre, "ticker": ticker}
         desc = f"Crear paso {dec} · {isin} (prioridad {prio})" + (f" — {razon}" if razon else "")
         return Accion("crear_paso", isin, desc, params)
     # ajustar_estimacion: puede tocar el tipo de múltiplo, el múltiplo+métrica y/o el dividendo.

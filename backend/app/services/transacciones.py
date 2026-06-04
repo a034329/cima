@@ -24,6 +24,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Iterable
 
+from fastapi import HTTPException, status
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -260,7 +262,24 @@ def crear_manual(
         # genera matches. Sin esto, la posición no refleja el cambio.
         from app.services.fifo import rebuild_for_posicion
         from app.services.plan import aplicar_transaccion as aplicar_a_plan
-        rebuild_for_posicion(db, pos.id)
+        rb = rebuild_for_posicion(db, pos.id)
+        # Validación crítica: si el rebuild generó un aviso de inventario
+        # insuficiente para ESTA tx (vender más de lo disponible), revertir
+        # la tx y devolver 4xx al cliente. Antes el rebuild silenciaba el
+        # aviso y devolvía 200 → caso real Angel: vendió 17 acciones de ACS
+        # con 16 disponibles, frontend mostró "venta aplicada", BD nunca se
+        # modificó. Esto cierra el bug en origen.
+        if candidata.tipo == "SELL" and any("sin inventario" in a for a in rb.avisos):
+            db.delete(tx)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Inventario insuficiente: estás vendiendo {candidata.cantidad} "
+                    f"acciones pero no hay tantas disponibles. Comprueba la posición "
+                    f"o importa el extracto que falte antes."
+                ),
+            )
         db.commit()
         # Avanza/cierra los pasos del plan activos para este ISIN.
         aplicar_a_plan(db, cartera_id, pos.isin)

@@ -283,6 +283,13 @@ def test_manual_confirmada_reconcilia_con_extracto_no_duplica(
     y el extracto insertaba una segunda fila → duplicado. Ahora: la manual SÍ
     es candidata aunque esté `confirmada`, se reconcilia in-place y el aviso
     `[RECONCILIADA]` la marca."""
+    # Necesitamos inventario previo para que el SELL no falle por FIFO insuficiente
+    # (validación añadida en crear_manual tras el bug del ACS).
+    compra_previa = _tx_candidata(
+        fecha=date(2024, 12, 1), tipo="BUY", broker_id=broker_tr.id,
+        external_id="extracto-zegona-buy",
+    )
+    reconciliar_extracto(db, cartera.id, "tr", [compra_previa])
     manual = _tx_candidata(
         fecha=date(2025, 1, 27), tipo="SELL", broker_id=broker_tr.id, external_id=None,
     )
@@ -300,14 +307,15 @@ def test_manual_confirmada_reconcilia_con_extracto_no_duplica(
     assert r.reconciliadas == 1 and r.insertadas == 0
     assert any("[RECONCILIADA]" in a for a in r.avisos)
 
-    # Solo hay 1 transacción y conserva su id original (FIFO/lots intactos);
-    # los campos del extracto la han sobrescrito.
-    todas = db.execute(select(models.Transaccion)).scalars().all()
-    assert len(todas) == 1
-    assert todas[0].id == manual_id
-    assert todas[0].estado == "confirmada"
-    assert todas[0].origen == "extracto_tr"
-    assert todas[0].external_id == "extracto-zegona-real"
+    # Hay 2 tx: la compra previa del extracto + la SELL que pasó de manual a
+    # extracto_tr in-place (mismo `id`, los datos del extracto la sobrescriben).
+    sells = db.execute(select(models.Transaccion).where(
+        models.Transaccion.tipo == "SELL")).scalars().all()
+    assert len(sells) == 1
+    assert sells[0].id == manual_id
+    assert sells[0].estado == "confirmada"
+    assert sells[0].origen == "extracto_tr"
+    assert sells[0].external_id == "extracto-zegona-real"
 
 
 def test_precio_local_distinto_pero_importe_eur_casa_es_match_exacto(
@@ -318,6 +326,12 @@ def test_precio_local_distinto_pero_importe_eur_casa_es_match_exacto(
     El precio difiere 98% pero ambos generan ~2.470 € — son la misma operación
     fiscalmente. Debe ser match exacto, no conflicto."""
     fecha = date(2026, 5, 28)
+    # Inventario previo (no se puede vender 117 sin tenerlas).
+    compra = _tx_candidata(
+        fecha=date(2026, 4, 1), tipo="BUY", broker_id=broker_tr.id,
+        external_id="zegona-buy-prev", cantidad=Decimal("117"),
+    )
+    reconciliar_extracto(db, cartera.id, "tr", [compra])
     # Manual: precio_local "raro" (ej. en peniques) pero importe_eur correcto
     manual = _tx_candidata(
         fecha=fecha, tipo="SELL", broker_id=broker_tr.id, external_id=None,
@@ -338,12 +352,13 @@ def test_precio_local_distinto_pero_importe_eur_casa_es_match_exacto(
     r = reconciliar_extracto(db, cartera.id, "tr", [extracto])
 
     assert r.reconciliadas == 1 and r.insertadas == 0 and r.conflictos == 0
-    todas = db.execute(select(models.Transaccion)).scalars().all()
-    assert len(todas) == 1
-    assert todas[0].id == manual_id    # se reemplazó in-place
-    assert todas[0].precio_local == Decimal("21.17")   # el extracto manda
-    assert todas[0].importe_eur == Decimal("2476.96")
-    assert todas[0].external_id == "dg-extracto-zegona"
+    sells = db.execute(select(models.Transaccion).where(
+        models.Transaccion.tipo == "SELL")).scalars().all()
+    assert len(sells) == 1
+    assert sells[0].id == manual_id    # se reemplazó in-place
+    assert sells[0].precio_local == Decimal("21.17")   # el extracto manda
+    assert sells[0].importe_eur == Decimal("2476.96")
+    assert sells[0].external_id == "dg-extracto-zegona"
 
 
 def test_huerfana_incluye_manuales_confirmadas_viejas_no_casadas(

@@ -114,7 +114,11 @@ _ACCIONES_OWNER = (
     "para que lo apliques' y añade AL FINAL un bloque JSON (y NADA después) con las acciones. Tipos:\n"
     '  - crear_paso: {"tipo":"crear_paso","isin":"<ISIN>","decision":"COMPRAR|REFORZAR|VENDER|RECORTAR|'
     'MANTENER|MONITORIZAR|ESPERAR","prioridad":"CRITICA|ALTA|MEDIA|BAJA","capital_objetivo_eur":<num o null>,'
-    '"razon":"<por qué>"}\n'
+    '"razon":"<por qué>","nombre":"<nombre legible, opc.>","ticker":"<ticker, opc.>"}\n'
+    '    · Si propones un paso COMPRAR/REFORZAR/MANTENER/MONITORIZAR/ESPERAR sobre un ISIN que el '
+    'usuario aún NO tiene en cartera ni en watchlist, INCLUYE `nombre` y `ticker` — el backend lo '
+    'añadirá automáticamente al watchlist (doctrina watchlist-first). VENDER/RECORTAR solo se '
+    'permite sobre posiciones existentes.\n'
     '  - ajustar_estimacion: {"tipo":"ajustar_estimacion","isin":"<ISIN>","tipo_val":"PER|P_FCF|P_BV|'
     'P_FRE|SOTP"(opcional),"multiplo_objetivo":<num>,"metrica_base_4y":<num>,"dividendo_share":<num>(opcional),'
     '"razon":"<anclado en consenso/comparables/NAV>"}\n'

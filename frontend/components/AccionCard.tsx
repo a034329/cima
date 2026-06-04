@@ -49,6 +49,12 @@ export function AccionCard({ a, onError }: { a: AccionPropuesta; onError: (e: st
           prioridad: (p.prioridad as never) ?? undefined,
           razon: (p.razon as string) ?? null,
           capital_objetivo_eur: p.capital_objetivo_eur != null ? String(p.capital_objetivo_eur) : null,
+          // `nombre`/`ticker` opcionales: si la IA los propuso, el backend los
+          // usa para auto-añadir el valor al watchlist (caso real: la IA propuso
+          // un paso COMPRAR sobre un ISIN que no estaba ni en cartera ni en
+          // seguimiento → 404. Ahora se añade al watchlist automáticamente).
+          nombre: (p.nombre as string) ?? null,
+          ticker: (p.ticker as string) ?? null,
         });
       } else {
         if (!window.confirm('Esto actualizará tu estimación con los valores propuestos. ¿Continuar?')) return;

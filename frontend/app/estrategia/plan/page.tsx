@@ -124,6 +124,7 @@ export default function PlanPage() {
                 <th className="px-3 text-right">Valor</th>
                 <th className="px-3">Decisión</th>
                 <th className="px-3 text-right">Capital obj.</th>
+                <th className="px-3" title="Deadline manual del paso · Próximo tramo previsto (DCA en curso, según régimen)">Fecha</th>
                 <th className="px-3"></th>
               </tr>
             </thead>
@@ -154,6 +155,9 @@ export default function PlanPage() {
                   </td>
                   <td className="px-3 text-right font-mono tabular-nums">
                     {p.capital_objetivo_eur ? fmtEUR(p.capital_objetivo_eur) : '—'}
+                  </td>
+                  <td className="px-3 text-xs">
+                    <FechaPaso deadline={p.fecha_objetivo} proximo={p.proximo_tramo_fecha} />
                   </td>
                   <td className="px-3 text-right">
                     <button
@@ -242,6 +246,7 @@ type GuardarPayload = {
   prioridad: PrioridadPlan;
   capital_objetivo_eur: string | null;
   razon: string | null;
+  fecha_objetivo?: string | null;            // deadline (ISO YYYY-MM-DD)
   friccion_severidad?: string | null;
   friccion_motivo?: string | null;
 };
@@ -263,6 +268,7 @@ function NuevoPaso({
   const [prioridad, setPrioridad] = useState<PrioridadPlan>('MEDIA');
   const [capital, setCapital] = useState('');
   const [razon, setRazon] = useState('');
+  const [fechaObjetivo, setFechaObjetivo] = useState('');
   const [friccion, setFriccion] = useState<FriccionResultado | null>(null);
   const [evaluando, setEvaluando] = useState(false);
   const [audit, setAudit] = useState<Auditoria | null>(null);
@@ -288,6 +294,7 @@ function NuevoPaso({
     isin, decision, prioridad,
     capital_objetivo_eur: capital.trim() ? capital.trim() : null,
     razon: razon.trim() ? razon.trim() : null,
+    fecha_objetivo: fechaObjetivo.trim() || null,
   });
 
   const onGuardarClick = async () => {
@@ -332,6 +339,13 @@ function NuevoPaso({
           placeholder="Capital € (opc.)"
           inputMode="decimal"
           className="px-3 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))] w-36"
+        />
+        <input
+          type="date"
+          value={fechaObjetivo}
+          onChange={(e) => setFechaObjetivo(e.target.value)}
+          title="Deadline (cuándo debería estar todo hecho). Opcional."
+          className="px-2 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]"
         />
         <input
           value={razon}
@@ -382,3 +396,51 @@ function NuevoPaso({
 
 // El diálogo de fricción vive ahora en `components/FriccionDialog.tsx` y se reutiliza
 // también desde el alta real de transacciones (AccionesCartera).
+
+// Badge inteligente para el deadline + próximo tramo previsto de un paso. Estados:
+//   • vencido (deadline pasado)        → rose
+//   • urgente (0-3 días)               → amber
+//   • próximo (4-14 días)              → muted
+//   • lejano                           → muted (sin color)
+// Si NO hay deadline pero SÍ hay próximo tramo (DCA en curso), se muestra ese.
+function FechaPaso({
+  deadline, proximo,
+}: { deadline: string | null; proximo: string | null }) {
+  if (!deadline && !proximo) return <span className="text-[rgb(var(--muted))]">—</span>;
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const fmtCorto = (iso: string) => {
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
+  };
+  const diasDesdeHoy = (iso: string): number => {
+    const d = new Date(iso + 'T00:00:00');
+    return Math.round((d.getTime() - hoy.getTime()) / (1000 * 60 * 60 * 24));
+  };
+  const color = (d: number) =>
+    d < 0 ? 'text-rose-600 dark:text-rose-400 font-medium'
+      : d <= 3 ? 'text-amber-600 dark:text-amber-400'
+        : d <= 14 ? 'text-[rgb(var(--fg))]'
+          : 'text-[rgb(var(--muted))]';
+  return (
+    <div className="flex flex-col gap-0.5">
+      {deadline && (() => {
+        const d = diasDesdeHoy(deadline);
+        const etq = d < 0 ? `vencido (${-d}d)` : d === 0 ? 'hoy' : `${d}d`;
+        return (
+          <span className={color(d)} title="Deadline del paso">
+            ⏱ {fmtCorto(deadline)} · {etq}
+          </span>
+        );
+      })()}
+      {proximo && (() => {
+        const d = diasDesdeHoy(proximo);
+        const etq = d < 0 ? `próx. tramo previsto hace ${-d}d` : d === 0 ? 'tramo: hoy' : `próx. tramo en ${d}d`;
+        return (
+          <span className={color(d)} title="Próximo tramo previsto (última operación + espaciado del régimen)">
+            ↻ {fmtCorto(proximo)} · {etq}
+          </span>
+        );
+      })()}
+    </div>
+  );
+}

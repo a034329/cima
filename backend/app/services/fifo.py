@@ -90,9 +90,20 @@ def aplicar_sell(db: Session, tx: models.Transaccion) -> list[tuple[models.Lot, 
         .order_by(models.Lot.fecha_compra, models.Lot.id)
     ).scalars())
 
+    # Verificación PREVIA atómica: si no hay inventario suficiente, fallar SIN
+    # mutar los lots. Antes el bucle consumía parcialmente y solo entonces
+    # lanzaba — al capturarse la excepción aguas arriba, los lots quedaban
+    # vacíos sin reflejar nada (estado inconsistente, no detectable).
+    inventario_total = sum((lot.cantidad_restante for lot in lots), Decimal("0"))
+    if inventario_total < tx.cantidad:
+        raise FIFOInsuficiente(
+            f"Venta de {tx.cantidad} para posicion {tx.posicion_id} excede el "
+            f"inventario disponible ({inventario_total}). Posible operación "
+            f"huérfana o desfase con extractos previos."
+        )
+
     cantidad_pendiente = tx.cantidad
     consumidos: list[tuple[models.Lot, Decimal]] = []
-
     for lot in lots:
         if cantidad_pendiente <= 0:
             break
@@ -102,13 +113,6 @@ def aplicar_sell(db: Session, tx: models.Transaccion) -> list[tuple[models.Lot, 
         )
         consumidos.append((lot, consume))
         cantidad_pendiente -= consume
-
-    if cantidad_pendiente > 0:
-        raise FIFOInsuficiente(
-            f"Venta de {tx.cantidad} para posicion {tx.posicion_id} excede el "
-            f"inventario disponible (faltan {cantidad_pendiente} unidades). "
-            f"Posible operación huérfana o desfase con extractos previos."
-        )
 
     db.flush()
     return consumidos

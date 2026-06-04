@@ -163,8 +163,11 @@ function ModalAnadirTx({
     cantidad: '', precio_local: '', divisa_local: 'EUR', importe_eur: '', gastos_eur: '0', notas: '',
   });
   // Posiciones existentes para el selector (autocompleta isin/nombre/divisa).
+  // `cantidad` se guarda para mostrar "máx X" y ofrecer "vender todo" — caso
+  // real Angel: vendió "1" acción de ACS pensando que era lote/proporción,
+  // teniendo 50+; sin el aviso de máximo es fácil equivocarse.
   const [posicionesCartera, setPosicionesCartera] = useState<
-    Array<{ isin: string; nombre: string; divisa_local: string }>
+    Array<{ isin: string; nombre: string; divisa_local: string; cantidad: string }>
   >([]);
   useEffect(() => {
     // El modal solo se monta cuando se abre → carga única al entrar.
@@ -176,7 +179,8 @@ function ModalAnadirTx({
         setPosicionesCartera(
           lista.filter((p) => parseFloat(p.cantidad ?? '0') > 0)
                .map((p) => ({ isin: p.isin, nombre: p.nombre,
-                              divisa_local: p.divisa_cotizacion || 'EUR' })),
+                              divisa_local: p.divisa_cotizacion || 'EUR',
+                              cantidad: p.cantidad ?? '0' })),
         );
       }).catch(() => setPosicionesCartera([]));
   }, []);
@@ -346,12 +350,46 @@ function ModalAnadirTx({
                     opciones={[['BUY', 'Compra'], ['SELL', 'Venta'], ['INTEREST', 'Interés']]} required />
                   <Campo label="Divisa" value={acc.divisa_local} onChange={(v) => setAcc({ ...acc, divisa_local: v.toUpperCase() })} maxLength={3} />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <Campo label="Cantidad" type="number" step="any" value={acc.cantidad}
-                    onChange={(v) => setAcc({ ...acc, cantidad: v })} onBlur={autoImporteAcc} placeholder="10" required />
-                  <Campo label="Precio" type="number" step="any" value={acc.precio_local}
-                    onChange={(v) => setAcc({ ...acc, precio_local: v })} onBlur={autoImporteAcc} placeholder="20.50" required />
-                </div>
+                {(() => {
+                  // Si hay una posición existente seleccionada Y es venta, mostrar
+                  // cuántas acciones tienes y un botón "vender todo". Caso real:
+                  // Angel vendió "1" acción de ACS pensando que era proporción,
+                  // teniendo decenas. Aviso explícito + atajo = bug imposible.
+                  const sel = posicionesCartera.find((x) => x.isin === acc.isin);
+                  const maxQty = sel ? parseFloat(sel.cantidad) : NaN;
+                  const esVentaSobreCartera = acc.tipo === 'SELL' && sel != null;
+                  const excede = esVentaSobreCartera && !isNaN(maxQty)
+                    && parseFloat(acc.cantidad || '0') > maxQty;
+                  return (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Campo label="Cantidad" type="number" step="any" value={acc.cantidad}
+                            onChange={(v) => setAcc({ ...acc, cantidad: v })}
+                            onBlur={autoImporteAcc} placeholder="10" required />
+                          {esVentaSobreCartera && !isNaN(maxQty) && (
+                            <div className="mt-1 flex items-center gap-2 text-[11px]">
+                              <span className={excede ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-[rgb(var(--muted))]'}>
+                                Tienes <strong>{maxQty}</strong> en cartera
+                                {excede && ' · estás vendiendo más de lo que tienes'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setAcc({ ...acc, cantidad: String(maxQty) })}
+                                className="text-brand-600 dark:text-brand-400 hover:underline"
+                              >
+                                vender todo →
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <Campo label="Precio" type="number" step="any" value={acc.precio_local}
+                          onChange={(v) => setAcc({ ...acc, precio_local: v })}
+                          onBlur={autoImporteAcc} placeholder="20.50" required />
+                      </div>
+                    </>
+                  );
+                })()}
                 <div className="grid grid-cols-2 gap-3">
                   <Campo label="Importe EUR" type="number" step="any" value={acc.importe_eur}
                     onChange={(v) => setAcc({ ...acc, importe_eur: v })} required />

@@ -581,6 +581,17 @@ export async function analizarContexto(
   return fetchJson(`/api/contexto/${encodeURIComponent(isin)}`);
 }
 
+export async function analizarCausaRaiz(
+  isin: string,
+  contextoPrevio: { resumen: string; clasificacion: string; riesgo_principal: string },
+): Promise<import('./types').AnalisisCausaRaiz> {
+  return fetchJson(`/api/contexto/${encodeURIComponent(isin)}/causa-raiz`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(contextoPrevio),
+  });
+}
+
 // One-pager y valoración corren en segundo plano (búsqueda web de minutos):
 // GET devuelve el estado + resultado guardado (para polling); POST lanza el job.
 export async function fetchOnePagerEstado(

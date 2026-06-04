@@ -48,14 +48,41 @@ def _bloque(db: Session, cartera, nombre: str, cat: str,
 def test_crear_paso_valida_isin_y_enum(db, cartera) -> None:
     _pos_con_lote(db, cartera, "US1", "Alpha", Decimal("1000"))
     db.commit()
-    # ISIN inexistente
+    # ISIN inexistente con VENDER (no se puede vender lo que no se tiene) → 404
     with pytest.raises(HTTPException) as e1:
-        svc.crear_paso(db, cartera.id, "NOEXISTE", "COMPRAR", "ALTA")
+        svc.crear_paso(db, cartera.id, "NOEXISTE", "VENDER", "ALTA")
     assert e1.value.status_code == 404
     # decisión inválida
     with pytest.raises(HTTPException) as e2:
         svc.crear_paso(db, cartera.id, "US1", "FOO", "ALTA")
     assert e2.value.status_code == 400
+
+
+def test_crear_paso_compra_sobre_isin_nuevo_lo_anade_a_watchlist(db, cartera) -> None:
+    """Doctrina watchlist-first: si la IA propone un paso COMPRAR sobre un ISIN
+    que no está en cartera ni en seguimiento, lo añadimos al watchlist en vez
+    de rechazar con 404 (caso real Angel, 2026-06-03)."""
+    isin_nuevo = "US0000000ABC"
+    # Confirmar punto de partida: el ISIN no está
+    from app.db import models as _m
+    from sqlalchemy import select as _select
+    pre = db.execute(_select(_m.Seguimiento).where(
+        _m.Seguimiento.cartera_id == cartera.id,
+        _m.Seguimiento.isin == isin_nuevo)).scalars().first()
+    assert pre is None
+    # Crear el paso COMPRAR — no debe rebotar
+    paso = svc.crear_paso(
+        db, cartera.id, isin_nuevo, "COMPRAR", "MEDIA",
+        nombre="Acme Corp", ticker="ACME",
+    )
+    assert paso.decision == "COMPRAR" and paso.isin == isin_nuevo
+    # Y debe haber creado la entrada en seguimiento con los datos provistos
+    seg = db.execute(_select(_m.Seguimiento).where(
+        _m.Seguimiento.cartera_id == cartera.id,
+        _m.Seguimiento.isin == isin_nuevo)).scalars().first()
+    assert seg is not None
+    assert seg.ticker == "ACME"
+    assert seg.nombre == "Acme Corp"
 
 
 def test_decision_activa_default_mantener(db, cartera) -> None:
@@ -118,9 +145,11 @@ def test_crear_paso_acepta_seguimiento(db, cartera) -> None:
                        capital_objetivo_eur=Decimal("2000"))
     assert p.isin == "US_NVDA"
     assert svc.decisiones_activas(db, cartera.id)["US_NVDA"].decision == "COMPRAR"
-    # ISIN que no es ni posición ni seguimiento → 404
+    # ISIN que no es ni posición ni seguimiento + VENDER → 404 (no se puede
+    # vender lo que no se tiene; COMPRAR sobre nuevo se auto-añade al watchlist,
+    # ver test_crear_paso_compra_sobre_isin_nuevo_lo_anade_a_watchlist).
     with pytest.raises(HTTPException) as e:
-        svc.crear_paso(db, cartera.id, "DESCONOCIDO", "COMPRAR", "ALTA")
+        svc.crear_paso(db, cartera.id, "DESCONOCIDO", "VENDER", "ALTA")
     assert e.value.status_code == 404
 
 
