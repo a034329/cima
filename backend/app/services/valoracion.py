@@ -22,15 +22,39 @@ _TIPO = "valoracion"
 _DISCLAIMER = ("Escenarios de valoración generados por IA, orientativos y NO asesoramiento. "
                "Tú fijas los inputs finales; verifica contra el consenso y el histórico.")
 
+# ── Guardias (bug BAM 5-jun-2026: IA confundió FRE total $5.63B con FRE/acc) ─
+# La métrica base SIEMPRE debe ser POR ACCIÓN; si excede el 50% del precio es
+# casi seguro un agregado mal etiquetado y el precio objetivo se infla por el
+# número de acciones (~1.638B en el caso BAM).
+_RATIO_METRICA_PRECIO_MAX = 0.5
+# CAGR implícito por bloque (umbral de aviso). Por encima del bloqueo absoluto,
+# el escenario se marca como `bloqueado` y la UI no permite aplicarlo.
+_UMBRAL_CAGR_BLOQUEO = 0.35
+_UMBRAL_CAGR_ALERTA: dict[str, float] = {
+    "growth":     0.30,
+    "income":     0.20,
+    "defensivo":  0.20,
+    "aggressive": 0.25,
+}
+# Default para bloques sin clasificar o desconocidos (incluye 'colchon', etc.).
+_UMBRAL_CAGR_DEFAULT = 0.30
+
 
 @dataclass
 class Escenario:
     nombre: str                  # conservador | base | optimista
     multiplo: float
-    metrica_base_4y: float       # EPS proyectado a 4 años
+    metrica_base_4y: float       # EPS proyectado a 4 años — SIEMPRE por acción
     precio_objetivo: float
     cagr4_pct: float | None
     razon: str
+    # Guardias post-cálculo (bug BAM). Permiten al frontend bloquear "Aplicar"
+    # si el escenario es sospechoso de error dimensional / CAGR irreal.
+    alertas: list = field(default_factory=list)
+    bloqueado: bool = False
+    # Desglose paso a paso del cálculo para la UI ("Cómo se calcula").
+    # Cada item: {"etiqueta": "FRE/acc 4Y", "valor": "3.54", "calc": "1.92 × (1.17)⁴"}.
+    desglose: list = field(default_factory=list)
 
 
 @dataclass
@@ -97,13 +121,21 @@ def build_prompt(nombre: str, anclas: dict, tipo_val: str = "PER",
         f"base, optimista) para un inversor a largo plazo. Para cada escenario da un MÚLTIPLO "
         f"({mult_label} objetivo) y la métrica base proyectada a 4 años ({met_label}, campo "
         "metrica_4y).\n"
+        # ── Guardia crítica (bug BAM 5-jun-2026): per-share, NUNCA agregado ──
+        f"REGLA CRÍTICA: «metrica_4y» SIEMPRE debe estar expresada POR ACCIÓN "
+        f"(en {met_label}), NUNCA como agregado total (no $B totales, no FRE total "
+        f"de la compañía). Si encuentras la guía como total, DIVIDE por las "
+        f"acciones en circulación antes de devolverla. Como check rápido: "
+        f"metrica_4y debe ser bastante menor que el precio actual de la acción. "
+        f"Si metrica_4y > 50% del precio actual, casi seguro estás confundiendo "
+        f"agregado con per-share — revísalo.\n"
         "Los escenarios DEBEN derivarse de la TESIS del negocio, no de números al azar: el OPTIMISTA "
         "refleja que los drivers de crecimiento de la tesis se cumplen; el CONSERVADOR refleja que se "
         "materializan los riesgos; el BASE es el caso central. "
         + anclaje + " Puedes buscar en la web. No calcules el precio objetivo (lo hace el sistema).\n"
         "Responde EXCLUSIVAMENTE con JSON:\n"
         '{"escenarios": [{"nombre": "conservador|base|optimista", "multiplo": <num>, '
-        '"metrica_4y": <num>, "razon": "<múltiplo justificado + crecimiento implícito, 1-2 frases>"}]}'
+        '"metrica_4y": <num por acción>, "razon": "<múltiplo justificado + crecimiento implícito, 1-2 frases>"}]}'
     )
     a = anclas
     bloques = [f"Empresa: {nombre}. Se valora por {mult_label} (métrica base: {met_label}). "
@@ -133,7 +165,123 @@ def build_prompt(nombre: str, anclas: dict, tipo_val: str = "PER",
     return system, "\n".join(bloques)
 
 
-def _escenarios(data: dict, precio_actual: float | None) -> list[Escenario]:
+def _validar_escenario(esc: Escenario, precio_actual: float | None,
+                       categoria_bloque: str | None) -> None:
+    """Aplica las guardias del bug BAM (5-jun-2026): dimensional + CAGR.
+    Modifica esc.alertas y esc.bloqueado in-place."""
+    # Guardia 1 — DIMENSIONAL: la métrica base debe ser POR ACCIÓN.
+    # Si supera el 50% del precio actual, casi seguro es un agregado mal
+    # etiquetado por la IA (ej. FRE total $5.63B en lugar de $3.54/acc).
+    if precio_actual and precio_actual > 0:
+        ratio = esc.metrica_base_4y / precio_actual
+        if ratio > _RATIO_METRICA_PRECIO_MAX:
+            esc.alertas.append(
+                f"⚠️ La métrica base ({esc.metrica_base_4y:.2f}) supera el "
+                f"{_RATIO_METRICA_PRECIO_MAX * 100:.0f}% del precio actual "
+                f"({precio_actual:.2f}). Probable confusión entre VALOR TOTAL "
+                f"(agregado, $B) y VALOR POR ACCIÓN. Verifica dividiéndolo "
+                f"entre las acciones en circulación antes de aplicar."
+            )
+            esc.bloqueado = True
+
+    # Guardia 2 — CAGR implícito. Bloqueo absoluto y alerta por bloque.
+    if esc.cagr4_pct is not None:
+        if esc.cagr4_pct > _UMBRAL_CAGR_BLOQUEO:
+            esc.alertas.append(
+                f"⚠️ CAGR implícito {esc.cagr4_pct * 100:.1f}% > "
+                f"{_UMBRAL_CAGR_BLOQUEO * 100:.0f}%. Es muy difícil de defender "
+                f"para 4 años; confirma explícitamente antes de aplicar."
+            )
+            esc.bloqueado = True
+        else:
+            umbral = _UMBRAL_CAGR_ALERTA.get(
+                (categoria_bloque or "").lower(), _UMBRAL_CAGR_DEFAULT,
+            )
+            if esc.cagr4_pct > umbral:
+                bloque_nombre = categoria_bloque or "sin clasificar"
+                esc.alertas.append(
+                    f"CAGR implícito {esc.cagr4_pct * 100:.1f}% supera el "
+                    f"umbral del bloque «{bloque_nombre}» "
+                    f"({umbral * 100:.0f}%). Revisa la coherencia de la tesis."
+                )
+
+
+def _desglose(esc: Escenario, tipo_val: str, metrica_actual: float | None,
+              precio_actual: float | None) -> list[dict]:
+    """Pasos del cálculo para mostrar en la UI ("Cómo se calcula")."""
+    _, met_label = models.etiquetas_tipo_val(tipo_val)
+    pasos: list[dict] = [
+        {"etiqueta": "Método", "valor": tipo_val, "calc": ""},
+    ]
+    if metrica_actual is not None:
+        pasos.append({
+            "etiqueta": f"{met_label} hoy",
+            "valor": f"{metrica_actual:.2f}",
+            "calc": "(modelo actual de Cima)",
+        })
+    crecimiento = None
+    if metrica_actual and metrica_actual > 0 and esc.metrica_base_4y > 0:
+        crecimiento = (esc.metrica_base_4y / metrica_actual) ** (1 / 4) - 1
+    if crecimiento is not None:
+        pasos.append({
+            "etiqueta": f"CAGR aplicado a {met_label}",
+            "valor": f"{crecimiento * 100:.1f}%",
+            "calc": "",
+        })
+    pasos.append({
+        "etiqueta": f"{met_label} en 4Y",
+        "valor": f"{esc.metrica_base_4y:.2f}",
+        "calc": (
+            f"{metrica_actual:.2f} × (1+{crecimiento:.3f})⁴"
+            if crecimiento is not None and metrica_actual else ""
+        ),
+    })
+    pasos.append({
+        "etiqueta": "Múltiplo objetivo",
+        "valor": f"{esc.multiplo:.1f}×",
+        "calc": "",
+    })
+    pasos.append({
+        "etiqueta": "Precio objetivo",
+        "valor": f"{esc.precio_objetivo:.2f}",
+        "calc": f"{esc.multiplo:.1f} × {esc.metrica_base_4y:.2f}",
+    })
+    if esc.cagr4_pct is not None and precio_actual:
+        pasos.append({
+            "etiqueta": "CAGR implícito (precio)",
+            "valor": f"{esc.cagr4_pct * 100:.1f}%",
+            "calc": f"({esc.precio_objetivo:.2f} / {precio_actual:.2f})^(1/4) − 1",
+        })
+    return pasos
+
+
+def _categoria_bloque_de_isin(db: Session, cartera_id: str, isin: str
+                              ) -> str | None:
+    """Categoría base del bloque al que pertenece el ISIN (posición o
+    watchlist). None si el ISIN no está clasificado todavía."""
+    pos = db.execute(
+        select(models.Posicion)
+        .where(models.Posicion.cartera_id == cartera_id)
+        .where(models.Posicion.isin == isin)
+    ).scalars().first()
+    bloque_id = pos.bloque_id if pos and pos.bloque_id else None
+    if bloque_id is None:
+        seg = db.execute(
+            select(models.Seguimiento)
+            .where(models.Seguimiento.cartera_id == cartera_id)
+            .where(models.Seguimiento.isin == isin)
+        ).scalars().first()
+        bloque_id = seg.bloque_id if seg and seg.bloque_id else None
+    if bloque_id is None:
+        return None
+    b = db.get(models.Bloque, bloque_id)
+    return b.categoria_base if b else None
+
+
+def _escenarios(data: dict, precio_actual: float | None,
+                metrica_actual: float | None = None,
+                tipo_val: str = "PER",
+                categoria_bloque: str | None = None) -> list[Escenario]:
     out: list[Escenario] = []
     items = data.get("escenarios") if isinstance(data, dict) else None
     for it in items or []:
@@ -148,15 +296,20 @@ def _escenarios(data: dict, precio_actual: float | None) -> list[Escenario]:
         cagr = None
         if precio_actual and precio_actual > 0 and precio_obj > 0:
             cagr = (precio_obj / precio_actual) ** (1 / 4) - 1
-        out.append(Escenario(
+        esc = Escenario(
             nombre=str(it.get("nombre") or "—").strip().lower(),
             multiplo=mult, metrica_base_4y=eps, precio_objetivo=precio_obj,
             cagr4_pct=cagr, razon=str(it.get("razon") or "").strip(),
-        ))
+        )
+        _validar_escenario(esc, precio_actual, categoria_bloque)
+        esc.desglose = _desglose(esc, tipo_val, metrica_actual, precio_actual)
+        out.append(esc)
     return out
 
 
-def parse(texto: str, precio_actual: float | None) -> list[Escenario]:
+def parse(texto: str, precio_actual: float | None,
+          metrica_actual: float | None = None, tipo_val: str = "PER",
+          categoria_bloque: str | None = None) -> list[Escenario]:
     s = (texto or "").strip()
     m = re.search(r"\{.*\}", s, re.DOTALL)
     data: dict = {}
@@ -166,7 +319,7 @@ def parse(texto: str, precio_actual: float | None) -> list[Escenario]:
             data = obj if isinstance(obj, dict) else {}
         except (ValueError, TypeError):
             data = {}
-    return _escenarios(data, precio_actual)
+    return _escenarios(data, precio_actual, metrica_actual, tipo_val, categoria_bloque)
 
 
 def guardado(db: Session, cartera_id: str, isin: str) -> Valoracion | None:
@@ -211,13 +364,18 @@ def proponer(db: Session, cartera_id: str, isin: str) -> Valoracion:
         raise ValueError(f"Sin estimación para {isin}")
     tipo_val = e.tipo_val or "PER"
     precio_actual = _f(e.precio_actual)
+    metrica_actual = _f(e.metrica_base_4y)
     anclas = _anclas(e)
+    categoria_bloque = _categoria_bloque_de_isin(db, cartera_id, isin)
     # Liga los escenarios a la TESIS del one-pager si ya se generó (si no, la IA investiga).
     from app.services.one_pager import guardado as op_guardado
     op = op_guardado(db, cartera_id, isin)
     tesis = {"tesis": op.tesis, "riesgos": op.riesgos, "valoracion": op.valoracion} if op else None
     system, user = build_prompt(e.nombre, anclas, tipo_val, tesis)
-    escenarios = parse(get_clasificador().investigar(system, user), precio_actual)
+    escenarios = parse(
+        get_clasificador().investigar(system, user),
+        precio_actual, metrica_actual, tipo_val, categoria_bloque,
+    )
     creditos.registrar_uso_ia(db, cartera_id, "valoracion", 1)
     v = Valoracion(
         isin=isin, nombre=e.nombre, tipo_val=tipo_val, precio_actual=precio_actual,

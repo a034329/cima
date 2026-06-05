@@ -93,3 +93,103 @@ def test_build_prompt_no_per_habla_de_su_multiplo() -> None:
     system, user = svc.build_prompt("BAM", {"multiplo_actual": 22, "metrica_actual": 5}, "P_FRE")
     assert "P/FRE" in system and "metrica_4y" in system
     assert "PER" not in user            # no habla de PER para un valor que no se valora por beneficios
+
+
+# ── Guardias (bug BAM 5-jun-2026: IA mezcló FRE total $5.63B con FRE/acc) ──
+
+
+def test_guardia_cagr_bloquea_escenario_irreal() -> None:
+    """Caso BAM real: multiplo 27, métrica reportada 5.63 (era agregado),
+    precio 38.92 → precio_obj 152, CAGR 40.6% > 35% → bloqueado."""
+    j = ('{"escenarios":[{"nombre":"base","multiplo":27,"metrica_4y":5.63,'
+         '"razon":"FRE crece 17%"}]}')
+    esc = svc.parse(j, precio_actual=38.92, metrica_actual=1.92,
+                    tipo_val="P_FRE", categoria_bloque="income")
+    assert len(esc) == 1
+    e = esc[0]
+    assert e.bloqueado is True
+    assert any("CAGR" in a for a in e.alertas)
+
+
+def test_guardia_dimensional_bloquea_cuando_metrica_supera_mitad_precio() -> None:
+    """Si la IA devuelve la métrica en millones (no millardos), supera con
+    creces el 50% del precio. Caso defensivo: muy útil cuando el múltiplo
+    es pequeño y el CAGR solo no lo coge."""
+    # Si BAM reportara metrica = 5630 (millones de FRE total) con precio 38.92,
+    # el ratio sería 144 >> 0.5 → guardia dimensional dispara.
+    j = ('{"escenarios":[{"nombre":"base","multiplo":1,"metrica_4y":50,'
+         '"razon":"test"}]}')
+    # precio_actual 80 → metrica 50 > 80*0.5=40 → dispara dimensional
+    esc = svc.parse(j, precio_actual=80.0, metrica_actual=2.0,
+                    tipo_val="P_FRE", categoria_bloque="income")
+    e = esc[0]
+    assert e.bloqueado is True
+    assert any("VALOR TOTAL" in a or "agregado" in a.lower() or "POR ACCIÓN" in a
+               for a in e.alertas)
+
+
+def test_guardia_cagr_alerta_pero_no_bloquea_por_bloque() -> None:
+    """Crecimiento elevado para 'income' (>20% pero <35%) → alerta amarilla,
+    no bloqueo."""
+    # mult 10, met 5, precio 30 → precio_obj 50, CAGR = (50/30)^(1/4)-1 = 13.6%
+    # Necesito un caso con CAGR entre 20% y 35%.
+    # mult 10, met 5, precio 22 → 50/22 = 2.27, ^.25 = 1.227 → CAGR 22.7%
+    j = ('{"escenarios":[{"nombre":"base","multiplo":10,"metrica_4y":5,'
+         '"razon":"test"}]}')
+    esc = svc.parse(j, precio_actual=22.0, metrica_actual=4.5,
+                    tipo_val="P_FRE", categoria_bloque="income")
+    e = esc[0]
+    assert e.bloqueado is False                      # CAGR 22% < 35% bloqueo absoluto
+    assert any("supera el umbral del bloque" in a for a in e.alertas)
+
+
+def test_escenario_sano_sin_alertas_ni_bloqueo() -> None:
+    """Caso normal PER: mult 20, EPS 10, precio 150 → CAGR 7.5%, sin guardias."""
+    j = ('{"escenarios":[{"nombre":"base","multiplo":20,"eps_4y":10,'
+         '"razon":"En línea con consenso"}]}')
+    esc = svc.parse(j, precio_actual=150.0, metrica_actual=8.0,
+                    tipo_val="PER", categoria_bloque="growth")
+    e = esc[0]
+    assert e.bloqueado is False
+    assert e.alertas == []
+
+
+def test_desglose_incluye_pasos_basicos_del_calculo() -> None:
+    """El desglose paso-a-paso debe contener Método, Precio objetivo y CAGR."""
+    j = ('{"escenarios":[{"nombre":"base","multiplo":20,"eps_4y":10,'
+         '"razon":"x"}]}')
+    esc = svc.parse(j, precio_actual=150.0, metrica_actual=8.0,
+                    tipo_val="PER", categoria_bloque="growth")
+    e = esc[0]
+    etiquetas = [p["etiqueta"] for p in e.desglose]
+    assert any("Método" in et for et in etiquetas)
+    assert any("Precio objetivo" in et for et in etiquetas)
+    assert any("CAGR implícito" in et for et in etiquetas)
+    # El paso "Precio objetivo" debe mostrar el cálculo Múltiplo × Métrica
+    pobj = next(p for p in e.desglose if "Precio objetivo" in p["etiqueta"])
+    assert "20" in pobj["calc"] and "10" in pobj["calc"]
+
+
+def test_prompt_refuerza_per_share() -> None:
+    """El prompt debe explicitar que la métrica es POR ACCIÓN para evitar
+    el bug BAM en origen."""
+    system, _ = svc.build_prompt("X", {}, "P_FRE")
+    assert "POR ACCIÓN" in system
+    assert "50%" in system               # menciona el límite de cordura
+
+
+def test_umbral_cagr_aggressive_es_mas_alto_que_income() -> None:
+    """Un BDC/REIT (aggressive) admite CAGR más alto antes de alertar
+    (24% no debería disparar; en income sí dispararía)."""
+    # mult 8, met 5, precio 20 → 40/20 = 2.0, ^.25 - 1 = 18.9%
+    # No me sirve. Necesito 24%.
+    # 8 × 5 = 40, precio 17 → 40/17 = 2.35, ^.25 = 1.238 → CAGR 23.8%
+    j = ('{"escenarios":[{"nombre":"base","multiplo":8,"metrica_4y":5,'
+         '"razon":"x"}]}')
+    e_aggr = svc.parse(j, precio_actual=17.0, metrica_actual=4.0,
+                       tipo_val="P_BV", categoria_bloque="aggressive")[0]
+    e_inc = svc.parse(j, precio_actual=17.0, metrica_actual=4.0,
+                      tipo_val="P_BV", categoria_bloque="income")[0]
+    # aggressive umbral 25% → 23.8% NO alerta; income umbral 20% → SÍ alerta.
+    assert not any("supera el umbral" in a for a in e_aggr.alertas)
+    assert any("supera el umbral" in a for a in e_inc.alertas)

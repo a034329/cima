@@ -542,37 +542,101 @@ function ValoracionAsistida({ isin }: { isin: string }) {
           </div>
 
           <div className="grid md:grid-cols-3 gap-2">
-            {val.escenarios.map((s) => (
-              <div key={s.nombre} className="rounded-md border border-[rgb(var(--border))] p-3 text-sm space-y-1">
-                <div className="font-medium capitalize">{s.nombre}</div>
-                <div className="text-xs text-[rgb(var(--muted))]">Múltiplo {fnum(s.multiplo)} × {metlabel} {fnum(s.metrica_base_4y)}</div>
-                <div>P. objetivo <strong>{fnum(s.precio_objetivo)}</strong></div>
-                <div className={s.cagr4_pct != null && s.cagr4_pct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
-                  CAGR4 {s.cagr4_pct == null ? '—' : fmtPct(s.cagr4_pct, 1)}
-                </div>
-                <p className="text-xs text-[rgb(var(--muted))] leading-snug">{s.razon}</p>
-                {editando === s.nombre ? (
-                  <div className="space-y-1 pt-1">
-                    <div className="flex gap-1">
-                      <input value={mult} onChange={(e) => setMult(e.target.value)} inputMode="decimal"
-                        className="w-16 px-1 py-0.5 text-xs rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]" title="Múltiplo" />
-                      <span className="text-xs text-[rgb(var(--muted))]">×</span>
-                      <input value={eps} onChange={(e) => setEps(e.target.value)} inputMode="decimal"
-                        className="w-16 px-1 py-0.5 text-xs rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]" title={`${metlabel} 4Y`} />
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => aplicar(s.nombre)} className="text-xs text-brand-600 dark:text-brand-400 hover:underline">Confirmar</button>
-                      <button onClick={() => setEditando(null)} className="text-xs text-[rgb(var(--muted))] hover:underline">Cancelar</button>
-                    </div>
+            {val.escenarios.map((s) => {
+              const bloqueado = !!s.bloqueado;
+              const tieneAlertas = (s.alertas?.length ?? 0) > 0;
+              // Borde rojo si bloqueado, ámbar si solo hay alertas suaves
+              const claseTarjeta = bloqueado
+                ? 'border-rose-300 dark:border-rose-700 bg-rose-50/40 dark:bg-rose-900/10'
+                : tieneAlertas
+                ? 'border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-amber-900/10'
+                : 'border-[rgb(var(--border))]';
+              return (
+                <div key={s.nombre} className={`rounded-md border p-3 text-sm space-y-1 ${claseTarjeta}`}>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="font-medium capitalize">{s.nombre}</span>
+                    {bloqueado && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 font-semibold uppercase">
+                        Bloqueado
+                      </span>
+                    )}
+                    {!bloqueado && tieneAlertas && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-semibold uppercase">
+                        Revisar
+                      </span>
+                    )}
                   </div>
-                ) : (
-                  <button onClick={() => abrir(s.nombre, s.multiplo, s.metrica_base_4y)}
-                    className="text-xs text-brand-600 dark:text-brand-400 hover:underline pt-1">
-                    {aplicado === s.nombre ? '✓ aplicado · editar' : 'Aplicar a Estimaciones →'}
-                  </button>
-                )}
-              </div>
-            ))}
+                  <div className="text-xs text-[rgb(var(--muted))]">Múltiplo {fnum(s.multiplo)} × {metlabel} {fnum(s.metrica_base_4y)}</div>
+                  <div>P. objetivo <strong>{fnum(s.precio_objetivo)}</strong></div>
+                  <div className={s.cagr4_pct != null && s.cagr4_pct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                    CAGR4 {s.cagr4_pct == null ? '—' : fmtPct(s.cagr4_pct, 1)}
+                  </div>
+                  <p className="text-xs text-[rgb(var(--muted))] leading-snug">{s.razon}</p>
+
+                  {tieneAlertas && (
+                    <ul className="text-[11px] space-y-0.5 pt-1">
+                      {s.alertas!.map((a, i) => (
+                        <li key={i} className={bloqueado
+                          ? 'text-rose-700 dark:text-rose-300'
+                          : 'text-amber-700 dark:text-amber-300'}>
+                          {a}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {s.desglose && s.desglose.length > 0 && (
+                    <details className="pt-1">
+                      <summary className="text-[11px] text-brand-600 dark:text-brand-400 cursor-pointer">
+                        Cómo se calcula
+                      </summary>
+                      <table className="text-[10px] mt-1 w-full">
+                        <tbody>
+                          {s.desglose.map((paso, i) => (
+                            <tr key={i} className="border-t border-[rgb(var(--border))]/40">
+                              <td className="py-0.5 pr-2 text-[rgb(var(--muted))]">{paso.etiqueta}</td>
+                              <td className="py-0.5 pr-2 font-mono">{paso.valor}</td>
+                              <td className="py-0.5 text-[rgb(var(--muted))] font-mono">{paso.calc}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </details>
+                  )}
+
+                  {editando === s.nombre ? (
+                    <div className="space-y-1 pt-1">
+                      <div className="flex gap-1">
+                        <input value={mult} onChange={(e) => setMult(e.target.value)} inputMode="decimal"
+                          className="w-16 px-1 py-0.5 text-xs rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]" title="Múltiplo" />
+                        <span className="text-xs text-[rgb(var(--muted))]">×</span>
+                        <input value={eps} onChange={(e) => setEps(e.target.value)} inputMode="decimal"
+                          className="w-16 px-1 py-0.5 text-xs rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]" title={`${metlabel} 4Y`} />
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => aplicar(s.nombre)} className="text-xs text-brand-600 dark:text-brand-400 hover:underline">Confirmar</button>
+                        <button onClick={() => setEditando(null)} className="text-xs text-[rgb(var(--muted))] hover:underline">Cancelar</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => abrir(s.nombre, s.multiplo, s.metrica_base_4y)}
+                      disabled={bloqueado}
+                      className={`text-xs pt-1 ${bloqueado
+                        ? 'text-[rgb(var(--muted))] cursor-not-allowed'
+                        : 'text-brand-600 dark:text-brand-400 hover:underline'}`}
+                      title={bloqueado
+                        ? 'Escenario bloqueado por las guardias — revisa las alertas antes de aplicar.'
+                        : ''}
+                    >
+                      {bloqueado
+                        ? '🔒 Bloqueado — revisar antes de aplicar'
+                        : aplicado === s.nombre ? '✓ aplicado · editar' : 'Aplicar a Estimaciones →'}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <p className="text-[11px] text-[rgb(var(--muted))] italic">
             {val.disclaimer ?? 'Escenarios orientativos de IA anclados en consenso/histórico; tú fijas los inputs finales.'}

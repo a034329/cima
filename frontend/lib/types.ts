@@ -118,6 +118,10 @@ export interface Escenario {
   precio_objetivo: number;
   cagr4_pct: number | null;
   razon: string;
+  // Guardias post-cálculo (bug BAM 5-jun-2026)
+  alertas?: string[];
+  bloqueado?: boolean;
+  desglose?: { etiqueta: string; valor: string; calc: string }[];
 }
 
 export interface Valoracion {

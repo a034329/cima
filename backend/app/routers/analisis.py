@@ -39,6 +39,13 @@ class EscenarioOut(BaseModel):
     precio_objetivo: float
     cagr4_pct: float | None = None
     razon: str
+    # Guardias post-cálculo (bug BAM 5-jun-2026). El frontend usa `bloqueado`
+    # para deshabilitar el botón "Aplicar a Estimaciones" cuando el escenario
+    # es sospechoso de error dimensional (métrica agregada vs per-share) o
+    # CAGR irreal.
+    alertas: list[str] = []
+    bloqueado: bool = False
+    desglose: list[dict] = []
 
 
 class ValoracionOut(BaseModel):
@@ -106,7 +113,11 @@ def _val_out(v: val_svc.Valoracion) -> ValoracionOut:
         anclas=v.anclas,
         escenarios=[EscenarioOut(nombre=e.nombre, multiplo=e.multiplo,
                                  metrica_base_4y=e.metrica_base_4y, precio_objetivo=e.precio_objetivo,
-                                 cagr4_pct=e.cagr4_pct, razon=e.razon) for e in v.escenarios],
+                                 cagr4_pct=e.cagr4_pct, razon=e.razon,
+                                 alertas=list(getattr(e, "alertas", []) or []),
+                                 bloqueado=bool(getattr(e, "bloqueado", False)),
+                                 desglose=list(getattr(e, "desglose", []) or []),
+                                 ) for e in v.escenarios],
         fecha=v.fecha, proveedor=v.proveedor, disclaimer=v.disclaimer,
     )
 
