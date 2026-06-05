@@ -117,6 +117,8 @@ def test_generar_zip_con_csv_real_degiro(tmp_path, monkeypatch) -> None:
         # Debe incluir también algún informe .txt (corporativas/opciones suelen
         # aparecer con datos de Angel)
         assert any(n.startswith("informe_") and n.endswith(".txt") for n in nombres), nombres
+        # Y el PDF fiscal (informe_fiscal_{ej}.pdf) generado por pdf_generator.
+        assert "informe_fiscal_2025.pdf" in nombres, nombres
     finally:
         svc.limpiar(resultado)
         engine.dispose()

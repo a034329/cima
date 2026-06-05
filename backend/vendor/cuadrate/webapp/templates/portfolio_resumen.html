@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Resumen de Cartera {{ ejercicio }} — Cuádrate</title>
+<style>
+  /* ── Tipografía y colores Cuádrate ────────────────────────────────────── */
+  :root {
+    --c-azul:        #0B2B8F;
+    --c-acento-oro:  #E6B763;
+    --c-tinta:       #0B1220;
+    --c-grafito:     #2d3748;
+    --c-gris:    #718096;
+    --c-gris-2:  #a0aec0;
+    --c-borde:   #e2e8f0;
+    --c-fondo:   #f7fafc;
+    --c-amber:   #d97706;
+    --c-amber-2: #fef3c7;
+    --c-rojo:    #c53030;
+    --c-verde:   #276749;
+  }
+
+  @page {
+    size: A4 landscape;
+    margin: 1.6cm 1.4cm 1.8cm 1.4cm;
+    @top-left {
+      content: element(header-running);
+      vertical-align: middle;
+    }
+    @top-right {
+      content: "Resumen de cartera " "{{ ejercicio }}";
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 9pt; color: #0B2B8F;
+      vertical-align: middle;
+    }
+    @bottom-left {
+      content: "Cuádrate — preparación fiscal · {{ fecha_generacion }}";
+      font-size: 7.5pt; color: #a0aec0;
+    }
+    @bottom-right {
+      content: "Página " counter(page) " de " counter(pages);
+      font-size: 7.5pt; color: #a0aec0;
+    }
+  }
+  @page :first {
+    @top-left  { content: none; }
+    @top-right { content: none; }
+  }
+
+  .header-running {
+    position: running(header-running);
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 11pt; color: var(--c-acento-oro);
+    letter-spacing: -.01em;
+  }
+  .header-running .br { font-weight: 800; }
+  .header-running .nm { font-weight: 600; color: var(--c-tinta); }
+  .header-running .ac { font-weight: 600; font-style: italic; color: var(--c-acento-oro); }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 9.5pt; color: var(--c-grafito); line-height: 1.5;
+  }
+  h1, h2, h3 {
+    font-family: 'Fraunces', Georgia, serif;
+    color: var(--c-tinta); letter-spacing: -.01em;
+  }
+  h1 { font-size: 26pt; font-weight: 700; margin-bottom: 4px; }
+  h2 {
+    font-size: 14pt; font-weight: 600; color: var(--c-azul);
+    border-bottom: 2px solid var(--c-azul);
+    padding-bottom: 4px; margin: 0 0 14px;
+    page-break-before: always;       /* cada sección abre página nueva */
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 11.5pt; font-weight: 600; color: var(--c-tinta);
+    margin: 14px 0 6px; page-break-after: avoid;
+  }
+
+  /* ── Portada ──────────────────────────────────────────────────────────── */
+  .cover {
+    text-align: center;
+    padding: 30px 0 22px;
+    border-bottom: 3px solid var(--c-azul);
+    margin-bottom: 22px;
+  }
+  .cover .logo-svg { display: block; margin: 0 auto 22px; height: 60px; }
+  .cover .doctype {
+    color: var(--c-gris); font-size: 10pt;
+    text-transform: uppercase; letter-spacing: .15em;
+  }
+  .cover .subtitle { color: var(--c-gris); font-size: 10pt; margin-top: 6px; }
+  .cover .date { color: var(--c-gris-2); font-size: 9pt; margin-top: 12px; }
+
+  /* ── Cajas semánticas ─────────────────────────────────────────────────── */
+  .info-box {
+    background: #eff6ff; border: 1px solid #93c5fd;
+    border-left: 5px solid var(--c-azul);
+    padding: 10px 14px; border-radius: 4px;
+    margin: 8px 0; font-size: 8.5pt;
+  }
+  .warning-box {
+    background: var(--c-amber-2); border: 1px solid #f6ad55;
+    border-left: 5px solid var(--c-amber);
+    padding: 10px 14px; border-radius: 4px;
+    margin: 8px 0; font-size: 8.5pt;
+  }
+
+  /* ── Resumen ──────────────────────────────────────────────────────────── */
+  .summary-box {
+    background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+    border: 1px solid #bae6fd; border-radius: 6px;
+    padding: 16px; margin: 12px 0 18px;
+  }
+  .summary-table { width: 100%; border-collapse: collapse; }
+  .summary-table td {
+    padding: 6px 10px; border-bottom: 1px solid #bae6fd;
+    font-size: 9.5pt;
+  }
+  .summary-table td:first-child { font-weight: 600; width: 60%; color: var(--c-tinta); }
+  .summary-table td:last-child { text-align: right; font-weight: 700; font-size: 10pt; font-variant-numeric: tabular-nums; }
+  .summary-table tr:last-child td { border-bottom: none; }
+
+  /* ── Tablas ───────────────────────────────────────────────────────────── */
+  table.data {
+    width: 100%; border-collapse: collapse;
+    margin: 8px 0 14px; font-size: 8pt;
+    page-break-inside: auto;
+  }
+  table.data thead { background: var(--c-azul); color: #fff; }
+  table.data th {
+    padding: 5px 4px; text-align: left;
+    font-weight: 600; font-size: 7.5pt;
+    text-transform: uppercase; letter-spacing: .03em;
+    font-family: 'Inter', sans-serif;
+  }
+  table.data td {
+    padding: 4px;
+    border-bottom: 1px solid var(--c-borde);
+    font-variant-numeric: tabular-nums;
+  }
+  table.data tr:nth-child(even) { background: #fafbfc; }
+  table.data tfoot { font-weight: 700; background: #edf2f7; }
+  table.data tfoot td { border-top: 2px solid var(--c-azul); padding: 6px 4px; }
+
+  .gain { color: var(--c-verde); }
+  .loss { color: var(--c-rojo); }
+  .text-right { text-align: right; }
+  .text-center { text-align: center; }
+  .nowrap { white-space: nowrap; }
+
+  .badge-scrip {
+    display: inline-block; background: #6b46c1; color: #fff;
+    padding: 1px 5px; border-radius: 3px; font-size: 7pt;
+  }
+</style>
+</head>
+<body>
+
+<div class="header-running">
+  <span class="br">[</span><span class="nm">Cuádrat</span><span class="ac">e</span><span class="br">]</span>
+</div>
+
+<!-- ══ PORTADA ══════════════════════════════════════════════════════════════ -->
+<div class="cover">
+  <svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 64" role="img" aria-label="Cuádrate">
+    <text x="10" y="50" font-family="Fraunces, Georgia, serif" font-size="52" letter-spacing="-.01em">
+      <tspan font-weight="800" fill="#E6B763">[</tspan><tspan dx="6" font-weight="600" fill="#0B1220">Cuádrat</tspan><tspan font-weight="600" font-style="italic" fill="#E6B763">e</tspan><tspan dx="6" font-weight="800" fill="#E6B763">]</tspan>
+    </text>
+  </svg>
+  <div class="doctype">Resumen de cartera</div>
+  <h1>Ejercicio {{ ejercicio }}</h1>
+  <div class="subtitle">Posiciones abiertas, precio medio real y rendimiento acumulado</div>
+  <div class="date">Generado el {{ fecha_generacion }}{% if multi_anio %} · Datos acumulados: {{ anios_analizados }}{% endif %}</div>
+</div>
+
+<div class="info-box">
+  <strong>Sobre el precio medio:</strong> el precio medio ponderado (PM) de este informe se calcula con método FIFO a partir de todas las compras registradas, incluyendo ajustes por splits, scrip dividends (coste 0) y primas de opciones ejercidas. Puede diferir del PM que muestra DeGiro, que no ajusta correctamente estos eventos.
+</div>
+
+<!-- ══ 1. RESUMEN ══════════════════════════════════════════════════════════ -->
+<h2>1. Resumen</h2>
+
+<div class="summary-box">
+  <table class="summary-table">
+    <tr>
+      <td>Posiciones abiertas</td>
+      <td>{{ positions|length }}</td>
+    </tr>
+    <tr>
+      <td>Coste total invertido (posiciones abiertas)</td>
+      <td>{{ format_eur(total_coste) }}</td>
+    </tr>
+    {% if total_gp_realizada is not none %}
+    <tr>
+      <td>G/P realizada (ventas {{ ejercicio }})</td>
+      <td class="{{ 'gain' if total_gp_realizada >= 0 else 'loss' }}">{{ format_eur(total_gp_realizada) }}</td>
+    </tr>
+    {% endif %}
+    {% if total_dividendos is not none %}
+    <tr>
+      <td>Dividendos brutos cobrados {{ ejercicio }}</td>
+      <td>{{ format_eur(total_dividendos) }}</td>
+    </tr>
+    {% endif %}
+    {% if total_primas_pos and total_primas_pos != 0 %}
+    <tr>
+      <td>Primas netas opciones {{ ejercicio }}</td>
+      <td class="{{ 'gain' if total_primas_pos >= 0 else 'loss' }}">{{ format_eur(total_primas_pos) }}</td>
+    </tr>
+    {% endif %}
+    {% if total_rent_acum is not none %}
+    <tr>
+      <td>Rentabilidad acumulada (div + G/P) / coste</td>
+      <td class="{{ 'gain' if total_rent_acum >= 0 else 'loss' }}">{{ total_rent_acum }}%</td>
+    </tr>
+    {% endif %}
+    {% if total_rent_acum_primas is not none and total_primas_pos and total_primas_pos != 0 %}
+    <tr>
+      <td>Rentabilidad acumulada con primas</td>
+      <td class="{{ 'gain' if total_rent_acum_primas >= 0 else 'loss' }}">{{ total_rent_acum_primas }}%</td>
+    </tr>
+    {% endif %}
+  </table>
+</div>
+
+<!-- ══ 2. EVOLUCIÓN DEL CAPITAL ════════════════════════════════════════════ -->
+{% if annual_metrics and annual_metrics|length > 1 %}
+<h2>2. Evolución del capital invertido</h2>
+
+{% if chart_base64 %}
+<div style="text-align:center; margin: 12px 0 16px;">
+  <img src="data:image/png;base64,{{ chart_base64 }}" style="width:100%; max-width:920px;" alt="Evolución del capital">
+</div>
+{% endif %}
+
+<table class="data">
+  <thead>
+    <tr>
+      <th>Año</th>
+      <th class="text-right">Compras</th>
+      <th class="text-right">Ventas</th>
+      <th class="text-right">Aportación neta</th>
+      <th class="text-right">Capital acumulado</th>
+      <th class="text-right">G/P realizada</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in annual_metrics %}
+    <tr>
+      <td><strong>{{ m.year }}</strong></td>
+      <td class="text-right nowrap">{{ format_eur(m.compras) }}</td>
+      <td class="text-right nowrap">{{ format_eur(m.ventas) }}</td>
+      <td class="text-right nowrap {{ 'gain' if m.aportacion_neta >= 0 else 'loss' }}">{{ format_eur(m.aportacion_neta) }}</td>
+      <td class="text-right nowrap"><strong>{{ format_eur(m.capital_acum) }}</strong></td>
+      <td class="text-right nowrap {{ 'gain' if m.gp_realizada >= 0 else 'loss' }}">{% if m.gp_realizada != 0 %}{{ format_eur(m.gp_realizada) }}{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- ══ POSICIONES ABIERTAS ═════════════════════════════════════════════════ -->
+<h2>{% if annual_metrics and annual_metrics|length > 1 %}3{% else %}2{% endif %}. Posiciones abiertas — Precio medio real</h2>
+
+<table class="data">
+  <thead>
+    <tr>
+      <th>ISIN</th>
+      <th>Empresa</th>
+      <th class="text-right">Cant.</th>
+      <th class="text-right">PM (EUR)</th>
+      <th class="text-right">Coste Total</th>
+      <th class="text-right">Div EUR</th>
+      <th class="text-right">Primas</th>
+      <th class="text-right">Rent.%</th>
+      <th class="text-right">Rent.+P%</th>
+      <th class="text-center">Lotes</th>
+      <th>Desde</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ep in enriched_positions %}
+    <tr>
+      <td style="font-size:7.5pt">{{ ep.pos.isin }}</td>
+      <td>{{ ep.pos.nombre[:35] }}{% if ep.pos.es_mixta %} <span class="badge-scrip">SCRIP</span>{% endif %}</td>
+      <td class="text-right">{{ "%.2f"|format(ep.pos.cantidad_total) }}</td>
+      <td class="text-right nowrap">{{ format_eur(ep.pos.pm_ponderado_eur) }}</td>
+      <td class="text-right nowrap">{{ format_eur(ep.pos.coste_total_eur) }}</td>
+      <td class="text-right nowrap">{% if ep.div_eur > 0 %}{{ format_eur(ep.div_eur) }}{% else %}—{% endif %}</td>
+      <td class="text-right nowrap">{% if ep.prima_eur != 0 %}<span class="{{ 'gain' if ep.prima_eur >= 0 else 'loss' }}">{{ format_eur(ep.prima_eur) }}</span>{% else %}—{% endif %}</td>
+      <td class="text-right nowrap {{ 'gain' if ep.rent_acum >= 0 else 'loss' }}">{{ ep.rent_acum }}%</td>
+      <td class="text-right nowrap {{ 'gain' if ep.rent_acum_primas >= 0 else 'loss' }}">{% if ep.prima_eur != 0 %}{{ ep.rent_acum_primas }}%{% else %}—{% endif %}</td>
+      <td class="text-center">{{ ep.pos.num_lotes }}</td>
+      <td class="nowrap" style="font-size:7.5pt">{{ ep.pos.lote_mas_antiguo.strftime('%d/%m/%Y') if ep.pos.lote_mas_antiguo else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td colspan="4"><strong>Total</strong></td>
+      <td class="text-right"><strong>{{ format_eur(total_coste) }}</strong></td>
+      <td class="text-right"><strong>{{ format_eur(total_div_pos) }}</strong></td>
+      <td class="text-right"><strong>{% if total_primas_pos != 0 %}{{ format_eur(total_primas_pos) }}{% endif %}</strong></td>
+      <td class="text-right"><strong>{% if total_rent_acum is not none %}{{ total_rent_acum }}%{% endif %}</strong></td>
+      <td class="text-right"><strong>{% if total_rent_acum_primas is not none and total_primas_pos != 0 %}{{ total_rent_acum_primas }}%{% endif %}</strong></td>
+      <td></td>
+      <td></td>
+    </tr>
+  </tfoot>
+</table>
+
+{% if positions_scrip %}
+<div class="warning-box">
+  <strong>Posiciones con acciones liberadas (scrip dividend):</strong> las siguientes posiciones incluyen acciones adquiridas vía scrip dividend con coste fiscal 0. Esto reduce el PM real respecto a lo que muestra el broker.
+  <ul style="margin-top:4px">
+    {% for p in positions_scrip %}
+    <li>{{ p.nombre }} ({{ p.isin }})</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<!-- ══ G/P REALIZADAS ══════════════════════════════════════════════════════ -->
+{% if gp_by_isin %}
+<h2>{% if annual_metrics and annual_metrics|length > 1 %}4{% else %}3{% endif %}. Ganancias y pérdidas realizadas — {{ ejercicio }}</h2>
+
+<table class="data">
+  <thead>
+    <tr>
+      <th>Empresa</th>
+      <th class="text-right">Ganancia</th>
+      <th class="text-right">Pérdida</th>
+      <th class="text-right">Neto</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in gp_by_isin %}
+    <tr>
+      <td>{{ item.nombre }}</td>
+      <td class="text-right gain">{% if item.ganancia > 0 %}{{ format_eur(item.ganancia) }}{% endif %}</td>
+      <td class="text-right loss">{% if item.perdida < 0 %}{{ format_eur(item.perdida) }}{% endif %}</td>
+      <td class="text-right {{ 'gain' if item.neto >= 0 else 'loss' }}">{{ format_eur(item.neto) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td class="text-right gain"><strong>{{ format_eur(total_ganancias) }}</strong></td>
+      <td class="text-right loss"><strong>{{ format_eur(total_perdidas) }}</strong></td>
+      <td class="text-right {{ 'gain' if total_gp_realizada >= 0 else 'loss' }}"><strong>{{ format_eur(total_gp_realizada) }}</strong></td>
+    </tr>
+  </tfoot>
+</table>
+{% endif %}
+
+</body>
+</html>

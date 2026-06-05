@@ -1,6 +1,6 @@
 {
   "source": "/app/720",
-  "copied_at": "2026-06-05T05:36:42.483595+00:00",
+  "copied_at": "2026-06-05T09:32:36.784852+00:00",
   "files": {
     "irpf/motor_fiscal.py": "a1da441acdc904e23e9fea65ca25d91989541cc1fbb820821236393812325eb2",
     "irpf/generar_irpf.py": "9aeb8943590427c4c7640993ccdf9103c6ba0cdf31277b2692a72fd9a1449305",
@@ -13,6 +13,31 @@
     "irpf/ecb_fx_cache.json": "ba1c8b28a12351febf02997a1c48fbd28702a4eb6ad2b12a929a6460a301b7ab",
     "casillas_irpf.json": "fd5434b81b8a772fcc70e5afbb0b7503daf34eff4a88960748b9410d896b3cd1",
     "webapp/excel_cartera.py": "2da8da5047aa97f53a49bfab1ead6548c0fd87e1a1723e99e16db2d1cdc2f88c",
-    "webapp/clasificacion_origen.py": "e96ea080413f4da3364a9058fa93cdc0a75b9010e016b28481c5a6985ec850c2"
+    "webapp/clasificacion_origen.py": "e96ea080413f4da3364a9058fa93cdc0a75b9010e016b28481c5a6985ec850c2",
+    "webapp/pdf_generator.py": "c4f97856e1a927ca15fc1ec0e89fb3190eccdaecde2e8eabdaaae04217888875",
+    "webapp/pdf_portfolio.py": "827dc0e45d1e563bcd382c186134c34f47baf8c5afb8ee928bd9785f4f68f06a",
+    "webapp/templates/informe_irpf.html": "12714f211d88bdbc7b5064be66ac0c9023221f18a79f2a3fd38c9bb637cd28fc",
+    "webapp/templates/portfolio_resumen.html": "0cb30cec695e3c825bbf7c4616fe38cb14cc7dd0a32941ef89173ada27f12670",
+    "webapp/static/assets/RentaWebGuide/2Months.png": "ddefeb34598201953a7ce8823fd4c01e19bddfeae08b781f6616cd2c6af61cc5",
+    "webapp/static/assets/RentaWebGuide/CompensacionMobiliarios.png": "f9bf0dc302b9dfb497e32e75bd04773815a93a3be7e9bc2a2f2a1077a1b5e721",
+    "webapp/static/assets/RentaWebGuide/CompensacionPerdidasPAtrimoniales.png": "9f5113d42332677b46fcf84ee9aa009eb410f631428319ca03d2aa3fe4288c1f",
+    "webapp/static/assets/RentaWebGuide/Derivados.png": "8372d6971ba82dca355a1d8b160f68a30f16b4b111b09c384a93c0af51459cac",
+    "webapp/static/assets/RentaWebGuide/Derivados2.png": "8c6ef6d252e166e409d9e93eef706d4ac23862176536fd5c14cfdc883329c610",
+    "webapp/static/assets/RentaWebGuide/Derivados3.png": "24e31baa11ef66ef72c5193ef81757534fe9caca5fec86e816eedb8cd5e22fab",
+    "webapp/static/assets/RentaWebGuide/DividendosCDIDetalle.png": "db96b7129b04ac00637d7293d2d6c59310953b6bdc350c91dfb2bd2f80c30cc1",
+    "webapp/static/assets/RentaWebGuide/DividendosCDIResumen.png": "c83f13787ec9cd0e45fceb7b53ab9cfbe3eda9fa441af8f989eadc1548c8e82f",
+    "webapp/static/assets/RentaWebGuide/DividendosPopup.png": "11c1a4ed79e0f9858e48a9f7c733caf5e039f73dd6d442a8242bb5c4089e2548",
+    "webapp/static/assets/RentaWebGuide/DobleImposicion.png": "4246693010eaf60e95bd641af0ec9abaeef7ef9a8fe7c9e1732be09d1435605d",
+    "webapp/static/assets/RentaWebGuide/ETFs1.png": "3346372e1c2921f4a564d280aeb8786666adb122b389ab03a73714bbd6da597e",
+    "webapp/static/assets/RentaWebGuide/ETFs2.png": "976af134c1f643b48773ceb4c9a91c6f033f5c7b38c71632f48c1420d03b46b2",
+    "webapp/static/assets/RentaWebGuide/G&PAcciones.png": "98b45e328bce305f942b5d165e522c2fb8d4761c399f382f2d4cb51bab3c0d51",
+    "webapp/static/assets/RentaWebGuide/InteresesYDepositos.png": "df3241621a2c9daabcaff84c5fdf4d14bbe161d1d966cf76f64d66903efe4089",
+    "webapp/static/assets/RentaWebGuide/Socimis1.png": "2f3dc4422fd6db0061af4673458628d6075703af891b5a370f7b9b33339363d6",
+    "webapp/static/assets/RentaWebGuide/VentaDerechos.png": "7d5ab1a89a31208051d4ce3e0e086b77611ed3d8dceb6e6dac5cf0d0c450dd1c",
+    "webapp/static/assets/RentaWebGuide/VentaDerechos2.png": "0d8d1a826b501cadde2554433d16c28ff116d724474a112e3e0988dd86f1b5fe",
+    "webapp/static/assets/RentaWebGuide/criptomonedas2.png": "eb371f8c3505959a1fce61fbfe5c1cc5b5e1bafea3862c7d474a7f2592084146",
+    "webapp/static/assets/RentaWebGuide/cryptomonedas1.png": "ce5798b14aa831b1707e1ca0c3db46fdf5459c3cbb33e4f11d2fdf3850dc86cc",
+    "webapp/static/assets/RentaWebGuide/dividendosCasilla.png": "39c002b510da9575cad233c7414c1426d9884c4c8c6874665406f5d63ba3256a",
+    "webapp/static/assets/RentaWebGuide/socimis2.png": "2b96e3cef4a7cff7a02932d89d02773941465708684ccbd77e260dc9bf1c692a"
   }
 }

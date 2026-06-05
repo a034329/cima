@@ -93,6 +93,15 @@ def get_excel_cartera():
     return excel_cartera
 
 
+def get_pdf_generator():
+    """Importa `pdf_generator` de Cuádrate (informe fiscal en PDF, weasyprint
+    + jinja2). Recibe fifo_results del motor y dicts de dividendos/opciones
+    parseados de los .txt para construir el HTML y rasterizar a PDF."""
+    _ensure_cuadrate_importable()
+    import pdf_generator  # type: ignore[import-not-found]
+    return pdf_generator
+
+
 def get_motor_fiscal():
     """Importa `motor_fiscal` de Cuádrate como librería pura.
 

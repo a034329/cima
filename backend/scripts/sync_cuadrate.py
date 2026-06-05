@@ -46,7 +46,23 @@ IRPF_DATA = [
 PARENT_DATA = ["casillas_irpf.json"]   # generar_irpf lo busca un nivel arriba
 # Generador XLSX (1.9: 'Generar declaración IRPF con Cuádrate'). Está bajo
 # webapp/ en el origen y lo invocamos desde el orquestador propio de Cima.
-WEBAPP_PY = ["excel_cartera.py", "clasificacion_origen.py"]
+WEBAPP_PY = [
+    "excel_cartera.py", "clasificacion_origen.py",
+    # Generadores PDF (1.9 extension): informe fiscal + resumen cartera
+    # con weasyprint + jinja2. Reciben fifo_results del motor ya vendorizado.
+    "pdf_generator.py", "pdf_portfolio.py",
+]
+# Templates HTML de los PDFs (jinja2). El template del informe es grande
+# (~3.200 líneas) pero el portfolio_resumen es ligero. Vendoramos los dos
+# necesarios y omitimos los de feedback/admin que no usa Cima.
+WEBAPP_TEMPLATES = [
+    "informe_irpf.html",
+    "portfolio_resumen.html",
+]
+# Capturas de RentaWEB embebidas en el PDF como guía paso a paso (~2.1 MB).
+# El template las referencia con rutas relativas `static/assets/RentaWebGuide/X.png`
+# y weasyprint las resuelve via base_url = webapp_dir. Las vendoramos en bloque.
+WEBAPP_ASSETS_DIR = "static/assets/RentaWebGuide"
 
 VENDOR = Path(__file__).resolve().parents[1] / "vendor" / "cuadrate"
 MANIFEST = VENDOR / "MANIFEST.json"
@@ -66,6 +82,16 @@ def _plan(source: Path) -> list[tuple[Path, Path, str]]:
         items.append((source / f, VENDOR / f, f))
     for f in WEBAPP_PY:
         items.append((source / "webapp" / f, VENDOR / "webapp" / f, f"webapp/{f}"))
+    for f in WEBAPP_TEMPLATES:
+        items.append((source / "webapp" / "templates" / f,
+                      VENDOR / "webapp" / "templates" / f,
+                      f"webapp/templates/{f}"))
+    # Assets (capturas RentaWEB) — listado completo del directorio en origen.
+    assets_origen = source / "webapp" / WEBAPP_ASSETS_DIR
+    if assets_origen.is_dir():
+        for png in sorted(assets_origen.glob("*.png")):
+            rel = f"webapp/{WEBAPP_ASSETS_DIR}/{png.name}"
+            items.append((png, VENDOR / "webapp" / WEBAPP_ASSETS_DIR / png.name, rel))
     return items
 
 

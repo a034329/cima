@@ -66,15 +66,72 @@ def _es_output_cuadrate(nombre: str, ejercicio: int) -> bool:
       - informe_opciones_{ej}.txt
       - informe_fx_{ej}.txt
       - shorts_pendientes_{ej}.json
+      - informe_fiscal_{ej}.pdf            (PDF del pdf_generator de Cuádrate)
     """
     ej = str(ejercicio)
     if nombre.startswith("cartera_valores_irpf_") and ej in nombre:
         return True
     if nombre.startswith("informe_") and ej in nombre and nombre.endswith(".txt"):
         return True
+    if nombre.startswith("informe_") and ej in nombre and nombre.endswith(".pdf"):
+        return True
     if nombre.startswith("shorts_pendientes_") and ej in nombre:
         return True
     return False
+
+
+def _generar_pdf_fiscal(work_dir: Path, ejercicio: int) -> Path | None:
+    """Genera el PDF fiscal de Cuádrate dentro del tempdir.
+
+    Reconstruye `fifo_results` desde el XLSX recién generado (motor lee XLSX
+    indistintamente como input) y parsea los .txt de dividendos y opciones
+    para alimentar al template. Devuelve la ruta del PDF o None si la
+    generación falla (no es bloqueante: el ZIP sale igual sin el PDF y con
+    aviso en stdout_tail).
+    """
+    xlsx = work_dir / f"cartera_valores_irpf_{ejercicio}.xlsx"
+    if not xlsx.exists():
+        return None
+
+    motor = cuadrate_adapter.get_motor_fiscal()
+    pdf_gen = cuadrate_adapter.get_pdf_generator()
+
+    try:
+        results = motor.calcular_fifo([str(xlsx)])
+    except Exception:
+        return None
+
+    # Los .txt son opcionales — si no existen para este ejercicio (e.g. sólo
+    # subiste el CSV de transacciones DEGIRO sin cuenta), el PDF se renderiza
+    # con secciones vacías para dividendos/opciones.
+    div_txt = work_dir / f"informe_dividendos_{ejercicio}.txt"
+    opt_txt = work_dir / f"informe_opciones_{ejercicio}.txt"
+    dividendos = None
+    opciones = None
+    try:
+        if div_txt.exists():
+            dividendos = pdf_gen.parse_dividendos_txt(str(div_txt))
+        if opt_txt.exists():
+            opciones = pdf_gen.parse_opciones_txt(str(opt_txt))
+    except Exception:
+        # Parse defensivo: si un .txt está corrupto, generamos PDF sin él.
+        dividendos = dividendos or None
+        opciones = opciones or None
+
+    pdf_path = work_dir / f"informe_fiscal_{ejercicio}.pdf"
+    try:
+        pdf_gen.generate_fiscal_pdf(
+            results, ejercicio=ejercicio, output_path=str(pdf_path),
+            dividendos=dividendos, opciones=opciones,
+            # Opcionales que aún no alimentamos desde Cima (Roadmap 1.9 extras):
+            # compensacion (pérdidas 4Y), futuros (IBKR), fx_pl (IBKR forex),
+            # complejos_investigaciones. El template las omite cuando son None.
+            compensacion=None, futuros=None, fx_pl=None,
+            complejos_investigaciones=None,
+        )
+    except Exception:
+        return None
+    return pdf_path if pdf_path.exists() else None
 
 
 def _empaquetar_zip(work_dir: Path, ejercicio: int) -> tuple[Path, list[str]]:
@@ -166,7 +223,12 @@ def generar_irpf_zip(
             f"--- últimas líneas del log ---\n{tail}"
         )
 
-    # 3) Empaquetar XLSX + informes + sidecars en un ZIP.
+    # 3) Generar el PDF fiscal (best-effort — si falla, seguimos sin él).
+    #    Reusa el XLSX recién generado como input al motor para reconstruir
+    #    fifo_results y los .txt de informe para dividendos/opciones.
+    _generar_pdf_fiscal(work_dir, ejercicio)
+
+    # 4) Empaquetar XLSX + informes + sidecars + PDF en un ZIP.
     zip_path, incluidos = _empaquetar_zip(work_dir, ejercicio)
     return IRPFResultado(
         zip_path=zip_path,
