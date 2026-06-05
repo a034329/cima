@@ -41,12 +41,61 @@ from app.services.aportaciones import (
     saldo_degiro_cuenta,
     saldo_ibkr_ending_cash,
 )
+from app.services import storage_extractos
 from app.services.opciones import reconciliar_opciones
 from app.services.resultados import upsert_complejos, upsert_resultados_ibkr
 from app.services.transacciones import reconciliar_extracto
 
 
+# Kind del extracto principal por broker_tipo. DEGIRO tiene dos kinds (el
+# CSV de Cuenta se persiste aparte como 'degiro_cuenta'); el resto un único
+# kind = broker_tipo.
+_KIND_PRINCIPAL = {
+    "degiro": "degiro_transacciones",
+    "ibkr":   "ibkr",
+    "tr":     "tr",
+}
+
+
 router = APIRouter(prefix="/import", tags=["import"])
+
+
+class ExtractoOut(BaseModel):
+    id: str
+    ejercicio: int
+    kind: str
+    filename_original: str
+    size_bytes: int
+    uploaded_at: str
+
+
+def _cartera(db: Session) -> models.Cartera:
+    c = db.execute(select(models.Cartera)).scalars().first()
+    if c is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No hay cartera. Llama primero a POST /api/bootstrap")
+    return c
+
+
+@router.get("/extractos", response_model=list[ExtractoOut],
+            summary="Lista los CSVs originales guardados (Roadmap 1.9)")
+def listar_extractos_guardados(
+    ejercicio: int | None = None,
+    db: Session = Depends(get_db),
+) -> list[ExtractoOut]:
+    """Para que el frontend muestre qué tiene Cima guardado y permita generar
+    la declaración solo cuando hay extractos para ese ejercicio."""
+    items = storage_extractos.listar_extractos(db, _cartera(db).id, ejercicio)
+    return [ExtractoOut(**i.__dict__) for i in items]
+
+
+@router.delete("/extractos/{extracto_id}", status_code=status.HTTP_204_NO_CONTENT,
+               summary="Elimina un CSV guardado (fila + fichero)")
+def eliminar_extracto_guardado(extracto_id: str, db: Session = Depends(get_db)) -> None:
+    cartera_id = _cartera(db).id
+    if not storage_extractos.eliminar_extracto(db, cartera_id, extracto_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Extracto no encontrado")
+    db.commit()
 
 
 @router.get("/brokers")
@@ -277,6 +326,14 @@ async def importar_extracto(
         UploadFile | None,
         File(description="(DEGIRO opcional) CSV de Cuenta para dividendos + tasas externas"),
     ] = None,
+    ejercicio: Annotated[
+        int | None,
+        Form(description=(
+            "Año fiscal del extracto (e.g. 2025). Si lo informas, Cima guarda "
+            "el CSV original en disco para re-pasárselo al motor de Cuádrate "
+            "al generar la declaración (Roadmap 1.9). Opcional."
+        )),
+    ] = None,
 ) -> ImportResultado:
     if broker_tipo.endswith("_cuenta"):
         raise HTTPException(
@@ -317,6 +374,7 @@ async def importar_extracto(
         # Si hay fichero_cuenta y broker es DEGIRO, también lo escribimos en tempfile.
         tmp_cuenta_path: str | None = None
         tmp_cuenta_obj = None
+        contenido_cuenta: bytes = b""
         if fichero_cuenta is not None and broker_tipo == "degiro":
             tmp_cuenta_obj = tempfile.NamedTemporaryFile(
                 suffix=".csv", delete=True, prefix="cima_cuenta_"
@@ -326,6 +384,43 @@ async def importar_extracto(
                 tmp_cuenta_obj.write(contenido_cuenta)
                 tmp_cuenta_obj.flush()
                 tmp_cuenta_path = tmp_cuenta_obj.name
+
+        # ── Persistencia del CSV original (Roadmap 1.9) ─────────────────
+        # Cima guarda el extracto tal cual para poder re-pasárselo a
+        # `generar_irpf.main()` y entregar la declaración completa.
+        # Si no se informa el ejercicio, lo omitimos sin romper la importación
+        # (compatibilidad con el flujo previo).
+        if ejercicio is not None:
+            kind_principal = _KIND_PRINCIPAL.get(broker_tipo)
+            if kind_principal:
+                try:
+                    storage_extractos.guardar_extracto(
+                        db, cartera_id=cartera.id, ejercicio=ejercicio,
+                        kind=kind_principal,
+                        filename_original=fichero.filename or "extracto.csv",
+                        contenido=contenido,
+                    )
+                except (OSError, ValueError) as e:
+                    avisos_parser.append(
+                        f"[STORAGE] No se pudo guardar el CSV original "
+                        f"({kind_principal}/{ejercicio}): {e}. La importación "
+                        f"a BD sigue, pero el motor IRPF de Cuádrate no podrá "
+                        f"usar este extracto."
+                    )
+            if (broker_tipo == "degiro" and contenido_cuenta):
+                try:
+                    storage_extractos.guardar_extracto(
+                        db, cartera_id=cartera.id, ejercicio=ejercicio,
+                        kind="degiro_cuenta",
+                        filename_original=(fichero_cuenta.filename
+                                           if fichero_cuenta else "cuenta.csv"),
+                        contenido=contenido_cuenta,
+                    )
+                except (OSError, ValueError) as e:
+                    avisos_parser.append(
+                        f"[STORAGE] No se pudo guardar el CSV de cuenta "
+                        f"DEGIRO ({ejercicio}): {e}."
+                    )
 
         try:
             # parse_degiro_csv acepta cuenta_path + avisos; el resto de parsers

@@ -940,3 +940,55 @@ class SnapshotPrecio(Base):
     __table_args__ = (
         UniqueConstraint("cartera_id", "isin", name="uq_snapshot_cartera_isin"),
     )
+
+
+class ExtractoArchivo(Base):
+    """Extracto bruto del broker guardado tal cual lo subió el usuario.
+
+    Roadmap 1.9 (CSV approach): Cima persiste los CSVs originales para poder
+    re-pasarlos al `generar_irpf.main()` de Cuádrate y entregar la declaración
+    completa (XLSX maestro + informes corporativas/dividendos/opciones/fx +
+    sidecars). La BD de Cima es una transformación; el CSV original es la
+    source of truth fiscal.
+
+    `kind` clasifica qué CSV es para que el orquestador lo renombre al
+    nombre exacto que Cuádrate espera en su BASE_DIR:
+      - 'degiro_transacciones' → DeGiro_Transacciones_{ejercicio}.csv
+      - 'degiro_cuenta'        → DeGiro_Cuenta_{ejercicio}.csv
+      - 'ibkr'                 → IBKR_Trades_{ejercicio}.csv
+      - 'tr'                   → TR_Transacciones_{ejercicio}.csv
+    """
+
+    __tablename__ = "extractos_archivos"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    broker_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("brokers.id", ondelete="SET NULL"), nullable=True,
+    )
+    ejercicio: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    filename_original: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Ruta RELATIVA al storage_dir configurado (no absoluta — facilita migrar
+    # entre hosts/contenedores sin reescribir la BD).
+    ruta_storage: Mapped[str] = mapped_column(String(500), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc,
+    )
+
+    __table_args__ = (
+        # Un único fichero "vigente" por (cartera, ejercicio, kind). Subir
+        # de nuevo el mismo kind+ejercicio sobreescribe el anterior (lógica
+        # de reemplazo en el servicio, NO en BD: para una fila por subida).
+        Index("ix_extractos_cartera_ejercicio_kind",
+              "cartera_id", "ejercicio", "kind"),
+        Index("ix_extractos_sha256", "sha256"),
+        CheckConstraint(
+            "kind IN ('degiro_transacciones','degiro_cuenta','ibkr','tr')",
+            name="ck_extracto_kind",
+        ),
+    )

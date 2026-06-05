@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # CIMA_CUADRATE_IRPF_PATH=/app/720/irpf. Sincronizar con scripts/sync_cuadrate.py.
     cuadrate_irpf_path: str = ""
 
+    # ── Storage de extractos brutos (Roadmap 1.9 CSV approach) ─────────
+    # Donde Cima guarda los CSVs originales de broker para re-pasárselos a
+    # `generar_irpf.main()` y entregar la declaración completa. Estructura:
+    #   {storage_dir}/extractos/{cartera_id}/{ejercicio}/{kind}.csv
+    # Vacío → backend/storage/. Override en producción con un volumen montado.
+    storage_dir: str = ""
+
     # ── Sentry (placeholder) ───────────────────────────────────────────
     sentry_dsn: str = ""
 
