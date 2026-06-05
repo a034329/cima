@@ -152,12 +152,18 @@ export async function importarExtracto(
   brokerTipo: string,
   fichero: File,
   ficheroCuenta?: File | null,
+  ejercicio?: number | null,
 ): Promise<ImportResultado> {
   const form = new FormData();
   form.set('broker_tipo', brokerTipo);
   form.set('fichero', fichero);
   if (ficheroCuenta) {
     form.set('fichero_cuenta', ficheroCuenta);
+  }
+  if (ejercicio != null) {
+    // Si se informa, el backend persiste el CSV original en storage para
+    // re-pasárselo al motor de Cuádrate al generar la declaración (1.9).
+    form.set('ejercicio', String(ejercicio));
   }
   const res = await fetch(`${API_BASE}/api/import`, {
     method: 'POST',

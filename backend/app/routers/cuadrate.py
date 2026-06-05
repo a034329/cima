@@ -1,8 +1,8 @@
-"""Endpoint de generación del XLSX maestro IRPF (Roadmap 1.9).
+"""Endpoint de generación de la declaración IRPF estilo Cuádrate (Roadmap 1.9).
 
-Cima genera 'in-process' la declaración usando el motor + generador XLSX
-vendorizado desde Cuádrate. No depende de los CSVs originales del broker:
-reconstruye las operaciones desde la BD de Cima vía `cuadrate_irpf`.
+Cima invoca el `generar_irpf.py` vendorizado como subprocess sobre los CSVs
+ORIGINALES guardados por el usuario (storage_extractos) y devuelve un ZIP con
+todos los entregables (XLSX maestro + 4 informes + sidecars JSON).
 """
 from __future__ import annotations
 
@@ -29,22 +29,20 @@ def _cartera(db: Session) -> models.Cartera:
 
 
 @router.get(
-    "/irpf/{ejercicio}.xlsx",
-    summary="Genera y descarga el XLSX maestro IRPF (estilo Cuádrate) del ejercicio",
+    "/irpf/{ejercicio}.zip",
+    summary="Genera y descarga la declaración IRPF completa (XLSX + informes) del ejercicio",
     response_class=FileResponse,
 )
-def generar_irpf_xlsx(
+def generar_irpf_zip(
     ejercicio: int,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    """Devuelve `cartera_valores_irpf_{ejercicio}.xlsx`. Tras la entrega, el
-    fichero temporal se limpia en background.
+    """Devuelve `cartera_irpf_{ejercicio}.zip` con todos los entregables que
+    produce el motor de Cuádrate. Requiere haber subido previamente los CSVs
+    del broker para ese ejercicio en POST /api/import indicando `ejercicio`.
 
-    MVP: cubre operaciones BUY/SELL/SP + FIFO + Resumen. Las hojas opcionales
-    (dividendos por país con CDI, opciones por contrato, forex, T-Bills,
-    intereses, staking, gastos plataforma) se rellenarán en iteraciones
-    siguientes; mientras tanto aparecen vacías o se omiten.
+    Tras la entrega, el tempdir (CSVs + outputs) se limpia en background.
     """
     ahora = date.today().year
     if ejercicio < 2000 or ejercicio > ahora:
@@ -55,30 +53,24 @@ def generar_irpf_xlsx(
 
     cartera_id = _cartera(db).id     # fuera del try: deja propagar el 404
     try:
-        out_path = svc.generar_xlsx(db, cartera_id, ejercicio)
-    except RuntimeError as e:
-        # Motor vendorizado no disponible (despliegue sin vendor/).
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
+        resultado = svc.generar_irpf_zip(db, cartera_id, ejercicio)
+    except svc.SinExtractosError as e:
+        # 422: el cliente debe subir los CSVs primero — request bien formado
+        # pero estado incompatible.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    except svc.GenerarIRPFError as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e))
     except HTTPException:
         raise
-    except Exception as e:   # pragma: no cover — defensivo
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"Error generando XLSX IRPF: {e}")
 
-    # Limpieza diferida: el directorio temporal se borra tras enviar el fichero.
-    background.add_task(_cleanup, out_path)
+    background.add_task(svc.limpiar, resultado)
     return FileResponse(
-        path=str(out_path),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=out_path.name,
+        path=str(resultado.zip_path),
+        media_type="application/zip",
+        filename=resultado.zip_path.name,
+        headers={
+            # Diagnóstico útil para el frontend (qué entró, qué salió).
+            "X-Cima-Irpf-Kinds":     ",".join(resultado.kinds_usados),
+            "X-Cima-Irpf-Ficheros":  ",".join(resultado.ficheros_generados),
+        },
     )
-
-
-def _cleanup(path) -> None:
-    """Borra el fichero y su directorio temporal padre. Best-effort."""
-    import shutil
-    try:
-        if path.exists():
-            shutil.rmtree(path.parent, ignore_errors=True)
-    except Exception:
-        pass

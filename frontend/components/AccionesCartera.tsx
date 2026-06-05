@@ -555,6 +555,12 @@ function ModalImportarExtracto({
   const [resultado, setResultado] = useState<ImportResultado | null>(null);
   const [loadingBrokers, setLoadingBrokers] = useState(true);
   const [estado, setEstado] = useState<BrokerEstado[]>([]);
+  // Ejercicio fiscal del extracto. Si se informa, el backend guarda el CSV
+  // original para usarlo en Generar IRPF (Roadmap 1.9). El default es el año
+  // anterior (campaña típica). Vacío = no guardar (modo BD-only).
+  const ahora = new Date().getFullYear();
+  const ejerciciosPosibles = Array.from({ length: 6 }, (_, i) => ahora - i);
+  const [ejercicio, setEjercicio] = useState<string>(String(ahora - 1));
 
   useEffect(() => {
     fetchBrokersSoportados()
@@ -581,7 +587,8 @@ function ModalImportarExtracto({
     }
     setSubmitting(true);
     try {
-      const r = await importarExtracto(broker, fichero, ficheroCuenta);
+      const ej = ejercicio ? Number(ejercicio) : null;
+      const r = await importarExtracto(broker, fichero, ficheroCuenta, ej);
       setResultado(r);
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
@@ -695,9 +702,31 @@ function ModalImportarExtracto({
                 </div>
               )}
 
+              <div>
+                <label className="block text-xs font-medium text-[rgb(var(--muted))] mb-1">
+                  Ejercicio fiscal del extracto{' '}
+                  <span className="text-[rgb(var(--muted))]">(para Generar IRPF)</span>
+                </label>
+                <select
+                  value={ejercicio}
+                  onChange={(e) => setEjercicio(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))] text-sm"
+                >
+                  <option value="">— No guardar para IRPF —</option>
+                  {ejerciciosPosibles.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-[rgb(var(--muted))] mt-1">
+                  Si lo indicas, Cima <strong>guarda el CSV original</strong> y lo usa al
+                  generar la declaración con el motor de Cuádrate. Si lo dejas vacío,
+                  el extracto se procesa a la BD pero el CSV no se conserva.
+                </p>
+              </div>
+
               <p className="text-xs text-[rgb(var(--muted))]">
-                Los ficheros no se almacenan. Se procesan en memoria y se descartan.
-                El re-import es idempotente (no duplica).
+                El re-import es idempotente (no duplica filas en BD). Subir de nuevo
+                el mismo ejercicio+broker reemplaza el CSV guardado.
               </p>
             </div>
 
@@ -925,11 +954,29 @@ function CampoSelect({
 
 // ── Generar declaración IRPF (Roadmap 1.9) ─────────────────────────────────
 //
-// Botón con selector de ejercicio. Al confirmar, descarga el XLSX maestro
-// generado in-process por el endpoint /api/cuadrate/irpf/{ejercicio}.xlsx.
-// MVP: hojas Operaciones + FIFO + Resumen. Hojas opcionales (dividendos por
-// país con CDI, opciones, forex, T-Bills, intereses, staking) se rellenan
-// en iteraciones posteriores.
+// Botón con selector de ejercicio. Al confirmar, llama al endpoint que invoca
+// el `generar_irpf.py` de Cuádrate sobre los CSVs guardados por el usuario y
+// devuelve un ZIP con XLSX maestro + 4 informes (corporativas/dividendos/
+// opciones/fx) + sidecars JSON. Paridad total con Cuádrate.
+//
+// Antes de generar muestra los extractos guardados del ejercicio elegido —
+// si no hay ninguno, deshabilita el botón y avisa.
+
+type ExtractoGuardado = {
+  id: string;
+  ejercicio: number;
+  kind: string;
+  filename_original: string;
+  size_bytes: number;
+  uploaded_at: string;
+};
+
+const KIND_LABEL: Record<string, string> = {
+  degiro_transacciones: 'DEGIRO Transacciones',
+  degiro_cuenta:        'DEGIRO Cuenta',
+  ibkr:                 'IBKR Activity Statement',
+  tr:                   'Trade Republic',
+};
 
 function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
   const [abierto, setAbierto] = useState(false);
@@ -937,23 +984,40 @@ function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
   const ahora = new Date().getFullYear();
   // Campaña típica: ejercicio anterior + 4 años hacia atrás.
   const [ejercicio, setEjercicio] = useState(String(ahora - 1));
+  const [extractos, setExtractos] = useState<ExtractoGuardado[] | null>(null);
+  const [cargandoExtractos, setCargandoExtractos] = useState(false);
   const ejercicios = Array.from({ length: 5 }, (_, i) => ahora - i);
+
+  // Al abrir o cambiar de ejercicio, refrescamos qué extractos hay guardados
+  // para informar al usuario si puede generar o le falta subir CSVs.
+  useEffect(() => {
+    if (!abierto) return;
+    let vigente = true;
+    setCargandoExtractos(true);
+    fetch(`/api/import/extractos?ejercicio=${ejercicio}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => { if (vigente) setExtractos(data); })
+      .catch(() => { if (vigente) setExtractos([]); })
+      .finally(() => { if (vigente) setCargandoExtractos(false); });
+    return () => { vigente = false; };
+  }, [abierto, ejercicio]);
 
   async function descargar() {
     setDescargando(true);
     try {
-      const url = `/api/cuadrate/irpf/${ejercicio}.xlsx`;
+      const url = `/api/cuadrate/irpf/${ejercicio}.zip`;
       const r = await fetch(url);
       if (!r.ok) {
         const txt = await r.text();
-        throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
+        let mensaje = txt;
+        try { mensaje = JSON.parse(txt).detail ?? txt; } catch { /* no JSON */ }
+        throw new Error(`HTTP ${r.status}: ${mensaje.slice(0, 400)}`);
       }
       const blob = await r.blob();
-      // Usamos un anchor temporal: nombre y descarga sin abrir nueva pestaña.
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = `cartera_valores_irpf_${ejercicio}.xlsx`;
+      a.download = `cartera_irpf_${ejercicio}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -966,21 +1030,21 @@ function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
     }
   }
 
+  const sinExtractos = extractos != null && extractos.length === 0;
+
   return (
     <div className="relative">
       <button
         onClick={() => setAbierto((v) => !v)}
         disabled={disabled || descargando}
         className="px-3 py-1.5 text-sm font-medium rounded border border-[rgb(var(--border))] hover:bg-[rgb(var(--bg))] disabled:opacity-50"
-        title="Genera el XLSX maestro IRPF (estilo Cuádrate) del ejercicio elegido"
+        title="Genera la declaración IRPF completa (XLSX + informes) usando los CSVs guardados"
       >
         {descargando ? 'Generando…' : 'Generar IRPF'}
       </button>
 
       {abierto && !descargando && (
-        <div
-          className="absolute right-0 mt-1 z-10 rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] shadow-lg p-3 space-y-2 min-w-[220px]"
-        >
+        <div className="absolute right-0 mt-1 z-10 rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] shadow-lg p-3 space-y-2 min-w-[300px]">
           <div className="text-xs font-semibold uppercase tracking-wider text-[rgb(var(--muted))]">
             Ejercicio fiscal
           </div>
@@ -993,12 +1057,48 @@ function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
               <option key={y} value={y}>{y}</option>
             ))}
           </select>
+
+          <div className="text-xs">
+            {cargandoExtractos && (
+              <span className="text-[rgb(var(--muted))]">Verificando extractos…</span>
+            )}
+            {extractos != null && extractos.length > 0 && (
+              <div>
+                <div className="text-[rgb(var(--muted))] mb-0.5">
+                  Extractos guardados para {ejercicio}:
+                </div>
+                <ul className="text-[11px] space-y-0.5">
+                  {extractos.map((e) => (
+                    <li key={e.id} className="flex items-center gap-1">
+                      <span className="text-emerald-600 dark:text-emerald-400">●</span>
+                      <span>{KIND_LABEL[e.kind] ?? e.kind}</span>
+                      <span className="text-[rgb(var(--muted))]">
+                        · {(e.size_bytes / 1024).toFixed(1)} KB
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {sinExtractos && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-2">
+                <span className="font-semibold text-amber-700 dark:text-amber-300">
+                  Sin extractos guardados para {ejercicio}.
+                </span>
+                <p className="text-[11px] mt-0.5">
+                  Sube el CSV del broker en <strong>Importar extracto</strong> indicando el ejercicio.
+                </p>
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-2">
             <button
               onClick={descargar}
-              className="flex-1 px-2 py-1.5 text-sm rounded bg-brand-600 text-white hover:bg-brand-700"
+              disabled={sinExtractos || cargandoExtractos}
+              className="flex-1 px-2 py-1.5 text-sm rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
             >
-              Descargar XLSX
+              Descargar declaración (ZIP)
             </button>
             <button
               onClick={() => setAbierto(false)}
@@ -1008,8 +1108,8 @@ function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
             </button>
           </div>
           <p className="text-[10px] text-[rgb(var(--muted))] leading-snug">
-            MVP: operaciones + FIFO + Resumen. Las hojas de dividendos por país,
-            opciones, forex e intereses se irán incorporando.
+            XLSX maestro + informes (corporativas, dividendos, opciones, FX) +
+            sidecars JSON. Paridad total con Cuádrate.
           </p>
         </div>
       )}

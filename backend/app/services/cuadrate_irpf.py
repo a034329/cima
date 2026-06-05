@@ -1,204 +1,191 @@
-"""Generación del XLSX maestro IRPF estilo Cuádrate (Roadmap 1.9).
+"""Generación de la declaración IRPF completa estilo Cuádrate (Roadmap 1.9).
 
-Cima ya tiene toda la fiscalidad española calculada (`fiscal_resumen.py`); este
-servicio orquesta los datos de la BD al formato que espera el generador
-`excel_cartera.generate_cartera_xlsx` vendorizado desde Cuádrate. El usuario
-descarga un XLSX listo para entregar/imprimir/usar como pauta de RentaWEB.
+Cima invoca `generar_irpf.py` (vendorizado) como subprocess sobre los CSVs
+ORIGINALES del usuario guardados por `storage_extractos`. Eso entrega TODO
+lo que Cuádrate hace hoy: XLSX maestro + 4 informes (corporativas/dividendos/
+opciones/fx) + sidecars JSON (corp_events, shorts pendientes, totals,
+no_soportadas), con paridad total — sin reconstruir cada hoja desde la BD.
 
-MVP: cubre BUYs/SELLs/SPlits del año natural y delega en el motor FIFO
-vendored para reconstruir lotes y G/P. Las hojas opcionales (dividendos por
-país, opciones por contrato, forex, T-Bills, intereses IBKR, staking TR,
-gastos plataforma, futuros) se pasan en None inicialmente — `generate_cartera_xlsx`
-las omite o las muestra vacías. Iteraciones posteriores las van rellenando.
+Output: un ZIP por ejercicio con todos los ficheros generados. El llamador
+(router) lo streamea y borra el tempdir.
 """
 from __future__ import annotations
 
-import json
+import subprocess
+import sys
 import tempfile
-from decimal import Decimal
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.adapters.cuadrate import get_excel_cartera, get_motor_fiscal
-from app.db import models
+from app.adapters import cuadrate as cuadrate_adapter
+from app.services import storage_extractos
 
 
-# Mapeo del tipo interno de Cima al código de operación que Cuádrate usa.
-# - BUY → 'A' (Adquisición)
-# - SELL → 'T' (Transmisión)
-# - CORPORATE_SPLIT → 'SP' (split/contrasplit; la cantidad es la POST-split)
-# - CORPORATE_SCRIP → 'AL' (acción liberada, coste 0)
-# El resto de tipos (DIVIDEND, INTEREST, STAKING_REWARD, CORPORATE_RIGHTS,
-# CORPORATE_ISIN_CHANGE, CORPORATE_MERGER, CORPORATE_OPA, OTRO) NO entran como
-# operaciones del FIFO: viven en hojas dedicadas (Dividendos, Intereses, etc.).
-_TIPO_CIMA_A_CUADRATE = {
-    "BUY": "A",
-    "SELL": "T",
-    "CORPORATE_SPLIT": "SP",
-    "CORPORATE_SCRIP": "AL",
-}
+# Timeout del subprocess: ejercicios típicos tardan < 30s con CSVs reales;
+# 5 min cubre histórico denso (10+ años de DEGIRO con muchos splits).
+_TIMEOUT_S = 300
 
 
-def _broker_alias(db: Session, broker_id: str | None) -> str:
-    """Etiqueta del broker para la hoja Operaciones. Vacío si no hay broker."""
-    if not broker_id:
-        return ""
-    b = db.get(models.Broker, broker_id)
-    return (b.alias or b.broker_tipo.upper()) if b else ""
+class SinExtractosError(RuntimeError):
+    """No hay CSVs guardados para el ejercicio solicitado."""
 
 
-def _parse_split_meta(notas: str | None) -> tuple[Decimal, Decimal, Decimal]:
-    """Recupera (qty_old, qty_new, nominal_old) del JSON serializado en `notas`
-    de las transacciones CORPORATE_SPLIT (escrito por adapters/cuadrate.py)."""
-    if not notas:
-        return Decimal("0"), Decimal("0"), Decimal("1")
-    try:
-        meta = json.loads(notas)
-        sp = meta.get("split", {})
-        return (
-            Decimal(str(sp.get("qty_old", 0))),
-            Decimal(str(sp.get("qty_new", 0))),
-            Decimal(str(sp.get("nominal_old", 1))),
+class GenerarIRPFError(RuntimeError):
+    """`generar_irpf.py` falló o no produjo el XLSX maestro."""
+
+
+@dataclass
+class IRPFResultado:
+    """Resultado de la generación: ZIP + metadatos para el router."""
+    zip_path: Path                 # ZIP listo para descargar (en tempdir)
+    work_dir: Path                 # tempdir con CSVs + outputs (a limpiar)
+    ejercicio: int
+    kinds_usados: list[str]        # ['degiro_transacciones', 'ibkr', …]
+    ficheros_generados: list[str]  # nombres de los outputs incluidos en el ZIP
+    stdout_tail: str               # últimas líneas del subprocess (para diagnóstico)
+
+
+def _ruta_generar_irpf() -> Path:
+    """Path absoluto al `generar_irpf.py` vendorizado."""
+    return Path(cuadrate_adapter._CUADRATE_IRPF) / "generar_irpf.py"
+
+
+def _es_output_cuadrate(nombre: str, ejercicio: int) -> bool:
+    """¿El fichero del tempdir es un output de Cuádrate del ejercicio?
+
+    Cuádrate genera (todos del ejercicio en el nombre):
+      - cartera_valores_irpf_{ej}.xlsx     (XLSX maestro)
+      - cartera_valores_irpf_{ej}.csv      (CSV plano, legacy)
+      - cartera_valores_irpf_{ej}.<x>.json (sidecars: corp_events, totals,
+        no_soportadas)
+      - informe_corporativas_{ej}.txt
+      - informe_dividendos_{ej}.txt
+      - informe_opciones_{ej}.txt
+      - informe_fx_{ej}.txt
+      - shorts_pendientes_{ej}.json
+    """
+    ej = str(ejercicio)
+    if nombre.startswith("cartera_valores_irpf_") and ej in nombre:
+        return True
+    if nombre.startswith("informe_") and ej in nombre and nombre.endswith(".txt"):
+        return True
+    if nombre.startswith("shorts_pendientes_") and ej in nombre:
+        return True
+    return False
+
+
+def _empaquetar_zip(work_dir: Path, ejercicio: int) -> tuple[Path, list[str]]:
+    """Empaqueta los outputs del ejercicio en un ZIP dentro de `work_dir`.
+    Devuelve (zip_path, nombres_incluidos)."""
+    zip_path = work_dir / f"cartera_irpf_{ejercicio}.zip"
+    incluidos: list[str] = []
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(work_dir.iterdir()):
+            if not f.is_file():
+                continue
+            if not _es_output_cuadrate(f.name, ejercicio):
+                continue
+            z.write(f, arcname=f.name)
+            incluidos.append(f.name)
+    return zip_path, incluidos
+
+
+def generar_irpf_zip(
+    db: Session, cartera_id: str, ejercicio: int,
+) -> IRPFResultado:
+    """Materializa los CSVs guardados, invoca `generar_irpf.py` y empaqueta
+    los outputs en un ZIP. El llamador limpia `work_dir` cuando termina.
+
+    Raises:
+        SinExtractosError: no hay CSVs guardados para ese ejercicio.
+        GenerarIRPFError:  el subprocess falló o no produjo el XLSX.
+    """
+    # 1) Materializar CSVs al tempdir con los nombres EXACTOS de Cuádrate.
+    work_dir = Path(tempfile.mkdtemp(prefix=f"cima_irpf_{ejercicio}_"))
+    materializados = storage_extractos.materializar_para_ejercicio(
+        db, cartera_id, ejercicio, work_dir,
+    )
+    if not materializados:
+        # No dejamos el tempdir colgando si no hay nada que hacer.
+        _rm_tree_silent(work_dir)
+        raise SinExtractosError(
+            f"No hay extractos guardados para el ejercicio {ejercicio}. "
+            f"Sube primero el CSV del broker en Importar extracto indicando "
+            f"el ejercicio."
         )
-    except (ValueError, TypeError):
-        return Decimal("0"), Decimal("0"), Decimal("1")
 
+    # 2) Invocar `generar_irpf.py` como subprocess (aislamiento total: no
+    # contamina sys.argv ni los globals del proceso de Cima).
+    script = _ruta_generar_irpf()
+    if not script.is_file():
+        _rm_tree_silent(work_dir)
+        raise GenerarIRPFError(
+            f"generar_irpf.py no encontrado en {script}. Ejecuta "
+            f"`python scripts/sync_cuadrate.py` para refrescar el vendor."
+        )
 
-def construir_operaciones(db: Session, cartera_id: str) -> list[dict]:
-    """Traduce las Transacciones de Cima al formato in-memory que espera
-    `motor_fiscal.calcular_fifo_from_ops` (y, en cascada, `generate_cartera_xlsx`).
+    cmd = [
+        sys.executable, str(script),
+        "--base-path", str(work_dir),
+        "--ejercicio", str(ejercicio),
+        "--no-interactive",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        _rm_tree_silent(work_dir)
+        raise GenerarIRPFError(
+            f"generar_irpf.py excedió el timeout de {_TIMEOUT_S}s. "
+            f"Si tu histórico es muy grande, abre un issue."
+        )
 
-    Devuelve TODAS las transacciones confirmadas (multi-año). El motor FIFO
-    necesita el histórico completo para calcular el coste base correcto.
+    # `generar_irpf.py` puede exit 0 incluso si no hay XLSX (cuando los CSVs
+    # están pero no contienen operaciones del ejercicio). Verificamos por la
+    # presencia del fichero, no por el exit code.
+    xlsx = work_dir / f"cartera_valores_irpf_{ejercicio}.xlsx"
+    if proc.returncode != 0 and not xlsx.exists():
+        tail_err = (proc.stderr or "").strip()[-1500:]
+        tail_out = (proc.stdout or "").strip()[-1500:]
+        _rm_tree_silent(work_dir)
+        raise GenerarIRPFError(
+            f"generar_irpf.py salió con código {proc.returncode}.\n"
+            f"--- stderr ---\n{tail_err}\n--- stdout ---\n{tail_out}"
+        )
+    if not xlsx.exists():
+        # Exit 0 pero sin XLSX → no había operaciones reconciliables.
+        tail = (proc.stdout or "").strip()[-1500:]
+        _rm_tree_silent(work_dir)
+        raise GenerarIRPFError(
+            f"generar_irpf.py terminó sin generar XLSX. Revisa que los CSVs "
+            f"subidos contengan operaciones del ejercicio {ejercicio}.\n"
+            f"--- últimas líneas del log ---\n{tail}"
+        )
 
-    Para CORPORATE_SPLIT el dict carga `qty_old`/`qty_new` (extraídos del
-    JSON en notas) en los campos `cantidad`/`importe_eur` reusando la
-    convención del parser DeGiro de Cuádrate. El motor sabe leerlos así.
-    """
-    posiciones = {
-        p.id: p for p in db.execute(
-            select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
-        ).scalars()
-    }
-    txs = db.execute(
-        select(models.Transaccion)
-        .where(models.Transaccion.cartera_id == cartera_id)
-        .where(models.Transaccion.estado == "confirmada")
-        .order_by(models.Transaccion.fecha, models.Transaccion.id)
-    ).scalars().all()
-
-    ops: list[dict] = []
-    broker_cache: dict[str | None, str] = {}
-    for tx in txs:
-        tipo_cuadrate = _TIPO_CIMA_A_CUADRATE.get(tx.tipo)
-        if not tipo_cuadrate:
-            continue   # Dividendos/intereses/staking/etc. — fuera del FIFO
-        pos = posiciones.get(tx.posicion_id)
-        if pos is None:
-            continue   # Huérfana: ignoramos para no romper el motor
-        broker_alias = broker_cache.get(tx.broker_id)
-        if broker_alias is None:
-            broker_alias = _broker_alias(db, tx.broker_id)
-            broker_cache[tx.broker_id] = broker_alias
-
-        if tipo_cuadrate == "SP":
-            # Split: `cantidad` = qty_old, `importe_eur` = qty_new (estructura
-            # heredada del parser DeGiro). `gastos_eur` = nominal_old.
-            qty_old, qty_new, nominal_old = _parse_split_meta(tx.notas)
-            ops.append({
-                "tipo": "SP",
-                "isin": pos.isin,
-                "nombre": (pos.nombre or pos.isin)[:120],
-                "fecha": tx.fecha,
-                "cantidad": qty_old,
-                "importe_eur": qty_new,
-                "gastos_eur": nominal_old,
-                "es_scrip": False,
-                "es_derecho": False,
-                "broker": broker_alias,
-            })
-            continue
-
-        # BUY / SELL / AL
-        importe = Decimal(tx.importe_eur or 0)
-        # `gastos_eur` que ve el motor = comisión broker + AutoFX + tasas
-        # externas (forman el coste de adquisición / minoran la venta).
-        gastos_broker = Decimal(tx.gastos_eur or 0)
-        tasas_ext = Decimal(tx.tasas_externas_eur or 0)
-        op = {
-            "tipo": tipo_cuadrate,
-            "isin": pos.isin,
-            "nombre": (pos.nombre or pos.isin)[:120],
-            "fecha": tx.fecha,
-            "cantidad": Decimal(tx.cantidad or 0),
-            "importe_eur": importe,
-            "gastos_eur": gastos_broker + tasas_ext,
-            "es_scrip": tipo_cuadrate == "AL",
-            "es_derecho": False,
-            # Desglose informativo para la hoja Operaciones.
-            "gastos_broker": gastos_broker,
-            "gastos_autofx": Decimal("0"),
-            "gastos_externos": tasas_ext,
-            "broker": broker_alias,
-            "instrument_type": "STOCK",   # MVP: clasificación fina queda para iter.
-        }
-        ops.append(op)
-    return ops
-
-
-def generar_xlsx(db: Session, cartera_id: str, ejercicio: int) -> Path:
-    """Genera el XLSX maestro IRPF del ejercicio en un fichero temporal y
-    devuelve la ruta. El llamador (router) se encarga de streamearlo y
-    limpiarlo después.
-
-    MVP: hojas Operaciones, G_P_por_valor, Pérdidas arrastradas y Resumen
-    desde las transacciones BUY/SELL/SP. Hojas opcionales (dividendos por país,
-    opciones por contrato, forex, T-Bills, intereses, staking, gastos
-    plataforma, futuros) se pasan en None; el generador las omite o muestra
-    vacías. Las siguientes iteraciones cubrirán cada una.
-    """
-    motor = get_motor_fiscal()
-    excel = get_excel_cartera()
-
-    todas_ops = construir_operaciones(db, cartera_id)
-    # `return_ops=True` → cada compra recibe `_lote_id` para que el XLSX
-    # pueda cross-linkear coste compra ↔ G/P prorrateada en la hoja
-    # G_P_por_valor (fórmulas editables).
-    fifo_results, all_ops_with_ids = motor.calcular_fifo_from_ops(
-        todas_ops, return_ops=True,
-    )
-
-    ops_actuales = [op for op in all_ops_with_ids
-                    if hasattr(op.get("fecha"), "year")
-                    and op["fecha"].year == ejercicio]
-    ops_historicas = [op for op in all_ops_with_ids
-                      if hasattr(op.get("fecha"), "year")
-                      and op["fecha"].year != ejercicio]
-
-    out_dir = Path(tempfile.mkdtemp(prefix="cima_irpf_"))
-    out_path = out_dir / f"cartera_valores_irpf_{ejercicio}.xlsx"
-
-    excel.generate_cartera_xlsx(
+    # 3) Empaquetar XLSX + informes + sidecars en un ZIP.
+    zip_path, incluidos = _empaquetar_zip(work_dir, ejercicio)
+    return IRPFResultado(
+        zip_path=zip_path,
+        work_dir=work_dir,
         ejercicio=ejercicio,
-        output_path=str(out_path),
-        operaciones=ops_actuales,
-        ops_motor_con_ids=ops_actuales,
-        ops_historicas_con_ids=ops_historicas,
-        fifo_results=fifo_results,
-        # MVP: el resto pendiente de iteraciones (dividendos por país con CDI,
-        # opciones por contrato, forex IBKR, T-Bills, intereses, staking, etc.).
-        dividendos_resumen=None,
-        opciones_por_contrato=None,
-        opciones_totales=None,
-        compensacion=None,
-        paths_anteriores=None,
-        fx_pl=None,
-        ibkr_interest=None,
-        tr_staking=None,
-        gastos_plataforma=None,
-        futuros_por_contrato=None,
-        futuros_totales=None,
+        kinds_usados=sorted(materializados.keys()),
+        ficheros_generados=incluidos,
+        stdout_tail=(proc.stdout or "").strip()[-2000:],
     )
-    return out_path
+
+
+def _rm_tree_silent(path: Path) -> None:
+    import shutil
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def limpiar(resultado: IRPFResultado) -> None:
+    """Limpieza diferida: borra el tempdir tras enviar el ZIP."""
+    _rm_tree_silent(resultado.work_dir)
