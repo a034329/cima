@@ -53,8 +53,13 @@ class ComplejoCandidata:
 # scripts/sync_cuadrate.py. CIMA_CUADRATE_IRPF_PATH puede apuntar al origen en dev.
 from app.config import settings
 
-_VENDOR_CUADRATE_IRPF = Path(__file__).resolve().parents[2] / "vendor" / "cuadrate" / "irpf"
+_VENDOR_CUADRATE = Path(__file__).resolve().parents[2] / "vendor" / "cuadrate"
+_VENDOR_CUADRATE_IRPF = _VENDOR_CUADRATE / "irpf"
+_VENDOR_CUADRATE_WEBAPP = _VENDOR_CUADRATE / "webapp"
 _CUADRATE_IRPF = Path(settings.cuadrate_irpf_path) if settings.cuadrate_irpf_path else _VENDOR_CUADRATE_IRPF
+# webapp/ vive junto a irpf/ en el origen y en el vendor. Si el usuario
+# override irpf con --source ./otro/, mantenemos webapp en el path paralelo.
+_CUADRATE_WEBAPP = (_CUADRATE_IRPF.parent / "webapp") if settings.cuadrate_irpf_path else _VENDOR_CUADRATE_WEBAPP
 
 
 def _ensure_cuadrate_importable() -> None:
@@ -67,6 +72,25 @@ def _ensure_cuadrate_importable() -> None:
     p = str(_CUADRATE_IRPF)
     if p not in sys.path:
         sys.path.insert(0, p)
+    # webapp/ contiene `excel_cartera` (generador XLSX) y `clasificacion_origen`
+    # (etiqueta de origen ISIN). Es opcional: si falta, el motor sigue funcionando
+    # — solo se rompe `generate_cartera_xlsx`.
+    if _CUADRATE_WEBAPP.is_dir():
+        w = str(_CUADRATE_WEBAPP)
+        if w not in sys.path:
+            sys.path.insert(0, w)
+
+
+def get_excel_cartera():
+    """Importa `excel_cartera` de Cuádrate (generador XLSX maestro).
+
+    Requiere openpyxl en el entorno y el módulo `clasificacion_origen` también
+    vendorizado. Lo invoca el servicio `cuadrate_irpf` desde Cima para
+    materializar la declaración XLSX con la cartera del usuario.
+    """
+    _ensure_cuadrate_importable()
+    import excel_cartera  # type: ignore[import-not-found]
+    return excel_cartera
 
 
 def get_motor_fiscal():

@@ -97,6 +97,7 @@ export function AccionesCartera({ carteraVacia }: Props) {
       >
         Importar extracto
       </button>
+      <BotonGenerarIRPF disabled={busy || carteraVacia} />
 
       {modal === 'add' && (
         <ModalAnadirTx
@@ -918,6 +919,100 @@ function CampoSelect({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+// ── Generar declaración IRPF (Roadmap 1.9) ─────────────────────────────────
+//
+// Botón con selector de ejercicio. Al confirmar, descarga el XLSX maestro
+// generado in-process por el endpoint /api/cuadrate/irpf/{ejercicio}.xlsx.
+// MVP: hojas Operaciones + FIFO + Resumen. Hojas opcionales (dividendos por
+// país con CDI, opciones, forex, T-Bills, intereses, staking) se rellenan
+// en iteraciones posteriores.
+
+function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
+  const [abierto, setAbierto] = useState(false);
+  const [descargando, setDescargando] = useState(false);
+  const ahora = new Date().getFullYear();
+  // Campaña típica: ejercicio anterior + 4 años hacia atrás.
+  const [ejercicio, setEjercicio] = useState(String(ahora - 1));
+  const ejercicios = Array.from({ length: 5 }, (_, i) => ahora - i);
+
+  async function descargar() {
+    setDescargando(true);
+    try {
+      const url = `/api/cuadrate/irpf/${ejercicio}.xlsx`;
+      const r = await fetch(url);
+      if (!r.ok) {
+        const txt = await r.text();
+        throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
+      }
+      const blob = await r.blob();
+      // Usamos un anchor temporal: nombre y descarga sin abrir nueva pestaña.
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `cartera_valores_irpf_${ejercicio}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+      setAbierto(false);
+    } catch (e) {
+      alert(`No se pudo generar la declaración: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDescargando(false);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setAbierto((v) => !v)}
+        disabled={disabled || descargando}
+        className="px-3 py-1.5 text-sm font-medium rounded border border-[rgb(var(--border))] hover:bg-[rgb(var(--bg))] disabled:opacity-50"
+        title="Genera el XLSX maestro IRPF (estilo Cuádrate) del ejercicio elegido"
+      >
+        {descargando ? 'Generando…' : 'Generar IRPF'}
+      </button>
+
+      {abierto && !descargando && (
+        <div
+          className="absolute right-0 mt-1 z-10 rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] shadow-lg p-3 space-y-2 min-w-[220px]"
+        >
+          <div className="text-xs font-semibold uppercase tracking-wider text-[rgb(var(--muted))]">
+            Ejercicio fiscal
+          </div>
+          <select
+            value={ejercicio}
+            onChange={(e) => setEjercicio(e.target.value)}
+            className="w-full px-2 py-1.5 rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))] text-sm"
+          >
+            {ejercicios.map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+          <div className="flex gap-2">
+            <button
+              onClick={descargar}
+              className="flex-1 px-2 py-1.5 text-sm rounded bg-brand-600 text-white hover:bg-brand-700"
+            >
+              Descargar XLSX
+            </button>
+            <button
+              onClick={() => setAbierto(false)}
+              className="px-2 py-1.5 text-sm rounded border border-[rgb(var(--border))] hover:bg-[rgb(var(--bg))]"
+            >
+              Cancelar
+            </button>
+          </div>
+          <p className="text-[10px] text-[rgb(var(--muted))] leading-snug">
+            MVP: operaciones + FIFO + Resumen. Las hojas de dividendos por país,
+            opciones, forex e intereses se irán incorporando.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

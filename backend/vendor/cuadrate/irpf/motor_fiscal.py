@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import re
 import sys
+import bisect
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -1238,6 +1239,41 @@ class FIFOTracker:
 
     # ── Regla 2 meses ────────────────────────────────────────────────────
 
+    def _build_buys_indexes(self) -> None:
+        """Construye indices reutilizables sobre `_all_buys` para las pasadas
+        post-process (`_apply_regla_2_meses` y `_apply_perdidas_diferidas`).
+
+        Indexa una sola vez para evitar O(matches × all_buys) en cada llamada
+        a `_hay_recompra_homogenea_en_2m` o al buscar un lote por id.
+        Tambien precomputa `lotes_vivos` por ISIN (los lotes son inmutables
+        en esta fase — `process_all` ya termino antes de llamar aqui).
+        """
+        # tuplas (fecha, lote_id) por ISIN, ordenadas por fecha asc.
+        # Asi `_hay_recompra_homogenea_en_2m` puede usar bisect para saltar
+        # directamente al rango [window_start, window_end] sin escanear toda
+        # la lista (gana mucho con ISINs muy operados — NVIDIA daytrader
+        # tiene ~1500 compras pero solo ~60 caen en la ventana 2M de cada
+        # venta).
+        self._buys_by_isin_tuples: dict[str, list[tuple[date, int]]] = defaultdict(list)
+        # Paralela: solo fechas, para bisect (no podemos llamar bisect con
+        # key= en Python <3.10).
+        self._buys_by_isin_dates: dict[str, list[date]] = {}
+        # buy dict por lote_id (para lookup O(1) de nombre/cantidad/fecha)
+        self._buys_by_lote_id: dict[int, dict] = {}
+        # set de lote_id vivos por ISIN (precomputado, lotes ya estaticos)
+        self._lotes_vivos_por_isin: dict[str, set[int]] = {}
+
+        for buy in self._all_buys:
+            isin = buy["isin"]
+            self._buys_by_isin_tuples[isin].append((buy["fecha"], buy["lote_id"]))
+            self._buys_by_lote_id[buy["lote_id"]] = buy
+        for isin, tups in self._buys_by_isin_tuples.items():
+            tups.sort(key=lambda t: t[0])
+            self._buys_by_isin_dates[isin] = [t[0] for t in tups]
+        for isin, lots in self._lots.items():
+            self._lotes_vivos_por_isin[isin] = {lot.lote_id for lot in lots
+                                                if lot.cantidad > 0}
+
     def _apply_regla_2_meses(self) -> None:
         """Marca matches con pérdida donde se recompró valor homogéneo dentro
         de la ventana legal aplicable según el mercado de cotización.
@@ -1258,13 +1294,10 @@ class FIFOTracker:
         """
         from instrument_classifier import get_socimi_market
 
-        # Indexar compras por ISIN para búsqueda rápida. Guardamos tuplas
-        # (fecha, lote_id) — lote_id permite distinguir entre compras del
-        # mismo día (caso intradía: compra, venta y recompra el mismo día
-        # son tres operaciones distintas con tres lote_id distintos).
-        buys_by_isin: dict[str, list[tuple[date, int]]] = defaultdict(list)
-        for buy in self._all_buys:
-            buys_by_isin[buy["isin"]].append((buy["fecha"], buy["lote_id"]))
+        # Construir indices reutilizables sobre _all_buys (compartidos con
+        # _apply_perdidas_diferidas, llamado a continuacion).
+        self._build_buys_indexes()
+        buys_by_isin = self._buys_by_isin_tuples  # alias local para mantener legibilidad
 
         for match in self._matches:
             if match.ganancia_perdida >= 0:
@@ -1290,37 +1323,46 @@ class FIFOTracker:
             window_end = _add_months(fv, window_months)
             window_label = "1 año" if window_months == 12 else f"{window_months} meses"
 
-            # Para atar la pérdida diferida al lote correcto, ordenamos los
-            # candidatos por preferencia: la doctrina dice que la pérdida
-            # se difiere hasta que se transmitan los "valores que permanezcan
-            # en el patrimonio". Por tanto, preferimos:
-            #   1º. Lotes POSTERIORES a la fecha de venta (recompras puras —
-            #       siempre arrastran posición tras la venta-pérdida).
-            #   2º. Lotes anteriores que sigan con saldo > 0 en self._lots
-            #       (no se consumieron por la propia venta-pérdida).
-            #   3º. Resto (compras anteriores ya consumidas) — fallback que
-            #       activa la regla 2M pero ata la pérdida a un lote que ya
-            #       no existe y será limpiado por el sweep huérfano.
-            lotes_vivos_isin = {lot.lote_id for lot in self._lots.get(isin, ())
-                                if lot.cantidad > 0}
-            def _prioridad(buy_tuple):
-                bd_, bd_lote_id_ = buy_tuple
-                if bd_lote_id_ == match.lote_id:
-                    return 99
-                if bd_ > fv:                              # recompra pura
-                    return 0
-                if bd_lote_id_ in lotes_vivos_isin:       # compra previa viva
-                    return 1
-                return 2                                  # compra previa consumida
+            # Triage lineal por prioridad (sin sort). La doctrina prefiere:
+            #   1º. Lote POSTERIOR a la venta (recompra pura — arrastra
+            #       posicion despues de la venta-perdida).
+            #   2º. Lote ANTERIOR aun vivo en self._lots (no consumido por
+            #       la propia venta-perdida).
+            #   3º. Lote anterior ya consumido (fallback: activa la regla 2M
+            #       pero ata la PD a un lote muerto, limpiado por el sweep).
+            # Antes se ordenaba via `sorted` con un closure que evaluaba
+            # lotes_vivos_isin por iteracion (~1.1M llamadas para 3000 ops).
+            # Una pasada O(n) lo sustituye con el mismo orden de seleccion.
+            lotes_vivos_isin = self._lotes_vivos_por_isin.get(isin, set())
+            tups = buys_by_isin.get(isin, ())
+            dates_isin = self._buys_by_isin_dates.get(isin, ())
+            lo = bisect.bisect_left(dates_isin, window_start)
+            hi = bisect.bisect_right(dates_isin, window_end)
+            chosen_recompra_pura: tuple | None = None
+            chosen_previa_viva: tuple | None = None
+            chosen_previa_consumida: tuple | None = None
+            for j in range(lo, hi):
+                bd, bd_lote_id = tups[j]
+                if bd_lote_id == match.lote_id:
+                    continue
+                if bd > fv:
+                    chosen_recompra_pura = (bd, bd_lote_id)
+                    break   # mejor prioridad — no hace falta seguir
+                if chosen_previa_viva is None and bd_lote_id in lotes_vivos_isin:
+                    chosen_previa_viva = (bd, bd_lote_id)
+                elif chosen_previa_consumida is None:
+                    chosen_previa_consumida = (bd, bd_lote_id)
+            chosen = (chosen_recompra_pura
+                      or chosen_previa_viva
+                      or chosen_previa_consumida)
 
-            candidatos = sorted(buys_by_isin.get(isin, []), key=_prioridad)
+            # Recopilamos la eleccion en una lista de un solo elemento para
+            # mantener la estructura del bucle posterior (que ya tiene
+            # logica de skip/window — refactorizar mas profundamente seria
+            # mas arriesgado de cara a la fiscalidad).
+            candidatos = [chosen] if chosen is not None else []
 
             for (bd, bd_lote_id) in candidatos:
-                # Excluir EXCLUSIVAMENTE el lote que generó este match (la
-                # compra ya consumida por la venta). Identificar por
-                # lote_id, NO por fecha: así una recompra el mismo día de
-                # la venta (intradía puro) sí dispara la regla aunque
-                # comparta fecha con la venta o con la compra original.
                 if bd_lote_id == match.lote_id:
                     continue
                 if window_start <= bd <= window_end:
@@ -1329,11 +1371,6 @@ class FIFOTracker:
                         f"Recompra {_format_es_date(bd)} dentro de ventana {window_label} "
                         f"(venta {_format_es_date(fv)})"
                     )
-                    # Registrar la pérdida como diferida y atarla al lote
-                    # recomprado. Si el mismo lote ya arrastraba una
-                    # pérdida diferida previa (cadena de diferimientos),
-                    # acumulamos importes — la doctrina trata las pérdidas
-                    # diferidas como saldo agregado atado al lote final.
                     importe_diferido = abs(match.ganancia_perdida)
                     origen_entry = {
                         "ejercicio": match.ejercicio_fiscal,
@@ -1343,16 +1380,15 @@ class FIFOTracker:
                     }
                     pd_existente = self._perdidas_diferidas.get(bd_lote_id)
                     if pd_existente is None:
-                        # Recuperar nombre y cantidad del lote recomprado
-                        # desde _all_buys (datos crudos de compras).
-                        nombre_lote = match.nombre
-                        cantidad_lote = Decimal("0")
-                        for buy in self._all_buys:
-                            if buy.get("lote_id") == bd_lote_id:
-                                nombre_lote = buy.get("nombre", nombre_lote)
-                                cantidad_lote = Decimal(str(
-                                    buy.get("cantidad", "0")))
-                                break
+                        # Lookup O(1) via indice precomputado en lugar de
+                        # scan lineal sobre _all_buys.
+                        buy_recompra = self._buys_by_lote_id.get(bd_lote_id)
+                        if buy_recompra is not None:
+                            nombre_lote = buy_recompra.get("nombre", match.nombre)
+                            cantidad_lote = Decimal(str(buy_recompra.get("cantidad", "0")))
+                        else:
+                            nombre_lote = match.nombre
+                            cantidad_lote = Decimal("0")
                         self._perdidas_diferidas[bd_lote_id] = PerdidaDiferida(
                             isin=isin,
                             nombre=nombre_lote,
@@ -1410,19 +1446,40 @@ class FIFOTracker:
         # antes este método devolvía el primer candidato cronológico (a
         # menudo un lote pre-fecha consumido) y la PD acababa archivada
         # en un lote muerto.
-        candidatos: list[tuple[int, date]] = []
-        for buy in self._all_buys:
-            if buy["isin"] != isin:
-                continue
-            if buy["lote_id"] == exclude_lote_id:
-                continue
-            bd = buy["fecha"]
-            if window_start <= bd <= window_end:
-                candidatos.append((buy["lote_id"], bd))
+        # Usar indice por ISIN si esta disponible (_build_buys_indexes ya
+        # ejecutado por _apply_regla_2_meses). Fallback al scan O(N) por si
+        # se llama antes (defensivo — no deberia ocurrir en el flujo normal).
+        if hasattr(self, '_buys_by_isin_tuples'):
+            tups = self._buys_by_isin_tuples.get(isin, ())
+            dates = self._buys_by_isin_dates.get(isin, ())
+            # bisect para acotar el slice a [window_start, window_end].
+            # ISINs con cientos/miles de operaciones (daytraders) ahorran
+            # casi todo el scan: solo iteramos los pocos buys realmente
+            # dentro de ventana 2M (~60 en lugar de ~1500).
+            lo = bisect.bisect_left(dates, window_start)
+            hi = bisect.bisect_right(dates, window_end)
+            candidatos: list[tuple[int, date]] = []
+            for j in range(lo, hi):
+                bd, bd_lote_id = tups[j]
+                if bd_lote_id == exclude_lote_id:
+                    continue
+                candidatos.append((bd_lote_id, bd))
+        else:
+            candidatos = []
+            for buy in self._all_buys:
+                if buy["isin"] != isin:
+                    continue
+                if buy["lote_id"] == exclude_lote_id:
+                    continue
+                bd = buy["fecha"]
+                if window_start <= bd <= window_end:
+                    candidatos.append((buy["lote_id"], bd))
         if not candidatos:
             return (False, 0)
-        lotes_vivos = {lot.lote_id for lot in self._lots.get(isin, ())
-                       if lot.cantidad > 0}
+        lotes_vivos = (self._lotes_vivos_por_isin.get(isin, set())
+                       if hasattr(self, '_lotes_vivos_por_isin')
+                       else {lot.lote_id for lot in self._lots.get(isin, ())
+                             if lot.cantidad > 0})
         vivos = [lid for lid, _ in candidatos if lid in lotes_vivos]
         if vivos:
             return (True, vivos[0])
@@ -1526,16 +1583,17 @@ class FIFOTracker:
                 # (poco habitual pero posible), acumular.
                 pd_nuevo = self._perdidas_diferidas.get(lote_nueva_recompra)
                 if pd_nuevo is None:
-                    # Crear nueva entrada atada al lote-recompra reciente.
-                    # Recuperar cantidad del nuevo lote desde _all_buys.
-                    cantidad_nuevo_lote = Decimal("0")
-                    nombre_nuevo_lote = match.nombre
-                    for buy in self._all_buys:
-                        if buy.get("lote_id") == lote_nueva_recompra:
-                            cantidad_nuevo_lote = Decimal(str(
-                                buy.get("cantidad", "0")))
-                            nombre_nuevo_lote = buy.get("nombre", nombre_nuevo_lote)
-                            break
+                    # Lookup O(1) via indice precomputado (en lugar de scan
+                    # lineal sobre _all_buys, que era O(matches × all_buys)
+                    # acumulado en este metodo).
+                    buy_nuevo = (self._buys_by_lote_id.get(lote_nueva_recompra)
+                                 if hasattr(self, '_buys_by_lote_id') else None)
+                    if buy_nuevo is not None:
+                        cantidad_nuevo_lote = Decimal(str(buy_nuevo.get("cantidad", "0")))
+                        nombre_nuevo_lote = buy_nuevo.get("nombre", match.nombre)
+                    else:
+                        cantidad_nuevo_lote = Decimal("0")
+                        nombre_nuevo_lote = match.nombre
                     self._perdidas_diferidas[lote_nueva_recompra] = PerdidaDiferida(
                         isin=pd.isin,
                         nombre=nombre_nuevo_lote,

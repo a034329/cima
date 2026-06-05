@@ -3969,6 +3969,228 @@ def _tr_emisor_prefix(name):
     return m.group(1).upper() if m else ''
 
 
+_SPLITS_CONOCIDOS_PATH = os.path.join(BASE_DIR, 'splits_conocidos.json')
+
+
+def _load_splits_conocidos():
+    """Carga el catalogo estatico de splits para emisores que TR no emite
+    como linea CSV. Devuelve solo las entradas activas (sin _activo=false
+    y con fecha valida YYYY-MM-DD)."""
+    if not os.path.exists(_SPLITS_CONOCIDOS_PATH):
+        return []
+    try:
+        with open(_SPLITS_CONOCIDOS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    out = []
+    for entry in data.get('splits', []):
+        if entry.get('_activo') is False:
+            continue
+        fecha = entry.get('fecha', '')
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', fecha):
+            continue
+        isin = (entry.get('isin') or '').strip().upper()
+        if not re.match(r'^[A-Z]{2}[A-Z0-9]{10}$', isin):
+            continue
+        try:
+            qty_old = float(entry['titulos_antiguos'])
+            qty_new = float(entry['titulos_nuevos'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if qty_old <= 0 or qty_new <= 0 or qty_old == qty_new:
+            continue
+        out.append({
+            'isin':    isin,
+            'ticker':  entry.get('ticker', ''),
+            'nombre':  entry.get('nombre', '') or entry.get('ticker', ''),
+            'fecha':   fecha,
+            'qty_old': qty_old,
+            'qty_new': qty_new,
+            'fuente':  entry.get('fuente', ''),
+        })
+    return out
+
+
+# Ratios de split admitidos por la heuristica TR. Solo enteros que se
+# corresponden con splits historicos reales sobre acciones (NVDA 10, GOOGL
+# 20, AMZN 20, TSLA 3/5, AAPL 4/7, WMT 3, BRK.B 50). Excluimos 6 (cascada
+# 2x3), 8/9/11 (no observados) y >50 (rarisimo) para reducir falsos
+# positivos. Fuente — verificacion 2026-06: NVIDIA Q1 FY25 (22-may-2024,
+# 10-for-1 ex-10-jun-2024), Alphabet Q4 2021 earnings (1-feb-2022, 20-for-1
+# ex-18-jul-2022), Amazon 9-mar-2022 (20-for-1 ex-6-jun-2022), Tesla 2020
+# y 2022, Apple 4-for-1 ex-31-ago-2020, Walmart 3-for-1 ex-26-feb-2024.
+_TR_SPLITS_RATIOS_ADMITIDOS = (2, 3, 4, 5, 7, 10, 20)
+
+# Tolerancia para considerar factor como ratio entero (0,5%).
+# Lo suficientemente estrecha para que un "factor = 2,05" se rechace
+# (evitamos confundir scrip dividends pequenos con splits) y un
+# "factor = 10,00" se acepte limpiamente.
+_TR_SPLITS_TOL = Decimal("0.005")
+
+
+def parse_tr_splits(filepath):
+    """
+    Heuristica conservadora para detectar splits que Trade Republic aplica
+    silenciosamente sobre la posicion sin emitir linea CSV.
+
+    Premisa (verificada via brokerchooser / eupersonalfinance / curvo.eu
+    2026-06): TR NO permite venta corta sobre acciones reales. Cualquier
+    operacion corta solo es posible via derivados/Knock-Outs HSBC-SG-UBS-
+    Vontobel, que viajan en el CSV como SYNTHETIC y se filtran fuera.
+    Por tanto, si la suma de SELL_qty supera la suma de BUY_qty para una
+    accion (STOCK), el unico mecanismo posible es una inflacion silenciosa
+    de cantidades — es decir, un split forward.
+
+    Reglas (todas obligatorias):
+      1. asset_class = 'STOCK' (excluye FUND, CRYPTO, BOND, SYNTHETIC —
+         derivados no aplican y los UCITS pueden tener mecanicas distintas).
+      2. ISIN ISO valido con al menos una operacion BUY y una SELL en el CSV.
+      3. SUM(SELL_qty) / SUM(BUY_qty) cae dentro de {2, 3, 4, 5, 7, 10, 20}
+         con tolerancia 0,5%.
+      4. No emitir SP si la primera operacion del ISIN ya es post-split
+         conocido (caso "compre todo despues del split"): se cubre solo si
+         hay catalogo y la fecha de la primera op > fecha catalogo.
+
+    Limitaciones:
+      - SOLO funciona si el usuario vendio TODA la posicion post-split. Si
+         conserva acciones, el factor SELL/BUY queda fraccionario y no
+         cuadra con ningun ratio. Esos casos siguen disparando el warning
+         de orfana — son irresolubles sin conocer el balance final.
+      - SOLO funciona si el CSV contiene tanto la BUY como la SELL. En
+         multi-anio, el CSV TR es unificado y cubre toda la historia, asi
+         que esto suele cumplirse. Si el usuario tuvo la posicion en otro
+         broker y la traspaso, la BUY no esta y no podremos inferir.
+
+    Refinamiento (no critico): si el ISIN aparece en `splits_conocidos.json`
+    con factor coincidente y fecha entre las operaciones del CSV, se usa
+    la fecha exacta del catalogo en lugar del dia posterior a la ultima BUY.
+
+    Devuelve: list[dict] con filas SP listas para extend a `todas_sp`.
+    """
+    if not os.path.exists(filepath):
+        return []
+
+    from collections import defaultdict
+    from datetime import date as _date, timedelta as _td
+
+    # Por ISIN: suma de BUY/SELL, ultima fecha BUY, primera fecha SELL,
+    # primera fecha cualquiera (para descartar splits anteriores al CSV).
+    info = defaultdict(lambda: {
+        'buy': Decimal('0'), 'sell': Decimal('0'),
+        'nombre': '',
+        'max_buy_iso': '', 'first_sell_iso': '', 'first_any_iso': '',
+    })
+
+    f, reader = _tr_open_reader(filepath)
+    try:
+        for row in reader:
+            type_raw = (row.get('type') or '').strip().upper()
+            if type_raw not in ('BUY', 'SELL'):
+                continue
+            asset_class = (row.get('asset_class') or '').strip().upper()
+            if asset_class != 'STOCK':
+                continue
+            symbol = (row.get('symbol') or '').strip().upper()
+            if not _RE_TR_ISIN_ISO.match(symbol):
+                continue
+            fecha_iso = (row.get('date') or '').strip()
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', fecha_iso):
+                continue
+            try:
+                qty = abs(parse_es(row.get('shares', '') or '0'))
+            except (ValueError, InvalidOperation):
+                continue
+            if qty <= 0:
+                continue
+            nombre = (row.get('name') or '').strip()[:50]
+            bucket = info[symbol]
+            bucket['nombre'] = bucket['nombre'] or nombre
+            if not bucket['first_any_iso'] or fecha_iso < bucket['first_any_iso']:
+                bucket['first_any_iso'] = fecha_iso
+            if type_raw == 'BUY':
+                bucket['buy'] += qty
+                if fecha_iso > bucket['max_buy_iso']:
+                    bucket['max_buy_iso'] = fecha_iso
+            else:  # SELL
+                bucket['sell'] += qty
+                if not bucket['first_sell_iso'] or fecha_iso < bucket['first_sell_iso']:
+                    bucket['first_sell_iso'] = fecha_iso
+    finally:
+        f.close()
+
+    catalogo = _load_splits_conocidos()
+    catalogo_by_isin = defaultdict(list)
+    for entry in catalogo:
+        catalogo_by_isin[entry['isin']].append(entry)
+
+    sp_ops = []
+    for isin, d in info.items():
+        if d['buy'] <= 0 or d['sell'] <= 0:
+            continue
+        if d['sell'] <= d['buy']:
+            continue
+        # La ultima BUY tiene que ser anterior a la primera SELL — si hubo
+        # SELL antes que cualquier BUY, no es un caso de split sino de
+        # huerfana real (transferencia de otro broker, export truncado).
+        if not d['max_buy_iso'] or not d['first_sell_iso']:
+            continue
+        if d['max_buy_iso'] >= d['first_sell_iso']:
+            # Posible cascada (BUY/SELL intercalados): no aplicamos la
+            # heuristica de exhaustion total porque la inferencia se
+            # ensucia. Caso conservador: dejar warning.
+            continue
+
+        factor = d['sell'] / d['buy']
+        ratio = None
+        for r in _TR_SPLITS_RATIOS_ADMITIDOS:
+            if abs(factor - Decimal(r)) / Decimal(r) < _TR_SPLITS_TOL:
+                ratio = r
+                break
+        if ratio is None:
+            continue
+
+        # Buscar coincidencia exacta en catalogo: mismo ISIN, mismo ratio,
+        # fecha entre max_buy_iso y first_sell_iso. Si la hay, usar la
+        # fecha del catalogo (mas precisa fiscalmente).
+        split_iso = None
+        fuente_catalogo = ''
+        for entry in catalogo_by_isin.get(isin, []):
+            if entry['qty_old'] == 1 and entry['qty_new'] == ratio:
+                if d['max_buy_iso'] < entry['fecha'] <= d['first_sell_iso']:
+                    split_iso = entry['fecha']
+                    fuente_catalogo = entry['fuente'][:80]
+                    break
+        if split_iso is None:
+            # Fallback: dia siguiente a la ultima BUY.
+            y, m, dd = d['max_buy_iso'].split('-')
+            split_iso = (_date(int(y), int(m), int(dd)) + _td(days=1)).isoformat()
+
+        fecha_es = parse_date(split_iso)
+        descripcion = (
+            f"{d['nombre']} 1:{ratio} inferido (TR no emite linea; sells "
+            f"{d['sell']} = buys {d['buy']} x {ratio})"
+        )
+        if fuente_catalogo:
+            descripcion += f" [catalogo: {fuente_catalogo}]"
+        evento = {
+            'tipo_ca':     'SPLIT',  # contrasplits requeririan factor < 1, no en este set
+            'fecha':       fecha_es,
+            'nombre':      d['nombre'][:50],
+            'isin_old':    isin,
+            'isin_new':    isin,
+            'qty_old':     1,
+            'qty_new':     ratio,
+            'descripcion': descripcion[:150],
+        }
+        row_sp = build_sp_row(evento)
+        row_sp['broker'] = 'TR'
+        row_sp['_heuristica_tr'] = True
+        sp_ops.append(row_sp)
+
+    return sp_ops
+
+
 def parse_tr_corporate_actions(filepath, prev_csv_paths=None):
     """
     Procesa scrip dividends de Trade Republic (Art. 37.1.a §4 LIRPF + reforma
@@ -8091,6 +8313,27 @@ def main():
         _enrich_with_instrument_type(sp_ops, broker='TR')
         todas_ops.extend(ops)
         todas_sp.extend(sp_ops)
+
+        # Splits/contrasplits que TR aplica silenciosamente sobre la posicion
+        # (sin linea CSV — patron documentado en patrones_trade_republic.md).
+        # Se inyectan desde catalogo estatico `splits_conocidos.json` solo
+        # para ISINs presentes en el CSV con operaciones ANTERIORES al split,
+        # evitando inflar cantidades cuando el usuario solo compro post-split.
+        # Filtramos por ejercicio (igual que el resto de SP) — la cadena
+        # multi-anio aplica el split en el ano correspondiente y los lotes
+        # heredados ya viajan post-split a anos posteriores.
+        tr_extra_sp_raw = parse_tr_splits(TR_FILE)
+        tr_extra_sp = [s for s in tr_extra_sp_raw
+                       if s.get('fecha', '').endswith(_ejercicio_str)]
+        if tr_extra_sp_raw:
+            print(f"    Splits catalogo (TR)     : {len(tr_extra_sp)}"
+                  + (f"  (filtrados {len(tr_extra_sp_raw) - len(tr_extra_sp)} de otros anos)"
+                     if len(tr_extra_sp_raw) > len(tr_extra_sp) else ""))
+            for s in tr_extra_sp:
+                print(f"       · {s['fecha']} {s['nombre']}: "
+                      f"{int(s['cantidad'])}:{int(s['importe_eur'])}")
+        _enrich_with_instrument_type(tr_extra_sp, broker='TR')
+        todas_sp.extend(tr_extra_sp)
 
         # Scrip dividends (Art. 37.1.a §4 LIRPF + reforma Ley 26/2014).
         # Detecta clusters de eventos CORPORATE_ACTION y los clasifica como:

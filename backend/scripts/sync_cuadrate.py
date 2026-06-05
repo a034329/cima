@@ -14,6 +14,8 @@ Se respeta la estructura de carpetas que el motor ASUME (BASE_DIR/siblings):
       instrument_classifier.py
       derechos_clasificados.json  etf_isin_list.json
       stock_blacklist.json  socimi_es_isin_list.json
+    webapp/                        (= /app/720/webapp)
+      excel_cartera.py             (generador XLSX maestro, necesario para 1.9)
 
 Uso:
   python scripts/sync_cuadrate.py            # copia desde el origen + manifiesto
@@ -42,6 +44,9 @@ IRPF_DATA = [
     "ecb_fx_cache.json",   # tipos BCE históricos (necesarios para conversión FX)
 ]
 PARENT_DATA = ["casillas_irpf.json"]   # generar_irpf lo busca un nivel arriba
+# Generador XLSX (1.9: 'Generar declaración IRPF con Cuádrate'). Está bajo
+# webapp/ en el origen y lo invocamos desde el orquestador propio de Cima.
+WEBAPP_PY = ["excel_cartera.py", "clasificacion_origen.py"]
 
 VENDOR = Path(__file__).resolve().parents[1] / "vendor" / "cuadrate"
 MANIFEST = VENDOR / "MANIFEST.json"
@@ -59,6 +64,8 @@ def _plan(source: Path) -> list[tuple[Path, Path, str]]:
         items.append((source / "irpf" / f, VENDOR / "irpf" / f, f"irpf/{f}"))
     for f in PARENT_DATA:
         items.append((source / f, VENDOR / f, f))
+    for f in WEBAPP_PY:
+        items.append((source / "webapp" / f, VENDOR / "webapp" / f, f"webapp/{f}"))
     return items
 
 
