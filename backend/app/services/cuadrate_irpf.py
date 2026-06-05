@@ -37,6 +37,34 @@ class GenerarIRPFError(RuntimeError):
     """`generar_irpf.py` falló o no produjo el XLSX maestro."""
 
 
+class DependenciasFaltantesError(RuntimeError):
+    """Faltan deps de runtime (openpyxl/weasyprint/jinja2). El servidor no
+    está bien aprovisionado — distinto del fallo de inputs del usuario."""
+
+
+def _verificar_dependencias() -> None:
+    """Comprueba que las deps clave del motor + generadores estén disponibles.
+    Si falta alguna, levanta DependenciasFaltantesError con instrucciones.
+
+    El subprocess de `generar_irpf.py` necesita `openpyxl` (excel_cartera).
+    El PDF post-subprocess necesita `weasyprint` y `jinja2`. Antes
+    devolvíamos 500 genérico; ahora 503 con mensaje accionable.
+    """
+    faltan: list[str] = []
+    for nombre in ("openpyxl", "weasyprint", "jinja2"):
+        try:
+            __import__(nombre)
+        except ImportError:
+            faltan.append(nombre)
+    if faltan:
+        raise DependenciasFaltantesError(
+            f"Faltan dependencias de Python: {', '.join(faltan)}. "
+            f"Reinstala con: pip install {' '.join(faltan)}. "
+            f"En el contenedor Cima, esto se cubre con start_cima.sh / Dockerfile "
+            f"actualizado (rebuild de la imagen)."
+        )
+
+
 @dataclass
 class IRPFResultado:
     """Resultado de la generación: ZIP + metadatos para el router."""
@@ -160,6 +188,10 @@ def generar_irpf_zip(
         SinExtractosError: no hay CSVs guardados para ese ejercicio.
         GenerarIRPFError:  el subprocess falló o no produjo el XLSX.
     """
+    # 0) Verificar deps de runtime — antes de tocar nada, para que un
+    # entorno mal aprovisionado devuelva 503 con mensaje claro, no 500.
+    _verificar_dependencias()
+
     # 1) Materializar CSVs al tempdir con los nombres EXACTOS de Cuádrate.
     work_dir = Path(tempfile.mkdtemp(prefix=f"cima_irpf_{ejercicio}_"))
     materializados = storage_extractos.materializar_para_ejercicio(

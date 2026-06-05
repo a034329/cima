@@ -54,6 +54,9 @@ def generar_irpf_zip(
     cartera_id = _cartera(db).id     # fuera del try: deja propagar el 404
     try:
         resultado = svc.generar_irpf_zip(db, cartera_id, ejercicio)
+    except svc.DependenciasFaltantesError as e:
+        # 503: el SERVIDOR está mal aprovisionado — no es culpa del request.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
     except svc.SinExtractosError as e:
         # 422: el cliente debe subir los CSVs primero — request bien formado
         # pero estado incompatible.

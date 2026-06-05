@@ -1108,8 +1108,9 @@ function BotonGenerarIRPF({ disabled }: { disabled: boolean }) {
             </button>
           </div>
           <p className="text-[10px] text-[rgb(var(--muted))] leading-snug">
-            XLSX maestro + informes (corporativas, dividendos, opciones, FX) +
-            sidecars JSON. Paridad total con Cuádrate.
+            XLSX maestro editable + <strong>PDF fiscal</strong> con guía RentaWEB +
+            informes (corporativas, dividendos, opciones, FX) + sidecars JSON.
+            Paridad total con Cuádrate.
           </p>
         </div>
       )}

@@ -39,10 +39,16 @@ echo "  =================================================="
 echo ""
 
 # ── Paso 1: dependencias backend (pip) ──────────────────────────────────────
-# Verificamos `sqlalchemy` (la dep más reciente añadida). Si falta cualquiera,
-# reinstalamos todo en bloque — es idempotente y rápido la 2ª vez.
+# Verificamos las deps clave (la más reciente añadida + las del motor de
+# Cuádrate vendorizado). Si falta cualquiera, reinstalamos todo en bloque —
+# es idempotente y rápido la 2ª vez.
+#
+# Nuevas en 1.9 (orquestador IRPF):
+#   · openpyxl   → excel_cartera.py (XLSX maestro)
+#   · weasyprint → pdf_generator.py (PDF fiscal)
+#   · jinja2     → pdf_generator.py (templates HTML)
 echo "  [1/4] Verificando dependencias del backend..."
-if ! python3 -c "import sqlalchemy, fastapi, pydantic_settings, multipart, email_validator" 2>/dev/null; then
+if ! python3 -c "import sqlalchemy, fastapi, pydantic_settings, multipart, email_validator, openpyxl, weasyprint, jinja2" 2>/dev/null; then
     echo "        Instalando deps del backend (primera vez o tras actualizar)..."
     pip install --quiet --no-warn-script-location \
         'fastapi>=0.110' \
@@ -52,8 +58,13 @@ if ! python3 -c "import sqlalchemy, fastapi, pydantic_settings, multipart, email
         'python-dotenv>=1.0' \
         'python-multipart>=0.0.9' \
         'sqlalchemy>=2.0' \
-        'httpx>=0.27' || {
+        'httpx>=0.27' \
+        'openpyxl>=3.1' \
+        'weasyprint>=60' \
+        'jinja2>=3.1' || {
         echo "  [ERROR] No se pudo instalar deps del backend"
+        echo "          weasyprint requiere libs de sistema (pango, cairo, gdk-pixbuf)."
+        echo "          En Debian/Ubuntu: apt-get install libpango-1.0-0 libpangoft2-1.0-0"
         exit 1
     }
 fi
