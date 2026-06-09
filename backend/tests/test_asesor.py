@@ -78,6 +78,30 @@ def test_system_asesor_incluye_reglas_integridad_analitica() -> None:
     assert "one-pager" in s or "Análisis" in s
 
 
+def test_system_asesor_incluye_reglas_2a_conversacion() -> None:
+    """Guardrails añadidos tras 2ª conversación LVMH→Hermès (2026-06-09):
+    capitulación atenuada al dato del usuario contra fuentes propias,
+    invención de cifras auxiliares, aritmética interna rota, emisión de
+    tarjeta tras decir 'no emito', mezcla doctrinal."""
+    s = system_asesor("owner")
+    # 9. Datos del usuario que contradicen tus fuentes — no capitular sin verificar
+    assert "ORIGEN EXACTO" in s
+    assert "METODOLOGÍA" in s or "metodología" in s.lower()
+    assert "GAAP" in s         # ejemplo concreto de metodología que importa
+    # 10. Cifras auxiliares sin inventar
+    assert "anclada" in s.lower() or "anclar" in s.lower() or "fuente" in s.lower()
+    assert "SUPUESTO" in s or "supuesto" in s.lower()
+    # 11. Auto-verificación aritmética
+    assert "REHAZ" in s or "rehaz" in s.lower() or "verifica" in s.lower()
+    assert "aritmética" in s.lower() or "cálculo" in s.lower()
+    # 12. No emitir tarjeta sobre incertidumbres
+    assert "tarjeta" in s.lower()
+    assert "presión social" in s.lower() or "complacencia" in s.lower()
+    # 13. Doctrina por bloque correcta (15/15 SOLO Bloque A)
+    assert "15/15" in s
+    assert "Bloque A" in s or "Estable" in s
+
+
 def test_contexto_incluye_cartera_y_regimen(db: Session, cartera, monkeypatch) -> None:
     _seed(db, cartera, monkeypatch)
     ctx = svc._contexto(db, cartera.id)
