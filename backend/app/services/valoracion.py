@@ -122,20 +122,48 @@ def build_prompt(nombre: str, anclas: dict, tipo_val: str = "PER",
         f"({mult_label} objetivo) y la métrica base proyectada a 4 años ({met_label}, campo "
         "metrica_4y).\n"
         # ── Guardia crítica (bug BAM 5-jun-2026): per-share, NUNCA agregado ──
-        f"REGLA CRÍTICA: «metrica_4y» SIEMPRE debe estar expresada POR ACCIÓN "
+        f"REGLA CRÍTICA — POR ACCIÓN: «metrica_4y» SIEMPRE debe estar expresada POR ACCIÓN "
         f"(en {met_label}), NUNCA como agregado total (no $B totales, no FRE total "
         f"de la compañía). Si encuentras la guía como total, DIVIDE por las "
         f"acciones en circulación antes de devolverla. Como check rápido: "
         f"metrica_4y debe ser bastante menor que el precio actual de la acción. "
         f"Si metrica_4y > 50% del precio actual, casi seguro estás confundiendo "
         f"agregado con per-share — revísalo.\n"
+        # ── Reglas de integridad analítica (anti-fallos conversación LVMH→Hermès 2026-06-09) ──
+        # Mismo patrón que el asesor: confusión TTM/Forward, divisas, fuentes
+        # discrepantes y falta de auto-check. Aquí son más críticas porque la
+        # salida se TRADUCE en un precio objetivo que va al modelo del usuario.
+        f"REGLA — SERIE DEL MÚLTIPLO (TTM vs Forward): el «multiplo» objetivo y el "
+        f"«metrica_4y» deben ser de SERIES COMPATIBLES. Para una proyección 4Y "
+        f"usa el múltiplo de la SERIE FORWARD (no TTM): forward {mult_label} de "
+        f"la empresa o de comparables del sector. Si citas la banda histórica en "
+        f"la `razon`, debe ser de la MISMA serie (no 'PER histórico 45-65x TTM' "
+        f"cuando tu múltiplo objetivo es 30x forward — no son comparables). En la "
+        f"razón, di qué SERIE estás usando.\n"
+        f"REGLA — DIVISA: el «metrica_4y» debe estar en la MISMA divisa que el "
+        f"precio actual de la acción que ves en las anclas. Si el EPS/FCF/FRE/NAV "
+        f"que encuentras viene en USD pero la acción cotiza en EUR/GBp/etc. "
+        f"(ADRs, multi-listed, listados europeos de US shares), CONVIERTE antes "
+        f"de devolver. Si no estás seguro de la divisa de la fuente, dilo en la "
+        f"razón.\n"
+        f"REGLA — CONTRASTE DE FUENTES: si la fuente que usas (consenso de "
+        f"analistas, modelo DCF como SimplyWallSt, target del propio emisor) "
+        f"DIFIERE más de un 10% del precio objetivo implícito por tu multiplo × "
+        f"metrica_4y, MENCIÓNALO en la razón. No elijas una fuente sin más; "
+        f"una discrepancia del 30%+ es zona de incertidumbre y el escenario "
+        f"base debe ser conservador.\n"
+        f"REGLA — AUTO-CHECK DE COHERENCIA: antes de devolver, verifica para el "
+        f"escenario BASE que (multiplo × metrica_4y) implica un CAGR razonable "
+        f"desde el precio actual. Si CAGR > 30% anual para 4 años en un negocio "
+        f"maduro, sospecha de error dimensional o de múltiplo inflado — revisa.\n"
         "Los escenarios DEBEN derivarse de la TESIS del negocio, no de números al azar: el OPTIMISTA "
         "refleja que los drivers de crecimiento de la tesis se cumplen; el CONSERVADOR refleja que se "
         "materializan los riesgos; el BASE es el caso central. "
         + anclaje + " Puedes buscar en la web. No calcules el precio objetivo (lo hace el sistema).\n"
         "Responde EXCLUSIVAMENTE con JSON:\n"
         '{"escenarios": [{"nombre": "conservador|base|optimista", "multiplo": <num>, '
-        '"metrica_4y": <num por acción>, "razon": "<múltiplo justificado + crecimiento implícito, 1-2 frases>"}]}'
+        '"metrica_4y": <num por acción, misma divisa que el precio>, '
+        '"razon": "<múltiplo justificado + crecimiento implícito + serie usada + divisa si no es la del precio + discrepancias de fuentes si las hay, 2-3 frases>"}]}'
     )
     a = anclas
     bloques = [f"Empresa: {nombre}. Se valora por {mult_label} (métrica base: {met_label}). "

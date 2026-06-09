@@ -178,6 +178,28 @@ def test_prompt_refuerza_per_share() -> None:
     assert "50%" in system               # menciona el límite de cordura
 
 
+def test_prompt_incluye_reglas_integridad_analitica() -> None:
+    """Anti-fallos LVMH→Hermès (2026-06-09): el prompt debe instruir sobre
+    serie del múltiplo (TTM vs Forward), divisa, contraste de fuentes y
+    auto-check de coherencia. Mismo conjunto de guardrails que el asesor."""
+    system, _ = svc.build_prompt("X", {}, "PER")
+    # 1. Serie del múltiplo declarada (TTM vs Forward)
+    assert "TTM" in system and "Forward" in system or "FORWARD" in system
+    assert "SERIE" in system               # debe insistir en series compatibles
+    # 2. Divisa explícita
+    assert "DIVISA" in system or "divisa" in system
+    assert "USD" in system or "EUR" in system        # ejemplos de divisas
+    # 3. Contraste de fuentes con discrepancia >10%
+    assert "10%" in system
+    assert "discrepancia" in system.lower() or "DIFIERE" in system
+    # 4. Auto-check de coherencia (CAGR razonable)
+    assert "CAGR" in system
+    assert "30%" in system               # umbral de sospecha
+    # Y el JSON de salida pide divisa y discrepancia en la razón
+    assert "misma divisa que el precio" in system
+    assert "discrepancia" in system.lower() or "discrepancias" in system.lower()
+
+
 def test_umbral_cagr_aggressive_es_mas_alto_que_income() -> None:
     """Un BDC/REIT (aggressive) admite CAGR más alto antes de alertar
     (24% no debería disparar; en income sí dispararía)."""
