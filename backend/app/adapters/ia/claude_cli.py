@@ -78,19 +78,23 @@ class ClaudeCliClasificador:
         (read-only, mediada por Anthropic) — sin bypass, sin FS/Bash. `timeout_s`
         permite acortar para el chat (3 min) vs análisis profundo (10 min)."""
         return self._run(system, user, tools="WebSearch", allowed="WebSearch",
-                         timeout=timeout_s or settings.ia_web_timeout_s)
+                         timeout=timeout_s or settings.ia_web_timeout_s,
+                         effort=settings.ia_effort_web)
 
     def _run(self, system: str, user: str, modelo: str | None = None,
              tools: str = "", allowed: str | None = None,
-             timeout: int | None = None) -> str:
+             timeout: int | None = None, effort: str | None = None) -> str:
         """Una llamada headless a `claude -p`; devuelve el texto del resultado.
         `tools`/`allowed` controlan el sandbox: por defecto SIN herramientas. El
-        clasificador y `completar` no las tocan; solo `investigar` abre WebSearch."""
+        clasificador y `completar` no las tocan; solo `investigar` abre WebSearch.
+        `effort` mapea al flag `--effort` del CLI (low/medium/high/xhigh/max);
+        si es None, usa `settings.ia_effort` (low por defecto)."""
         cmd = [
             self.cli_path, "-p",
             "--system-prompt", system,
             "--output-format", "json",
             "--model", modelo or self.modelo,
+            "--effort", effort or settings.ia_effort,
             "--tools", tools,               # "" = sandbox; "WebSearch" = solo búsqueda
             "--strict-mcp-config",          # ignora servidores MCP del entorno
             "--setting-sources", "user",    # ignora hooks/settings de proyecto/local

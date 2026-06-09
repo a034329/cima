@@ -73,7 +73,17 @@ class Settings(BaseSettings):
 
     # ── Anthropic IA (usado por el adaptador 'anthropic') ──────────────
     anthropic_api_key: str = ""
-    anthropic_default_model: str = "claude-sonnet-4-6"
+    # Opus 4.7 para todas las llamadas conversacionales/analíticas (asesor,
+    # valoración asistida, paso 0, one-pager, comps, onboarding). Subido desde
+    # Sonnet 4.6 el 2026-06-09 tras detectar sesgo de complacencia en el
+    # asesor (conversación LVMH→Hermès): Opus defiende mejor el análisis y
+    # capitula menos ante presión social del usuario. Coste Max sin cambio.
+    anthropic_default_model: str = "claude-opus-4-7"
+    # Effort por defecto para llamadas a Claude CLI. `low` mantiene la
+    # latencia razonable; las llamadas de análisis profundo (paso 0, one-pager,
+    # valoración con web) pueden subir vía `ia_effort_web`.
+    ia_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    ia_effort_web: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
 
     # ── Datos de mercado: Financial Modeling Prep ──────────────────────
     # Clave vía env (CIMA_FMP_API_KEY). NUNCA hardcodear en el repo. Sin clave,
