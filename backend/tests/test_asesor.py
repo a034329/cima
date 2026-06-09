@@ -49,6 +49,35 @@ def test_system_asesor_por_modo() -> None:
     assert "no des recomendaciones" in s or "no es asesoramiento" in s
 
 
+def test_system_asesor_incluye_reglas_integridad_analitica() -> None:
+    """Guardrails contra los fallos garrafales detectados en la conversación
+    LVMH→Hermès (2026-06-09): TTM vs Forward, divisas, contraste de fuentes,
+    veredicto antes de datos, capitulación tras corrección, rotación vs DCA,
+    preferencia por herramientas internas. Si se elimina alguna, los tests
+    avisan — son guardrails críticos, no negociables."""
+    s = system_asesor("owner")
+    # 1. Múltiplos: TTM vs Forward
+    assert "TTM" in s and "Forward" in s
+    assert "rotación" in s.lower() and "4 años" in s
+    # 2. Divisas: aclarar EUR/USD
+    assert "DIVISA" in s or "divisa" in s
+    # 3. Contraste de fuentes con discrepancia
+    assert "10%" in s and "discrepancia" in s.lower()
+    # 4. Cálculos trazables (coherencia interna)
+    assert "coherencia" in s.lower() or "cuadra" in s.lower()
+    # 5. Veredicto después de datos, no antes
+    assert "VEREDICTO" in s or "veredicto" in s
+    assert "CAGR4+Div" in s
+    # 6. No capitular ante presión social del usuario
+    assert "capitular" in s.lower() or "complacencia" in s.lower()
+    # 7. Rotación táctica ≠ DCA
+    assert "Rotación" in s or "rotación" in s.lower()
+    assert "DCA" in s
+    # 8. Preferencia por herramientas internas de Cima
+    assert "Valoración asistida" in s
+    assert "one-pager" in s or "Análisis" in s
+
+
 def test_contexto_incluye_cartera_y_regimen(db: Session, cartera, monkeypatch) -> None:
     _seed(db, cartera, monkeypatch)
     ctx = svc._contexto(db, cartera.id)
