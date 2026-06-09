@@ -200,6 +200,17 @@ def test_prompt_incluye_reglas_integridad_analitica() -> None:
     assert "discrepancia" in system.lower() or "discrepancias" in system.lower()
 
 
+def test_prompt_pide_priorizar_dato_fresco_por_fecha() -> None:
+    """Regla añadida (2026-06-09 tras 2ª conversación LVMH→Hermès): cuando
+    busques en web una métrica crítica, prioriza por FECHA. Las estimaciones
+    se revisan post-earnings — un dato de hace 3 meses puede estar obsoleto."""
+    system, _ = svc.build_prompt("X", {}, "PER")
+    assert "FECHA" in system or "fecha" in system.lower()
+    assert "post-earnings" in system.lower() or "trimestralmente" in system.lower()
+    # Si la web da algo más fresco que el ancla de Cima, debe mencionarlo
+    assert "ancla" in system.lower() and "snapshot" in system.lower()
+
+
 def test_umbral_cagr_aggressive_es_mas_alto_que_income() -> None:
     """Un BDC/REIT (aggressive) admite CAGR más alto antes de alertar
     (24% no debería disparar; en income sí dispararía)."""

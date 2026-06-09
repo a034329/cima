@@ -102,6 +102,23 @@ def test_system_asesor_incluye_reglas_2a_conversacion() -> None:
     assert "Bloque A" in s or "Estable" in s
 
 
+def test_system_asesor_incluye_orden_de_operaciones() -> None:
+    """Regla 14 (meta-regla): ANTES de opinar sobre algo cuantitativo, buscar
+    dato fresco con FECHA y contrastar; priorizar fuentes por fecha. Es la raíz
+    de los fallos de los turnos 2-3 — la IA opinó primero y rectificó con web
+    después, cuando debía haber buscado dato fresco primero."""
+    s = system_asesor("owner")
+    # Orden de operaciones explícito: dato primero, opinión después
+    assert "PRIMERO" in s or "primero" in s
+    assert "FECHA" in s and "FRESCO" in s.upper() or "fresco" in s.lower()
+    # Priorización temporal de fuentes web (estimaciones se revisan trimestral)
+    assert "post-earnings" in s.lower() or "trimestralmente" in s.lower()
+    # Si no hay web, pedir activarla en lugar de improvisar
+    assert "🌐" in s or "activa" in s.lower()
+    # No emitir tesis primero y rectificar después con web
+    assert "no improvises" in s.lower() or "no emitas" in s.lower() or "no opin" in s.lower()
+
+
 def test_contexto_incluye_cartera_y_regimen(db: Session, cartera, monkeypatch) -> None:
     _seed(db, cartera, monkeypatch)
     ctx = svc._contexto(db, cartera.id)
