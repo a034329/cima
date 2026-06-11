@@ -30,7 +30,7 @@ const noFlash = `try{if(localStorage.getItem('cima-theme')==='light'){document.d
 const NAV = [
   { href: '/', label: 'Cartera' },
   { href: '/estrategia', label: 'Estrategia' },
-  { href: '/fiscal/2026', label: 'Fiscalidad' },
+  { href: `/fiscal/${new Date().getFullYear()}`, label: 'Fiscalidad' },
   { href: '/transacciones', label: 'Movimientos' },
 ];
 

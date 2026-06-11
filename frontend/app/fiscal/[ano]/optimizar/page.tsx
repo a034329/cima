@@ -10,6 +10,7 @@ import {
   setPerdidaPendiente,
 } from '@/lib/api';
 import type { OptimizadorFiscal, PerdidaPendienteManual } from '@/lib/types';
+import { parseNumEs } from '@/lib/num';
 
 export default function OptimizarPage({ params }: { params: { ano: string } }) {
   const ejercicio = parseInt(params.ano, 10);
@@ -278,7 +279,8 @@ function PrecioInput({
       value={v}
       onChange={(e) => setV(e.target.value)}
       onBlur={() => {
-        const n = v.trim() ? parseFloat(v.replace(',', '.')) : null;
+        const n = v.trim() ? parseNumEs(v) : null;
+        if (v.trim() && n === null) { setV(valor ?? ''); return; }  // entrada inválida: no borrar el precio manual
         const actual = valor != null ? parseFloat(valor) : null;
         if (n !== actual) onPrecio(isin, n);
       }}

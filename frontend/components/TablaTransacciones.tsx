@@ -83,7 +83,7 @@ export function TablaTransacciones({ transacciones }: Props) {
                     {TIPO_LABEL[t.tipo] || t.tipo}
                   </span>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs">{t.posicion_id ? t.posicion_id.slice(0, 8) + '…' : ''}{' '}<span className="text-[rgb(var(--muted))]">/</span></td>
+                <td className="px-3 py-2 font-mono text-xs" title={t.posicion_nombre ?? undefined}>{t.isin ?? '—'}</td>
                 <td className="px-3 py-2 text-right font-mono text-xs">
                   {parseFloat(t.cantidad) > 0 ? fmtNum(t.cantidad) : '—'}
                 </td>

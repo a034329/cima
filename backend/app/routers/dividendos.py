@@ -89,6 +89,7 @@ class PuntoMensualOut(BaseModel):
     anio: int
     mes: int
     bruto: Decimal = Field(decimal_places=2)
+    neto: Decimal
 
 
 class SerieDividendosOut(BaseModel):
@@ -102,7 +103,7 @@ def get_serie_dividendos(db: Session = Depends(get_db)) -> SerieDividendosOut:
     s = serie_dividendos(db, _cartera(db).id)
     return SerieDividendosOut(
         anual=[PuntoAnualOut(anio=p.anio, bruto=p.bruto, neto=p.neto) for p in s.anual],
-        mensual=[PuntoMensualOut(anio=p.anio, mes=p.mes, bruto=p.bruto) for p in s.mensual],
+        mensual=[PuntoMensualOut(anio=p.anio, mes=p.mes, bruto=p.bruto, neto=p.neto) for p in s.mensual],
     )
 
 

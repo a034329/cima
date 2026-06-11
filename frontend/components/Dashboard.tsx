@@ -31,12 +31,29 @@ export function Dashboard() {
   }, [cargar]);
 
   if (error) {
+    // Distinguir "cartera vacía" (404 del bootstrap) de un fallo real del
+    // backend — antes un 500 o el backend caído se enmascaraba como "no hay
+    // datos, importa un extracto" (auditoría Cima 2026-06-11, F7).
+    const esVacio = /404|No hay cartera/i.test(error);
     return (
       <div className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-8 text-center">
-        <p className="text-[rgb(var(--muted))]">No hay datos de cartera todavía.</p>
-        <p className="text-xs text-[rgb(var(--muted))] mt-2">
-          Importa un extracto para ver tu dashboard.
-        </p>
+        {esVacio ? (
+          <>
+            <p className="text-[rgb(var(--muted))]">No hay datos de cartera todavía.</p>
+            <p className="text-xs text-[rgb(var(--muted))] mt-2">
+              Importa un extracto para ver tu dashboard.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-red-500">No se pudo cargar el dashboard.</p>
+            <p className="text-xs text-[rgb(var(--muted))] mt-2 font-mono">{error}</p>
+            <button onClick={cargar}
+              className="mt-3 px-3 py-1 text-xs rounded border border-[rgb(var(--border))] hover:bg-[rgb(var(--bg))]">
+              Reintentar
+            </button>
+          </>
+        )}
       </div>
     );
   }

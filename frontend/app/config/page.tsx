@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { fetchConfig, fmtEUR, guardarConfig } from '@/lib/api';
+import { parseNumEs } from '@/lib/num';
 import { notificarDatosActualizados } from '@/lib/refetch';
 import type { ConfigCartera } from '@/lib/types';
 
@@ -30,12 +31,13 @@ export default function ConfigPage() {
   async function guardar() {
     setGuardando(true); setOk(false); setError(null);
     try {
-      const obj = parseFloat(objetivo.replace(',', '.'));
-      const ap = parseFloat(aportacion.replace(',', '.'));
+      // parseNumEs: "300.000" ya no se guarda como 300 € de objetivo IF (A10)
+      const obj = parseNumEs(objetivo);
+      const ap = parseNumEs(aportacion);
       const d = await guardarConfig({
         nombre_cartera: nombre.trim(),
-        objetivo_if_eur: Number.isFinite(obj) ? obj : undefined,
-        aportacion_mensual_eur: Number.isFinite(ap) ? ap : undefined,
+        objetivo_if_eur: obj ?? undefined,
+        aportacion_mensual_eur: ap ?? undefined,
       });
       setData(d); setNombre(d.nombre_cartera); setObjetivo(d.objetivo_if_eur); setAportacion(d.aportacion_mensual_eur);
       setOk(true);

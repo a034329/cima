@@ -11,6 +11,7 @@ import {
   prefillEstimaciones,
 } from '@/lib/api';
 import type { EstimacionItem, EstimacionesResumen, TipoVal } from '@/lib/types';
+import { parseNumEs } from '@/lib/num';
 
 // Precio en su DIVISA NATIVA (las estimaciones son agnósticas de divisa): €
 // para EUR, código (USD/GBp/CHF…) para el resto. NO formatear todo como €.
@@ -216,7 +217,10 @@ function EditNum({ isin, campo, valor, onGuardar, hint, alerta }: {
           value={v}
           onChange={(e) => setV(e.target.value)}
           onBlur={() => {
-            const n = v.trim() ? parseFloat(v.replace(',', '.')) : null;
+            // parseNumEs: '1.000'→1000 y entrada no numérica → se IGNORA
+            // (antes NaN→null borraba el valor guardado — auditoría F2).
+            const n = v.trim() ? parseNumEs(v) : null;
+            if (v.trim() && n === null) { setV(valor ?? ''); return; }
             const actual = valor != null ? parseFloat(valor) : null;
             if (n !== actual) onGuardar(isin, { [campo]: n });
           }}

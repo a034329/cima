@@ -171,7 +171,7 @@ export default function PlanPage() {
               ))}
               {posiciones && posiciones.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="py-4 px-3 text-center text-[rgb(var(--muted))]">
+                  <td colSpan={7} className="py-4 px-3 text-center text-[rgb(var(--muted))]">
                     No hay posiciones abiertas. Importa un extracto en Cartera.
                   </td>
                 </tr>
@@ -186,9 +186,13 @@ export default function PlanPage() {
             isin={editIsin}
             nombre={nombrePorIsin(editIsin)}
             onGuardar={async (payload) => {
-              await crearPaso(payload);
-              setEditIsin(null);
-              await cargar();
+              try {
+                await crearPaso(payload);
+                setEditIsin(null);
+                await cargar();
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              }
             }}
             onCancelar={() => setEditIsin(null)}
           />
@@ -304,6 +308,10 @@ function NuevoPaso({
       try {
         const f = await evaluarFriccion(isin, decision);
         if (f) { setFriccion(f); return; }   // abre el diálogo; no guarda aún
+      } catch {
+        // La fricción AVISA, nunca bloquea: si el servicio falla, se guarda
+        // sin rebate (auditoría Cima 2026-06-11, F4 — antes el rechazo
+        // quedaba sin manejar y el guardado moría en silencio).
       } finally {
         setEvaluando(false);
       }
@@ -382,11 +390,15 @@ function NuevoPaso({
           etiquetaProceder="Crear el paso de todos modos"
           onReconsiderar={() => setFriccion(null)}
           onProceder={async (motivo) => {
-            await onGuardar({
-              ...base(),
-              friccion_severidad: friccion.severidad,
-              friccion_motivo: motivo.trim() ? motivo.trim() : null,
-            });
+            try {
+              await onGuardar({
+                ...base(),
+                friccion_severidad: friccion.severidad,
+                friccion_motivo: motivo.trim() ? motivo.trim() : null,
+              });
+            } finally {
+              setFriccion(null);   // el diálogo no se queda colgado si falla (F4)
+            }
           }}
         />
       )}

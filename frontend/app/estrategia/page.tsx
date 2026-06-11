@@ -29,6 +29,7 @@ import type {
 } from '@/lib/types';
 
 import { CAT_ASIGNABLES, CAT_COLOR, CAT_HEX, CAT_LABEL } from '@/lib/categorias';
+import { parseNumEs } from '@/lib/num';
 import { RegimenPanel } from '@/components/RegimenPanel';
 
 export default function EstrategiaPage() {
@@ -65,10 +66,22 @@ export default function EstrategiaPage() {
     cargar();
   }, [cargar]);
 
-  const onAsignar = async (isin: string, bloqueId: string) => {
+  // F4 (auditoría 2026-06-11): mutación sin catch = rechazo sin manejar y
+  // control mostrando un valor que el servidor no aceptó. Envolvemos las
+  // mutaciones para que el fallo aparezca en el banner de error.
+  const conError = <A extends unknown[]>(fn: (...a: A) => Promise<void>) =>
+    async (...a: A) => {
+      try {
+        await fn(...a);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    };
+
+  const onAsignar = conError(async (isin: string, bloqueId: string) => {
     await asignarBloque(isin, bloqueId === 'sin_clasificar' ? null : bloqueId);
     await cargar();
-  };
+  });
 
   const onGuardarRegimen = async (ind: RegimenEstado['indicadores']) => {
     setRegimen(await guardarRegimen(ind));   // recalibra los tramos de la guía de compra
@@ -93,11 +106,11 @@ export default function EstrategiaPage() {
       return resto;
     });
 
-  const aplicarSugerencia = async (isin: string, bloqueId: string | null) => {
+  const aplicarSugerencia = conError(async (isin: string, bloqueId: string | null) => {
     await asignarBloque(isin, bloqueId);
     descartarSugerencia(isin);
     await cargar();
-  };
+  });
 
   const LOTE = 8;   // empresas por batch: lo bastante pequeño para ver progreso
   const [autoProgreso, setAutoProgreso] = useState<{ hechas: number; total: number } | null>(null);
@@ -138,10 +151,10 @@ export default function EstrategiaPage() {
     }
   };
 
-  const onEliminar = async (id: string) => {
+  const onEliminar = conError(async (id: string) => {
     await eliminarBloque(id);
     await cargar();
-  };
+  });
 
   // Bloques reales (excluye el saco sin_clasificar para selects y borrado)
   const bloquesReales = (dist?.bloques ?? []).filter((b) => b.id !== 'sin_clasificar');
@@ -578,8 +591,9 @@ function ObjetivoEditor({
   const guardar = async () => {
     setGuardando(true);
     try {
-      const o = val.trim() ? parseFloat(val.replace(',', '.')) / 100 : null;
-      await onGuardar(o);
+      const oNum = val.trim() ? parseNumEs(val) : null;
+      if (val.trim() && oNum === null) { setGuardando(false); return; }  // entrada inválida: no borrar
+      await onGuardar(oNum === null ? null : oNum / 100);
     } finally {
       setGuardando(false);
     }
@@ -628,9 +642,14 @@ function ColchonEditor({
   const guardar = async () => {
     setGuardando(true);
     try {
-      const ef = efectivo.trim() ? parseFloat(efectivo.replace(',', '.')) : null;
-      const rp = rendPct.trim() ? parseFloat(rendPct.replace(',', '.')) / 100 : null;
-      await onGuardar(ef, rp);
+      // parseNumEs: "18.000" del colchón ya no se guarda como 18 € (A10)
+      const ef = efectivo.trim() ? parseNumEs(efectivo) : null;
+      const rpNum = rendPct.trim() ? parseNumEs(rendPct) : null;
+      if ((efectivo.trim() && ef === null) || (rendPct.trim() && rpNum === null)) {
+        setGuardando(false);
+        return;   // entrada inválida: no borrar lo guardado
+      }
+      await onGuardar(ef, rpNum === null ? null : rpNum / 100);
     } finally {
       setGuardando(false);
     }

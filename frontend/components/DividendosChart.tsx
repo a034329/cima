@@ -51,7 +51,7 @@ export function DividendosChart() {
       }))
     : Array.from({ length: 12 }, (_, i) => {
         const m = serie.mensual.find((x) => x.anio === anioSel && x.mes === i + 1);
-        return { etiqueta: MESES[i], bruto: m ? parseFloat(m.bruto) : 0, neto: m ? parseFloat(m.bruto) : 0 };
+        return { etiqueta: MESES[i], bruto: m ? parseFloat(m.bruto) : 0, neto: m ? parseFloat(m.neto) : 0 };
       });
 
   const ultimo = serie.anual[serie.anual.length - 1];

@@ -20,6 +20,7 @@ import {
 } from '@/lib/api';
 import { AuditoriaVista } from '@/components/AuditoriaVista';
 import { CAT_COLOR, CAT_LABEL } from '@/lib/categorias';
+import { parseNumEs } from '@/lib/num';
 import { PRIORIDADES, PRIORIDAD_LABEL } from '@/lib/decisiones';
 import { notificarDatosActualizados } from '@/lib/refetch';
 import type {
@@ -540,7 +541,10 @@ function EditNum({ isin, campo, valor, onGuardar, alerta }: {
           value={v}
           onChange={(ev) => setV(ev.target.value)}
           onBlur={() => {
-            const n = v.trim() ? parseFloat(v.replace(',', '.')) : null;
+            // parseNumEs: '1.000'→1000 y entrada no numérica → se IGNORA
+            // (antes NaN→null borraba el valor guardado — auditoría F2).
+            const n = v.trim() ? parseNumEs(v) : null;
+            if (v.trim() && n === null) { setV(valor ?? ''); return; }
             const actual = valor != null ? parseFloat(valor) : null;
             if (n !== actual) onGuardar(isin, { [campo]: n });
           }}

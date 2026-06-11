@@ -56,6 +56,8 @@ class TransaccionOut(BaseModel):
     cartera_id: str
     broker_id: str | None
     posicion_id: str
+    isin: str | None = None              # de la posición (columna ISIN del frontend)
+    posicion_nombre: str | None = None
     fecha: date
     tipo: TipoTransaccion
     cantidad: Decimal

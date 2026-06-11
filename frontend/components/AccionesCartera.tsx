@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   bootstrap,
   crearAportacion,
@@ -13,6 +13,24 @@ import {
   importarExtracto,
   registrarFriccion,
 } from '@/lib/api';
+
+
+/** Importe en divisa local y FX coherentes para una operación manual.
+ *  Antes se enviaba siempre importe_local = importe_eur con fx_rate = 1:
+ *  para una compra en USD el "importe local" persistido estaba en EUR y el
+ *  FX era falso (cantidad × precio_local ≠ importe_local) — auditoría Cima
+ *  2026-06-11, F3. Para divisa EUR se mantiene la identidad. */
+function importeLocalYFx(acc: { cantidad: string; precio_local: string; divisa_local: string; importe_eur: string }) {
+  if ((acc.divisa_local || 'EUR') === 'EUR') {
+    return { importe_local: acc.importe_eur, fx_rate: '1' };
+  }
+  const local = parseFloat(acc.cantidad) * parseFloat(acc.precio_local);
+  const eur = parseFloat(acc.importe_eur);
+  if (!Number.isFinite(local) || local <= 0 || !Number.isFinite(eur)) {
+    return { importe_local: acc.importe_eur, fx_rate: '1' };
+  }
+  return { importe_local: String(local), fx_rate: String(eur / local) };
+}
 import type { BrokerEstado } from '@/lib/api';
 import { FriccionDialog } from '@/components/FriccionDialog';
 import { notificarDatosActualizados } from '@/lib/refetch';
@@ -172,7 +190,7 @@ function ModalAnadirTx({
   >([]);
   useEffect(() => {
     // El modal solo se monta cuando se abre → carga única al entrar.
-    fetch(`${process.env.NEXT_PUBLIC_API_BASE ?? ''}/api/posiciones`)
+    fetch(`${process.env.NEXT_PUBLIC_API_URL ?? ''}/api/posiciones`)
       .then((r) => r.ok ? r.json() : { posiciones: [] })
       .then((d) => {
         type Pos = { isin: string; nombre: string; divisa_cotizacion?: string | null; cantidad?: string };
@@ -226,8 +244,8 @@ function ModalAnadirTx({
           isin: acc.isin.toUpperCase(), ticker: acc.ticker || undefined,
           nombre: acc.nombre || undefined, fecha: acc.fecha, tipo: acc.tipo,
           cantidad: acc.cantidad, precio_local: acc.precio_local,
-          divisa_local: acc.divisa_local, importe_local: acc.importe_eur,
-          fx_rate: '1', importe_eur: acc.importe_eur, gastos_eur: acc.gastos_eur || '0',
+          divisa_local: acc.divisa_local, ...importeLocalYFx(acc),
+          importe_eur: acc.importe_eur, gastos_eur: acc.gastos_eur || '0',
           notas: acc.notas || undefined,
           confirmar_directo: true,             // se aplica al instante (FIFO + fiscal)
         });
@@ -520,8 +538,8 @@ function ModalAnadirTx({
                 isin: acc.isin.toUpperCase(), ticker: acc.ticker || undefined,
                 nombre: acc.nombre || undefined, fecha: acc.fecha, tipo: acc.tipo,
                 cantidad: acc.cantidad, precio_local: acc.precio_local,
-                divisa_local: acc.divisa_local, importe_local: acc.importe_eur,
-                fx_rate: '1', importe_eur: acc.importe_eur, gastos_eur: acc.gastos_eur || '0',
+                divisa_local: acc.divisa_local, ...importeLocalYFx(acc),
+                importe_eur: acc.importe_eur, gastos_eur: acc.gastos_eur || '0',
                 notas: acc.notas || undefined, confirmar_directo: true,
               });
               setPendiente(null);
@@ -562,6 +580,14 @@ function ModalImportarExtracto({
   const ejerciciosPosibles = Array.from({ length: 6 }, (_, i) => ahora - i);
   const [ejercicio, setEjercicio] = useState<string>(String(ahora - 1));
 
+  // onError vía ref: la prop se recrea en cada render del padre (es una
+  // función inline) y con `[onError]` como dependencia cada toast re-disparaba
+  // este efecto → re-fetch + setBroker(bs[0]) machacando la selección del
+  // usuario; con el backend caído, el catch→toast→render→refetch entraba en
+  // bucle infinito de peticiones (auditoría Cima 2026-06-11, F1). El fetch
+  // de brokers es de montaje: se ejecuta UNA vez.
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onErrorRef.current = onError; });
   useEffect(() => {
     fetchBrokersSoportados()
       .then((bs) => {
@@ -569,13 +595,14 @@ function ModalImportarExtracto({
         setBroker(bs[0] ?? '');
       })
       .catch((e) => {
-        onError(`No se pudieron cargar brokers: ${e instanceof Error ? e.message : e}`);
+        onErrorRef.current(`No se pudieron cargar brokers: ${e instanceof Error ? e.message : e}`);
       })
       .finally(() => setLoadingBrokers(false));
     fetchEstadoBrokers()
       .then(setEstado)
       .catch(() => { /* el panel es informativo; si falla, no molestamos */ });
-  }, [onError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const estadoBroker = estado.find((e) => e.broker_tipo === broker);
 

@@ -198,3 +198,52 @@ def test_j5_statement_mas_amplio_si_actualiza(db: Session, cartera):
     assert r.actualizadas == 1 and r.ignoradas == 0
     fila = db.query(models.ResultadoIbkr).one()
     assert fila.realized_eur == Decimal("-500")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tanda 5 (backend de soporte al frontend): A9 serie mensual + F6 isin en API
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_a9_serie_mensual_lleva_neto(db: Session, cartera):
+    """La vista mensual del chart mostraba neto=bruto porque la serie
+    mensual de la API no exponía el neto (auditoría Cima 2026-06-11, A9)."""
+    from app.services.fiscal_dividendos import serie_dividendos
+    pos = models.Posicion(cartera_id=cartera.id, isin="US0000000009",
+                          nombre="Pagadora", divisa_local="EUR")
+    db.add(pos); db.flush()
+    db.add(models.Transaccion(
+        cartera_id=cartera.id, broker_id=None, posicion_id=pos.id,
+        fecha=date(2025, 3, 7), tipo="DIVIDEND",
+        cantidad=Decimal("0"), precio_local=Decimal("0"), divisa_local="EUR",
+        importe_local=Decimal("100"), fx_rate=Decimal("1"),
+        importe_eur=Decimal("100"), gastos_eur=Decimal("0"),
+        tasas_externas_eur=Decimal("0"), retencion_eur=Decimal("15"),
+        retencion_pais="US", estado="confirmada", origen="extracto",
+    ))
+    db.commit()
+    serie = serie_dividendos(db, cartera.id)
+    m = serie.mensual[0]
+    assert m.bruto == Decimal("100.00")
+    assert m.neto == Decimal("85.00"), "el neto mensual debe descontar la retención"
+
+
+def test_f6_transaccion_expone_isin(db: Session, cartera):
+    """La columna 'ISIN' del frontend mostraba un prefijo del UUID interno
+    porque la API no exponía el ISIN de la posición."""
+    pos = models.Posicion(cartera_id=cartera.id, isin="US0378331005",
+                          nombre="Apple", divisa_local="EUR")
+    db.add(pos); db.flush()
+    tx = models.Transaccion(
+        cartera_id=cartera.id, broker_id=None, posicion_id=pos.id,
+        fecha=date(2025, 1, 10), tipo="BUY",
+        cantidad=Decimal("10"), precio_local=Decimal("10"), divisa_local="EUR",
+        importe_local=Decimal("100"), fx_rate=Decimal("1"),
+        importe_eur=Decimal("100"), gastos_eur=Decimal("0"),
+        tasas_externas_eur=Decimal("0"), retencion_eur=Decimal("0"),
+        estado="confirmada", origen="manual",
+    )
+    db.add(tx); db.commit()
+    from app.schemas.transaccion import TransaccionOut
+    out = TransaccionOut.model_validate(tx)
+    assert out.isin == "US0378331005"
+    assert out.posicion_nombre == "Apple"

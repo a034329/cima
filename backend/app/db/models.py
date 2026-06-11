@@ -253,6 +253,16 @@ class Transaccion(Base):
 
 # ── lots (inventario FIFO) ─────────────────────────────────────────────────
 
+    @property
+    def isin(self) -> str | None:
+        """ISIN de la posición (para la API/tabla de movimientos — la columna
+        'ISIN' del frontend mostraba un prefijo del UUID interno, F6)."""
+        return self.posicion.isin if self.posicion is not None else None
+
+    @property
+    def posicion_nombre(self) -> str | None:
+        return self.posicion.nombre if self.posicion is not None else None
+
 class Lot(Base):
     """Lote FIFO. Cada BUY crea un lote; cada SELL consume lotes por orden."""
 

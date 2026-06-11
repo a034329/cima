@@ -501,6 +501,8 @@ export interface TransaccionOut {
   cartera_id: string;
   broker_id: string | null;
   posicion_id: string;
+  isin?: string | null;
+  posicion_nombre?: string | null;
   fecha: string;
   tipo: TipoTransaccion;
   cantidad: string;
@@ -1078,6 +1080,7 @@ export interface PuntoMensualDiv {
   anio: number;
   mes: number;
   bruto: string;
+  neto: string;
 }
 
 export interface SerieDividendos {

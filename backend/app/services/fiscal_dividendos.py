@@ -149,6 +149,7 @@ class PuntoMensual:
     anio: int
     mes: int             # 1-12
     bruto: Decimal
+    neto: Decimal
 
 
 @dataclass
@@ -173,15 +174,16 @@ def serie_dividendos(db: Session, cartera_id: str) -> SerieDividendos:
     ).all()
 
     anual: dict[int, list[Decimal]] = {}   # anio -> [bruto, neto]
-    mensual: dict[tuple[int, int], Decimal] = {}
+    mensual: dict[tuple[int, int], list[Decimal]] = {}   # (anio, mes) -> [bruto, neto]
     for fecha, importe, retencion in filas:
         bruto = Decimal(str(importe or 0))
         neto = bruto - Decimal(str(retencion or 0))
         a = anual.setdefault(fecha.year, [Decimal("0"), Decimal("0")])
         a[0] += bruto
         a[1] += neto
-        clave = (fecha.year, fecha.month)
-        mensual[clave] = mensual.get(clave, Decimal("0")) + bruto
+        m = mensual.setdefault((fecha.year, fecha.month), [Decimal("0"), Decimal("0")])
+        m[0] += bruto
+        m[1] += neto
 
     _c = Decimal("0.01")
     return SerieDividendos(
@@ -190,7 +192,8 @@ def serie_dividendos(db: Session, cartera_id: str) -> SerieDividendos:
             for y, v in sorted(anual.items())
         ],
         mensual=[
-            PuntoMensual(anio=k[0], mes=k[1], bruto=v.quantize(_c))
+            PuntoMensual(anio=k[0], mes=k[1], bruto=v[0].quantize(_c),
+                         neto=v[1].quantize(_c))
             for k, v in sorted(mensual.items())
         ],
     )

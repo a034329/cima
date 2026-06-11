@@ -454,7 +454,7 @@ export async function eliminarBloque(id: string): Promise<void> {
 export async function fetchPlanPasos(
   estado?: string,
 ): Promise<import('./types').PasoPlan[]> {
-  const q = estado ? `?estado=${estado}` : '';
+  const q = estado ? `?estado=${encodeURIComponent(estado)}` : '';
   return fetchJson(`/api/plan${q}`);
 }
 
@@ -521,7 +521,8 @@ export async function fetchVigilancia(): Promise<import('./types').Vigilancia> {
 }
 
 export async function marcarVistoVigilancia(): Promise<void> {
-  await fetch(`${API_BASE}/api/vigilancia/visto`, { method: 'POST' });
+  const res = await fetch(`${API_BASE}/api/vigilancia/visto`, { method: 'POST' });
+  if (!res.ok) throw new Error(`No se pudo marcar la vigilancia como vista (${res.status})`);
 }
 
 export async function fetchHistorialAsesor(): Promise<import('./types').MensajeAsesor[]> {
@@ -540,7 +541,10 @@ export async function enviarMensajeAsesor(
 }
 
 export async function limpiarAsesor(): Promise<void> {
-  await fetch(`${API_BASE}/api/asesor`, { method: 'DELETE' });
+  // res.ok: con un 500 el caller borraba la conversación en pantalla pero el
+  // historial seguía en el servidor (auditoría Cima 2026-06-11, F5).
+  const res = await fetch(`${API_BASE}/api/asesor`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`No se pudo limpiar el historial (${res.status})`);
 }
 
 export async function fetchRegimen(): Promise<import('./types').RegimenEstado> {
@@ -705,7 +709,7 @@ export async function editarEstimacion(
     notas: string | null;
   }>,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/estimaciones/${isin}`, {
+  const res = await fetch(`${API_BASE}/api/estimaciones/${encodeURIComponent(isin)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(campos),
@@ -735,7 +739,7 @@ export async function anadirSeguimiento(
 }
 
 export async function quitarSeguimiento(isin: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/seguimiento/${isin}`, { method: 'DELETE' });
+  const res = await fetch(`${API_BASE}/api/seguimiento/${encodeURIComponent(isin)}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) throw await apiError(res);
 }
 
