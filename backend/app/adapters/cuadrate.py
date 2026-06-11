@@ -192,7 +192,16 @@ def parse_tr_csv(csv_path: str | Path, broker_id: str) -> list[TxCandidata]:
             tasas_externas_eur=Decimal("0"),
             retencion_eur=Decimal("0"),
             retencion_pais=None,
-            external_id=op.get("transaction_id"),
+            # Fallback sintético cuando la fila TR no trae transaction_id
+            # (el parser lo deja como ''): sin external_id la dedup
+            # `(broker_id, external_id)` no corre y cada re-import del
+            # mismo export duplicaba la operación (auditoría Cima
+            # 2026-06-11, A5 — todos los demás tipos ya usaban sintético).
+            external_id=(op.get("transaction_id")
+                         or _synthetic_external_id(
+                             "tr", op["isin"], _to_date(op["fecha"]),
+                             tipo_cima, _to_decimal(op["cantidad"]),
+                             _to_decimal(op["importe_eur"]))),
             broker_id=broker_id,
             notas=("Savings plan" if op.get("es_savings_plan") else None),
         ))

@@ -883,18 +883,26 @@ class FIFOTracker:
                 cantidad_existente = sum((l.cantidad for l in existing), Decimal("0"))
                 cantidad_total = cantidad_existente + cantidad
                 if cantidad_total > 0:
+                    # La acción liberada no aporta coste: el coste de la
+                    # posición se reparte sobre (existentes + nuevas). El TOTAL
+                    # se conserva exacto — repartimos por cantidad y ajustamos
+                    # el remanente de redondeo en el último lote para que la
+                    # suma siga siendo `coste_existente` (no cuantizar el
+                    # unitario antes de multiplicar, que perdía céntimos).
                     coste_unit_prorr = (coste_existente / cantidad_total).quantize(
                         CENT, ROUND_HALF_UP)
-                    # Reajustar coste de los lotes existentes al nuevo unitario
-                    # prorrateado. coste_total = unit * cantidad. gastos del
-                    # lote original se quedan en su valor (no afecta al cálculo
-                    # de G/P puesto que ya están sumados a coste_total_eur).
+                    coste_lote_al = (coste_existente
+                                     - (coste_unit_prorr * cantidad_existente)).quantize(
+                                         CENT, ROUND_HALF_UP)
+                    asignado = ZERO
                     for l in existing:
                         l.coste_unitario_eur = coste_unit_prorr
                         l.coste_total_eur = (coste_unit_prorr * l.cantidad).quantize(
                             CENT, ROUND_HALF_UP)
-                    # El lote AL hereda el mismo coste unitario prorrateado
-                    coste_total = (coste_unit_prorr * cantidad).quantize(
+                        asignado += l.coste_total_eur
+                    # El lote AL absorbe el remanente: coste_existente - lo ya
+                    # asignado a los lotes existentes. Conserva el total.
+                    coste_total = (coste_existente - asignado).quantize(
                         CENT, ROUND_HALF_UP)
 
         if cantidad > 0:
@@ -1132,14 +1140,35 @@ class FIFOTracker:
 
         matches: list[FIFOMatch] = []
         restante = cantidad_vender
+        # Acumuladores para no perder céntimos en ventas multi-lote: el
+        # quantize por tramo acumulaba ±1 céntimo por lote consumido y la
+        # suma de tramos no cuadraba con el importe real de la operación
+        # (auditoría 2026-06-11, [BAJO] prorrateo multi-tramo).
+        importe_asignado = ZERO
+        gastos_asignado = ZERO
 
         while restante > 0 and lots:
             lot = lots[0]
             consumir = min(restante, lot.cantidad)
 
-            importe_tramo = (precio_venta_unit * consumir).quantize(CENT, ROUND_HALF_UP)
-            gastos_tramo = (gastos_venta_unit * consumir).quantize(CENT, ROUND_HALF_UP)
-            coste_tramo = (lot.coste_unitario_eur * consumir).quantize(CENT, ROUND_HALF_UP)
+            if consumir == restante:
+                # Último tramo de la venta (totalmente casada): asignar el
+                # RESTO exacto para que Σ tramos == importe/gastos totales.
+                importe_tramo = importe_total - importe_asignado
+                gastos_tramo = gastos_total - gastos_asignado
+            else:
+                importe_tramo = (precio_venta_unit * consumir).quantize(CENT, ROUND_HALF_UP)
+                gastos_tramo = (gastos_venta_unit * consumir).quantize(CENT, ROUND_HALF_UP)
+            importe_asignado += importe_tramo
+            gastos_asignado += gastos_tramo
+
+            if consumir == lot.cantidad:
+                # Lote totalmente consumido: coste = remanente exacto del
+                # lote (no quantize(unit × qty), que dejaba céntimos
+                # huérfanos en lotes consumidos a lo largo de varias ventas).
+                coste_tramo = lot.coste_total_eur
+            else:
+                coste_tramo = (lot.coste_unitario_eur * consumir).quantize(CENT, ROUND_HALF_UP)
             # Gastos de compra prorrateados al tramo. Ya están sumados dentro
             # de `coste_unitario_eur` (que es coste_total / cantidad_original);
             # los exponemos aparte para auditoría con informes de broker que
@@ -1177,6 +1206,14 @@ class FIFOTracker:
             matches.append(match)
 
             lot.cantidad -= consumir
+            # Mantener coste_total_eur sincronizado con la cantidad viva. El
+            # prorrateo de scrip (es_scrip, _add_buy) suma coste_total_eur de
+            # los lotes vivos; si no se decrementa aquí, incluiría el coste de
+            # acciones ya vendidas y duplicaría la base de coste del scrip.
+            # Decrementamos el REMANENTE real (no quantize(unit × cantidad))
+            # para que los céntimos del lote no se evaporen entre ventas.
+            lot.coste_total_eur = (ZERO if lot.cantidad <= 0
+                                   else lot.coste_total_eur - coste_tramo)
             restante -= consumir
 
             if lot.cantidad <= 0:
@@ -1237,6 +1274,19 @@ class FIFOTracker:
             if ratio != 0:
                 lot.coste_unitario_eur = lot.coste_unitario_eur / ratio
 
+        # Escalar también las cantidades en `_all_buys` por el mismo ratio. La
+        # pérdida diferida (PerdidaDiferida.cantidad_pendiente) se inicializa
+        # con `_all_buys["cantidad"]` (post-process); si no se ajusta aquí,
+        # queda en unidades PRE-split mientras los matches que la consumen
+        # vienen en unidades POST-split → la fracción de afloración sale mal
+        # escalada (Art. 37.3 LIRPF: el split no altera el coste, pero sí el
+        # número de títulos sobre el que se prorratea). `_apply_split` corre
+        # cronológicamente, así que `_all_buys` solo contiene compras
+        # anteriores al split — todas afectadas por él.
+        for buy in self._all_buys:
+            if buy["isin"] == isin:
+                buy["cantidad"] = (buy["cantidad"] * ratio).quantize(Decimal("0.000001"))
+
     # ── Regla 2 meses ────────────────────────────────────────────────────
 
     def _build_buys_indexes(self) -> None:
@@ -1285,6 +1335,16 @@ class FIFOTracker:
             en NYSE/Euronext/AMS, cripto vía RentaWEB).
           - Art. 33.5.g LIRPF: 1 año (12 meses) para valores no admitidos a
             mercado regulado — incluye SOCIMI cotizadas en BME Growth (SMN).
+          - Art. 25.2 LIRPF último párrafo: regla equivalente para RCM —
+            "los rendimientos negativos derivados de transmisiones de activos
+            financieros, cuando el contribuyente hubiera adquirido activos
+            financieros homogéneos dentro de los dos meses anteriores o
+            posteriores a dichas transmisiones, se integrarán a medida que se
+            transmitan los activos financieros que permanezcan". Cubre BOND y
+            ETC (ambos tributan como RCM por cesión a terceros; los ETC según
+            DGT V0267-25). Misma ventana de 2 meses y misma mecánica de
+            diferimiento/afloración que el 33.5.f; cambia solo el anclaje
+            legal, reflejado en `regla_2_meses_detalle`.
 
         El campo `match.regla_2_meses` se mantiene como nombre histórico
         (genérico para "regla anti-aplicación de pérdidas") aunque la ventana
@@ -1303,13 +1363,22 @@ class FIFOTracker:
             if match.ganancia_perdida >= 0:
                 continue  # solo afecta a pérdidas
 
-            # ETCs físicos tributan como RCM (Art. 25.2 LIRPF, DGT V0267-25),
-            # no como G/P patrimonial. La regla 2M del Art. 33.5.f LIRPF habla
-            # explícitamente de "pérdidas patrimoniales" → NO aplica a RCM.
-            # Por eso saltamos los matches con instrument_type='ETC'.
-            if getattr(match, 'instrument_type', 'STOCK') == 'ETC':
+            # La regla anti-aplicación NO se aplica al cierre de una venta
+            # corta (doctrina cerrada del proyecto: la 2M presupone que
+            # conservas el valor en cartera tras venderlo con pérdida; en un
+            # corto la "recompra" ES el cierre de la posición, no una nueva
+            # tenencia). Además la ventana se anclaría en la apertura (no en
+            # la realización) → sobre-tributación. Por eso se saltan.
+            if getattr(match, 'es_corto', False):
                 continue
 
+            # ETCs y bonos tributan como RCM (Art. 25.2 LIRPF; ETCs según
+            # DGT V0267-25), no como G/P patrimonial — la regla del 33.5.f
+            # no les aplica, pero el último párrafo del Art. 25.2 contiene
+            # su equivalente exacto para RCM negativos (recompra de activos
+            # financieros homogéneos en ±2 meses → integración diferida).
+            # Por eso NO se saltan: se marcan con la misma ventana de 2
+            # meses, dejando el anclaje legal correcto en el detalle.
             isin = match.isin
             fv = match.fecha_venta
 
@@ -1367,9 +1436,12 @@ class FIFOTracker:
                     continue
                 if window_start <= bd <= window_end:
                     match.regla_2_meses = True
+                    _es_rcm = getattr(match, 'instrument_type', 'STOCK') in ('BOND', 'ETC')
+                    _anclaje = ("Art. 25.2 LIRPF último párrafo (RCM)" if _es_rcm
+                                else "Art. 33.5.f/g LIRPF")
                     match.regla_2_meses_detalle = (
                         f"Recompra {_format_es_date(bd)} dentro de ventana {window_label} "
-                        f"(venta {_format_es_date(fv)})"
+                        f"(venta {_format_es_date(fv)}) — {_anclaje}"
                     )
                     importe_diferido = abs(match.ganancia_perdida)
                     origen_entry = {
@@ -1549,12 +1621,23 @@ class FIFOTracker:
             # Prorrateo del desglose por origen: cada entry de `pd.origenes`
             # contribuye al `importe_proporcional` según su peso relativo.
             # Si la fracción es 1.0 (consumo total), pasa el desglose
-            # íntegro; si es parcial, prorratea cada origen.
+            # íntegro; si es parcial, prorratea cada origen y el ÚLTIMO se
+            # lleva el resto exacto — el quantize por origen hacía que la
+            # suma del desglose no cuadrara con importe_proporcional
+            # (auditoría 2026-06-11, [BAJO] desglose PD).
             desglose_prorrateado = []
-            for origen in pd.origenes:
+            asignado_desglose = ZERO
+            n_origenes = len(pd.origenes)
+            for i, origen in enumerate(pd.origenes):
                 importe_origen = origen["importe_eur"]
-                aportacion = (importe_origen * fraccion).quantize(
-                    CENT, ROUND_HALF_UP) if fraccion != Decimal("1") else importe_origen
+                if fraccion == Decimal("1"):
+                    aportacion = importe_origen
+                elif i == n_origenes - 1:
+                    aportacion = importe_proporcional - asignado_desglose
+                else:
+                    aportacion = (importe_origen * fraccion).quantize(
+                        CENT, ROUND_HALF_UP)
+                asignado_desglose += aportacion
                 desglose_prorrateado.append({
                     "ejercicio":   origen["ejercicio"],
                     "fecha_venta": origen["fecha_venta"],

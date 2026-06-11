@@ -137,8 +137,13 @@ def calcular_rotacion(
     # fiscal hasta ese importe): pendientes de años anteriores + arrastre del año.
     # Es COMPARTIDO entre posiciones; aquí se aplica por-posición como "¿y si
     # vendo SOLO esta?" — se expone para señalar el límite común.
+    # OJO (auditoría Cima 2026-06-11, A6): `perdidas_actualizadas` YA incluye
+    # la pérdida nueva de ESTE año (origen == ejercicio); sumarle además
+    # `nuevo_saldo_negativo` la contaba DOS veces y presentaba como "coste
+    # fiscal ~0" rotaciones que tributan. Mismo filtro que el optimizador.
     buffer = (
-        sum((Decimal(str(p.pendiente_eur)) for p in comp.perdidas_actualizadas), Decimal("0"))
+        sum((Decimal(str(p.pendiente_eur)) for p in comp.perdidas_actualizadas
+             if p.ejercicio_origen < ejercicio), Decimal("0"))
         + Decimal(str(abs(comp.nuevo_saldo_negativo)))
     )
 

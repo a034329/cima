@@ -45,7 +45,7 @@ import re
 import sys
 import urllib.request
 import urllib.error
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from collections import defaultdict
 
@@ -148,7 +148,14 @@ DTA_SOURCE_MAX = {
     'NO': Decimal('0.15'),  # España-Noruega: 15%
     'AT': Decimal('0.15'),  # España-Austria: 15%
     'FI': Decimal('0.10'),  # España-Finlandia: 10%
-    'JP': Decimal('0.15'),  # España-Japón: 15%
+    'JP': Decimal('0.05'),  # España-Japón: 5% — NUEVO convenio 2018 (BOE-A-2021-2977,
+                            # en vigor 1-5-2021), Art. 10.2: tipo GENERAL 5% del bruto.
+                            # 0% para sociedades ≥10% derechos de voto 12 meses y fondos
+                            # de pensiones (10.3); 10% solo dividendos deducibles (10.4).
+                            # El 15% anterior era del convenio de 1974, derogado.
+                            # Verificado 2026-06-11 contra BOE + Anexo III manual
+                            # AEAT no residentes ("0/5/10"). Japón retiene 15,315%
+                            # doméstico → exceso sobre 5% se reclama a Japón, no via 0588.
     'AU': Decimal('0.15'),  # España-Australia: 15%
     'HK': Decimal('0.10'),  # España-Hong Kong: 10%
     'SG': Decimal('0.05'),  # España-Singapur: 5%
@@ -156,13 +163,49 @@ DTA_SOURCE_MAX = {
     'CN': Decimal('0.10'),  # España-China: 10%
     'IN': Decimal('0.15'),  # España-India: 15%
     'MX': Decimal('0.10'),  # España-México: 10%
-    'BR': Decimal('0.10'),  # España-Brasil: 10%
+    'BR': Decimal('0.15'),  # España-Brasil: 15% — CDI 1974 (BOE 31-12-1975), Art. 10.2:
+                            # "no puede exceder del 15 por 100 del importe bruto".
+                            # Verificado 2026-06-11 contra el texto oficial (hacienda.gob.es).
+                            # Nota: Brasil no retiene dividendos domésticamente (0%),
+                            # impacto práctico nulo salvo cambio normativo brasileño.
     'AR': Decimal('0.10'),  # España-Argentina: 10%
     'TW': Decimal('0.10'),  # España-Taiwán: 10% (aprox., no CDI formal — usar con cautela)
     'KY': Decimal('0.00'),  # Caimán: sin CDI → sin crédito garantizado
     'LV': Decimal('0.10'),  # España-Letonia: 10%
     'EE': Decimal('0.10'),  # España-Estonia: 10%
     'AE': Decimal('0.00'),  # EAU: sin CDI
+}
+
+# Tasa de retención en ORIGEN que Trade Republic aplica REALMENTE sobre el
+# bruto, por país emisor. NO es el tope CDI (DTA_SOURCE_MAX) — es lo que el
+# país de origen retiene de hecho, que puede ser MAYOR que el tope (DE 26,375%,
+# CH 35% → el exceso no es deducible) o MENOR (FR 12,8% < tope 15%).
+#
+# Se usa para descomponer el campo `tax` de TR (origen + 19% ES sobre el neto)
+# en sus dos componentes SIN inferirlo del tope CDI (que sobre-asignaba a 0588
+# cuando la tasa real era menor, e infra-reportaba 0591).
+#   origen = bruto × tasa_real ;  ES = tax_total − origen
+# Esto funciona en ambos regímenes: pre-migración (tax = bruto×tasa_real → ES=0)
+# y post-migración (tax = origen + 19%×neto → ES = 19%×neto), sin necesidad de
+# conocer la fecha de migración.
+#
+# Tasas verificadas:
+#   US 15% (W-8BEN, tipo de convenio que TR pre-aplica) y FR 12,8% (PFU
+#   doméstico) confirmadas al céntimo contra extracto real de TR (J&J y Hermès).
+#   DE 26,375% (25% + 5,5% Soli), NL 15%, CH 35%, IT 26%, BE 30%, DK 27%:
+#   tipos estatutarios de retención a no residentes (PwC/Tax Foundation 2025).
+# Países NO listados → fallback al método antiguo (min(tax, bruto×tope_CDI)).
+TR_SOURCE_WHT_RATE = {
+    'US': Decimal('0.15'),     # W-8BEN tratado (TR lo pre-aplica)
+    'FR': Decimal('0.128'),    # PFU doméstico no residentes
+    'DE': Decimal('0.26375'),  # KESt 25% + Soli 5,5%
+    'NL': Decimal('0.15'),
+    'CH': Decimal('0.35'),
+    'IT': Decimal('0.26'),
+    'BE': Decimal('0.30'),
+    'DK': Decimal('0.27'),
+    'GB': Decimal('0.00'),     # UK no retiene sobre dividendos
+    'IE': Decimal('0.00'),     # acciones irlandesas: la mayoría UCITS (rama FUND)
 }
 
 # ISINs de ADRs cuyo país real de dividendo difiere del prefijo ISIN (US)
@@ -225,7 +268,8 @@ def _load_casillas_ejercicio(ejercicio: str) -> dict:
                     "dividendos_rcm": {"casilla": "0029"},
                     "retencion_espanola": {"casilla": "0591"},
                     "deduccion_cdi_internacional": {"casilla": "0588"},
-                    "intereses_cuentas_remuneradas": {"casilla": "0023"},
+                    "intereses_rcm": {"casilla": "0027"},
+                    "letras_tesoro_rcm": {"casilla": "0030"},
                     "acciones_cotizadas_gp": {
                         "rango_detalle": "326-338",
                         "casilla_suma_ganancias": "339",
@@ -251,7 +295,18 @@ def _load_casillas_ejercicio(ejercicio: str) -> dict:
         "divs":              cas.get("dividendos_rcm", {}).get("casilla", "0029"),
         "retencion_es":      cas.get("retencion_espanola", {}).get("casilla", "0591"),
         "cdi":               cas.get("deduccion_cdi_internacional", {}).get("casilla", "0588"),
-        "intereses":         cas.get("intereses_cuentas_remuneradas", {}).get("casilla", "0023"),
+        # V1 auditoría 2026-06-11: el código buscaba la clave legacy
+        # "intereses_cuentas_remuneradas" (inexistente en casillas_irpf.json,
+        # que usa "intereses_rcm") y caía SIEMPRE al default inline "0023".
+        # La casilla correcta es 0027 (intereses de cuentas, depósitos y
+        # activos financieros en general) — verificada contra capturas
+        # literales de RentaWEB (ver casillas_irpf.json, verificado_el
+        # 2026-05-06). Se mantiene la clave legacy como fallback de lectura.
+        "intereses":         (cas.get("intereses_rcm", {}).get("casilla")
+                              or cas.get("intereses_cuentas_remuneradas", {}).get("casilla")
+                              or "0027"),
+        # Letras del Tesoro / T-Bills (transmisión o amortización): 0030.
+        "letras_tesoro":     cas.get("letras_tesoro_rcm", {}).get("casilla", "0030"),
         "acciones_detalle":  cas.get("acciones_cotizadas_gp", {}).get("rango_detalle", "326-338"),
         "acciones_ganancias": cas.get("acciones_cotizadas_gp", {}).get("casilla_suma_ganancias", "339"),
         "acciones_perdidas": cas.get("acciones_cotizadas_gp", {}).get("casilla_suma_perdidas", "340"),
@@ -268,9 +323,9 @@ def _load_casillas_ejercicio(ejercicio: str) -> dict:
 def C(concepto: str, ejercicio: str | None = None) -> str:
     """Atajo: devuelve la casilla (o rango) para un concepto en el ejercicio.
 
-    Conceptos válidos: divs, retencion_es, cdi, intereses, acciones_detalle,
-    acciones_ganancias, acciones_perdidas, derechos, otros, otros_clave_tipo,
-    saldos_negativos.
+    Conceptos válidos: divs, retencion_es, cdi, intereses, letras_tesoro,
+    acciones_detalle, acciones_ganancias, acciones_perdidas, derechos, otros,
+    otros_clave_tipo, saldos_negativos.
     """
     mapping = _load_casillas_ejercicio(ejercicio or EJERCICIO)
     return str(mapping.get(concepto, "?"))
@@ -292,6 +347,30 @@ def parse_es(s):
         return Decimal(s)
     except Exception:
         return Decimal('0')
+
+_RE_MILES_ES = re.compile(r'^[+-]?\d{1,3}(\.\d{3})+$')
+
+def parse_es_texto(s):
+    """Variante de parse_es para TEXTO es-ES puro (descripciones del CSV de
+    Cuenta de DeGiro: 'Compra 1.000 PRODUCTO@12,34 EUR'), donde el punto solo
+    puede ser separador de miles: '1.000' → 1000.
+
+    parse_es('1.000') devuelve 1 porque sin coma trata el punto como decimal
+    — correcto para fuentes con decimales anglosajones (TR exporta
+    shares='35.1700660000') pero erróneo en texto es-ES: cambios de mercado
+    de ≥1000 títulos perdían 3 órdenes de magnitud → G/P fantasma.
+
+    NO usar sobre columnas numéricas de TR/IBKR (punto decimal anglosajón).
+    """
+    if not s:
+        return Decimal('0')
+    t = s.strip().strip('"').replace('\xa0', '').replace(' ', '')
+    if _RE_MILES_ES.match(t):
+        try:
+            return Decimal(t.lstrip('+').replace('.', ''))
+        except Exception:
+            return Decimal('0')
+    return parse_es(s)
 
 def fmt_es(val):
     """Decimal → string con coma decimal (formato AEAT). Ej: 2584.76 → '2584,76'
@@ -438,8 +517,11 @@ def parse_date_dt(s):
 
 def _venc_to_ddmmyyyy(v):
     """Convierte vencimiento de opción '16MAY25' → '16/05/2025' (formato op['fecha'])."""
+    # 'OCT' es la abreviatura inglesa que usan los vencimientos IBKR; sin
+    # ella las opciones de octubre devolvían None en silencio (auditoría
+    # 2026-06-11, CL8). Se conserva 'OKT' (variante alemana ya soportada).
     _M = {'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,
-          'JUL':7,'AUG':8,'SEP':9,'OKT':10,'NOV':11,'DEC':12}
+          'JUL':7,'AUG':8,'SEP':9,'OCT':10,'OKT':10,'NOV':11,'DEC':12}
     if not v or len(v) < 7:
         return None
     try:
@@ -1107,8 +1189,10 @@ def _build_degiro_cambios_producto(filepath: str) -> dict:
             continue
         tipo_op = m.group(1).lower()
         try:
-            qty = parse_es(m.group(2))
-            precio = parse_es(m.group(3))
+            # parse_es_texto: la descripción es texto es-ES — '1.000' títulos
+            # son MIL, no uno (parse_es trataría el punto como decimal).
+            qty = parse_es_texto(m.group(2))
+            precio = parse_es_texto(m.group(3))
         except Exception:
             continue
         if qty <= 0:
@@ -1199,8 +1283,9 @@ def _build_degiro_cambios_isin(filepath: str) -> dict:
             continue
         tipo_op = m.group(1).lower()
         try:
-            qty = parse_es(m.group(2))
-            precio = parse_es(m.group(3))
+            # parse_es_texto: ver _build_degiro_cambios_producto — texto es-ES.
+            qty = parse_es_texto(m.group(2))
+            precio = parse_es_texto(m.group(3))
         except Exception:
             continue
         eventos_raw[fecha_norm].append({
@@ -1250,8 +1335,15 @@ def _build_degiro_bond_data(filepath: str) -> dict:
             'cupones_corridos_por_orden':  # match cupón corrido ↔ trade
                 {order_id: Decimal}        # importe cupón corrido (firmado)
             'cupones_cobrados_por_isin':   # cupón anual durante tenencia
-                {isin: [{fecha, importe_eur, retencion}, ...]}
+                {isin: [{fecha, fecha_valor, nombre, importe_local,
+                         divisa, descripcion}, ...]}
         }
+
+    Los cupones cobrados se guardan en divisa LOCAL (campo `divisa`); la
+    conversión a EUR se hace en main() al inyectarlos en la lista de
+    intereses RCM, vía get_eur_per_unit (jerarquía BCE) — F8 auditoría
+    2026-06-11: antes el importe se guardaba sin divisa (un cupón USD se
+    habría tratado como EUR) y además nunca se declaraba.
     """
     bond_data = {
         'isins': set(),
@@ -1271,10 +1363,9 @@ def _build_degiro_bond_data(filepath: str) -> dict:
             descripcion = (row[5] or '').strip()
             desc_up = descripcion.upper()
             order_id = (row[11] or '').strip() if len(row) > 11 else ''
-            try:
-                importe = Decimal((row[8] or '0').replace(',', '.').replace(' ', ''))
-            except Exception:
-                importe = Decimal('0')
+            # parse_es: el CSV es es-ES; el replace(',', '.') anterior
+            # rompía con separador de miles ('1.234,56' → Exception → 0).
+            importe = parse_es((row[8] or '0').strip())
 
             if not isin or len(isin) != 12:
                 continue
@@ -1295,12 +1386,61 @@ def _build_degiro_bond_data(filepath: str) -> dict:
             ):
                 bond_data['isins'].add(isin)
                 bond_data['cupones_cobrados_por_isin'][isin].append({
-                    'fecha':       row[0],
-                    'importe_eur': importe,
-                    'descripcion': descripcion,
+                    'fecha':         row[0],
+                    'fecha_valor':   (row[2] or '').strip(),  # fecha económica (conversión FX)
+                    'nombre':        (row[3] or '').strip()[:50],
+                    'importe_local': importe,
+                    'divisa':        (row[7] or '').strip() or 'EUR',
+                    'descripcion':   descripcion,
                 })
 
     return bond_data
+
+
+def cupones_bonos_a_intereses(bond_data: dict, ejercicio: str) -> tuple[list, list]:
+    """Convierte los cupones periódicos de `bond_data` (DeGiro) en entradas
+    de la lista global de intereses RCM (mismo shape que parse_ibkr_interest
+    / inyección TR), convirtiendo divisa local → EUR con la jerarquía BCE de
+    la fecha valor.
+
+    F8 auditoría 2026-06-11: estos cupones se recolectaban pero nunca se
+    declaraban (RCM 0027 omitido en informe/XLSX/PDF/sidecar) y el importe
+    se guardaba sin divisa.
+
+    Devuelve (entradas, avisos): `avisos` lista los cupones NO convertibles
+    (sin tipo de cambio) para que el caller los comunique al usuario.
+    """
+    entradas: list = []
+    avisos: list = []
+    cupones_por_isin = (bond_data or {}).get('cupones_cobrados_por_isin') or {}
+    for isin_b in sorted(cupones_por_isin):
+        for cup in cupones_por_isin[isin_b]:
+            fv = cup.get('fecha_valor') or cup.get('fecha') or ''
+            if fv[-4:] != str(ejercicio):
+                continue  # cupón de otro ejercicio en el mismo extracto
+            imp_local = cup.get('importe_local', Decimal('0'))
+            if imp_local == 0:
+                continue
+            cur = cup.get('divisa') or 'EUR'
+            rate = get_eur_per_unit(fv, cur, {})
+            if rate is None:
+                avisos.append(f"Cupón bono {isin_b} ({fv}): sin tipo de cambio "
+                              f"{cur} — NO inyectado, declarar manualmente")
+                continue
+            imp_eur = (imp_local * rate).quantize(Decimal('0.01'), ROUND_HALF_UP)
+            nombre_b = cup.get('nombre') or isin_b
+            entradas.append({
+                'fecha':         parse_date(fv) or fv,
+                'divisa':        cur,
+                'importe_local': imp_local,
+                'importe_eur':   imp_eur,
+                'descripcion':   f"Cupón bono {nombre_b} ({isin_b})",
+                'tipo':          'bond_interest',
+                'casilla':       '0027',
+                'broker':        'DeGiro',
+                'retencion_es_eur': Decimal('0'),
+            })
+    return entradas, avisos
 
 
 def _build_ibkr_bond_data(filepath: str) -> dict:
@@ -1828,9 +1968,22 @@ def _detect_shorts_degiro_por_inventario(operaciones):
         n_ventas = sum(1 for _, o in lst if o['tipo'] == 'T')
         if n_compras == 0 or n_ventas == 0:
             continue
-        # Orden cronológico estable: por fecha y, dentro de la misma fecha,
-        # compras antes que ventas (consistente con calcular_fifo_from_ops).
-        lst.sort(key=lambda x: (x[1]['fecha'], 0 if x[1]['tipo'] == 'A' else 1))
+        # Orden cronológico estable: por fecha REAL y, dentro de la misma
+        # fecha, compras antes que ventas (consistente con
+        # calcular_fifo_from_ops). `fecha` puede venir como string
+        # 'DD/MM/YYYY' (parsers) o como date/datetime (motor): ordenar el
+        # string daría orden lexicográfico (02/03/2025 < 05/01/2025) y el
+        # tracker de inventario marcaría aperturas/coberturas fantasma.
+        def _fecha_dt_corto(f):
+            if isinstance(f, datetime):
+                return f
+            if isinstance(f, date):
+                return datetime(f.year, f.month, f.day)
+            if isinstance(f, str):
+                return parse_date_dt(f) or datetime.min
+            return datetime.min
+        lst.sort(key=lambda x: (_fecha_dt_corto(x[1]['fecha']),
+                                0 if x[1]['tipo'] == 'A' else 1))
 
         inventario = Decimal('0')
         shorts_pendientes = Decimal('0')
@@ -1975,7 +2128,15 @@ def parse_degiro(filepath, external_fees_by_order=None, bond_data=None,
         else:
             importe_eur = sum(valores_eur)
 
-        gastos_autofx   = max(abs(parse_es(row[13])) for row in rows)
+        # AutoFX (col 13): DeGiro lo carga POR FILL, proporcional al importe
+        # de cada ejecución parcial. En una orden multi-fill hay que SUMARLOS
+        # (antes se tomaba max() → se perdía gasto deducible, Art. 35.1.b).
+        # Si las filas son duplicados del mismo centro (mismo valor y total),
+        # el AutoFX se repite → tomamos uno, igual que con `importe_eur`.
+        if es_duplicado_centro:
+            gastos_autofx = abs(parse_es(rows[0][13]))
+        else:
+            gastos_autofx = sum(abs(parse_es(row[13])) for row in rows)
         gastos_transacc = sum(abs(parse_es(row[14])) for row in rows
                               if parse_es(row[14]) != 0)
         # Tasas externas (ITF Espana, UK/HK Stamp Duty, French FTT...) del
@@ -3092,6 +3253,14 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                 h = trades_header
                 def col_t(name):
                     return row[h.index(name)] if name in h else ''
+                # IBKR añade filas ClosedLot/SubTotal/Total a la sección Trades
+                # cuando el usuario exporta con "lot detail". Solo las filas
+                # 'Order' son operaciones reales; las ClosedLot duplicarían los
+                # lotes de apertura como compras fantasma a coste 0 → plusvalías
+                # ficticias del 100%. Aceptamos únicamente DataDiscriminator='Order'.
+                _disc = col_t('DataDiscriminator')
+                if _disc and _disc != 'Order':
+                    continue
                 try:
                     asset_cat = col_t('Asset Category')
                     # 'Option' (incluido 'Equity and Index Options' y 'Futures
@@ -3746,7 +3915,21 @@ def parse_tr_dividendos(filepath):
                 elif asset_class_div == 'FUND':
                     source_ret = Decimal('0')
                     es_ret     = tax_total
+                elif pais in TR_SOURCE_WHT_RATE:
+                    # Descomponer por la tasa de origen REAL (no por el tope
+                    # CDI). origen = bruto × tasa_real; ES = resto. El downstream
+                    # (calcular_resumen_dividendos) topa el crédito 0588 al CDI
+                    # y marca el exceso como no recuperable, así que aquí se
+                    # emite el origen completo (aunque supere el tope, p. ej. DE).
+                    source_rate = TR_SOURCE_WHT_RATE[pais]
+                    source_ret = (amount * source_rate).quantize(Decimal('0.01'),
+                                                                 ROUND_HALF_UP)
+                    # Salvaguarda: el origen no puede exceder la retención total
+                    # (cubre tasas de tabla ligeramente altas vs lo aplicado).
+                    source_ret = min(source_ret, tax_total)
+                    es_ret     = tax_total - source_ret
                 else:
+                    # País sin tasa real conocida → método antiguo (techo CDI).
                     cdi_rate = DTA_SOURCE_MAX.get(pais, Decimal('0'))
                     source_max = (amount * cdi_rate).quantize(Decimal('0.01'),
                                                               ROUND_HALF_UP)
@@ -3864,6 +4047,51 @@ def parse_tr_intereses(filepath):
     return resultados
 
 
+def staking_a_lotes(staking_entries):
+    """Convierte staking rewards en operaciones de ADQUISICIÓN ('A') para el
+    FIFO, con coste = valor EUR por el que tributaron como RCM en especie al
+    recibirse (DGT V1766-22 + Art. 43.1 LIRPF).
+
+    CL7 auditoría 2026-06-11: sin este lote, la venta posterior del cripto
+    recibido por staking salía como venta huérfana (coste 0) → el valor de
+    recepción tributaba DOS veces (como RCM al recibir y como ganancia
+    íntegra al vender). Con el lote, la G/P de la venta es
+    precio_venta − valor_recepción, que es lo correcto.
+
+    Devuelve (ops, avisos): los rewards sin ISIN identificable no generan
+    lote (el FIFO está indexado por ISIN) y se reportan en `avisos` para
+    revisión manual — su ingreso RCM se declara igualmente por la vía
+    parse_tr_staking.
+    """
+    ops: list = []
+    avisos: list = []
+    for s in staking_entries or []:
+        if s.get('tipo') != 'STAKING_REWARD':
+            continue
+        if not s.get('isin'):
+            avisos.append(
+                f"Staking {s.get('asset', '?')} {s.get('fecha', '?')}: sin ISIN "
+                f"identificable — lote de adquisición NO creado (coste "
+                f"{fmt_es(s.get('importe_eur', Decimal('0')))} EUR a registrar "
+                f"manualmente al vender)")
+            continue
+        ops.append({
+            'tipo':         'A',
+            'isin':         s['isin'],
+            'nombre':       (s.get('asset') or s['isin'])[:50],
+            'fecha':        s['fecha'],
+            'cantidad':     s['cantidad'],
+            'importe_eur':  s['importe_eur'],   # valor RCM de recepción
+            'gastos_eur':   Decimal('0'),
+            'broker':       s.get('broker', 'TR'),
+            'instrument_type':        'CRYPTO',
+            'instrument_type_reason': 'staking reward (lote V1766-22)',
+            'instrument_type_unknown': False,
+            '_es_staking_reward': True,
+        })
+    return ops, avisos
+
+
 def parse_tr_staking(filepath):
     """
     Parsea recepciones gratuitas de cripto (staking rewards) de Trade Republic
@@ -3888,6 +4116,27 @@ def parse_tr_staking(filepath):
     """
     if not os.path.exists(filepath):
         return []
+
+    # Pre-pasada: mapa símbolo → ISIN cripto. Las filas FREE_RECEIPT de TR
+    # NO llevan el ISIN en la descripción ("FREE_RECEIPT SOL"), pero los
+    # trades BUY/SELL del mismo activo sí ("Buy trade XF000SOL0012 …").
+    # Sin este backfill, los rewards quedaban sin ISIN y staking_a_lotes
+    # no podía crear el lote de adquisición (CL7) — caso real detectado en
+    # la verificación e2e con datos de Angel (6 rewards de SOL).
+    isin_por_symbol: dict = {}
+    f0, reader0 = _tr_open_reader(filepath)
+    try:
+        for row in reader0:
+            if (row.get('asset_class') or '').strip().upper() != 'CRYPTO':
+                continue
+            sym = (row.get('symbol') or '').strip()
+            if not sym or sym in isin_por_symbol:
+                continue
+            m0 = _RE_TR_ISIN_CRYPTO.search((row.get('description') or ''))
+            if m0:
+                isin_por_symbol[sym] = m0.group(1)
+    finally:
+        f0.close()
 
     resultados = []
     f, reader = _tr_open_reader(filepath)
@@ -3922,6 +4171,10 @@ def parse_tr_staking(filepath):
             m = _RE_TR_ISIN_CRYPTO.search(description)
             if m:
                 isin = m.group(1)
+            elif symbol in isin_por_symbol:
+                # Backfill desde los trades BUY/SELL del mismo activo (las
+                # filas FREE_RECEIPT no llevan ISIN en la descripción).
+                isin = isin_por_symbol[symbol]
 
             resultados.append({
                 'fecha': fecha,
@@ -3967,6 +4220,196 @@ def _tr_emisor_prefix(name):
         return ''
     m = _RE_TR_EMISOR_PREFIX.match(name.strip())
     return m.group(1).upper() if m else ''
+
+
+_SPINOFFS_CONOCIDOS_PATH = os.path.join(BASE_DIR, 'spinoffs_conocidos.json')
+
+
+def _cargar_spinoffs_conocidos():
+    """Devuelve {isin_escindida: dict_entrada} con las entradas activas del
+    catalogo. Una entrada esta activa si:
+        - `_activo` no es False
+        - `ratio_coste_escindida` y `ratio_coste_matriz_residual` son numericos validos
+        - su suma esta dentro de tolerancia (±0.0001) de 1.0
+
+    Si el fichero falta, no parsea o esta vacio → dict vacio. El motor cae al
+    flujo manual (coste 0 + comentario amarillo), mismo comportamiento de hoy.
+    """
+    if not os.path.exists(_SPINOFFS_CONOCIDOS_PATH):
+        return {}
+    try:
+        with open(_SPINOFFS_CONOCIDOS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    out = {}
+    for entry in data.get('spinoffs', []):
+        if entry.get('_activo') is False:
+            continue
+        isin_e = (entry.get('isin_escindida') or '').strip().upper()
+        isin_m = (entry.get('isin_matriz') or '').strip().upper()
+        if not re.match(r'^[A-Z]{2}[A-Z0-9]{10}$', isin_e):
+            continue
+        if not re.match(r'^[A-Z]{2}[A-Z0-9]{10}$', isin_m):
+            continue
+        try:
+            r_e = Decimal(str(entry['ratio_coste_escindida']))
+            r_m = Decimal(str(entry['ratio_coste_matriz_residual']))
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            continue
+        # Invariante critico: r_e + r_m debe ser ~1.0 (sin esto el coste se
+        # duplica o se evapora al sumar matriz_post + escindida).
+        if abs((r_e + r_m) - Decimal('1')) > Decimal('0.0001'):
+            continue
+        if r_e <= 0 or r_e >= 1 or r_m <= 0 or r_m >= 1:
+            continue
+        fecha_str = entry.get('fecha_efectiva', '')
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', fecha_str):
+            continue
+        try:
+            fecha_eff = date(int(fecha_str[0:4]), int(fecha_str[5:7]), int(fecha_str[8:10]))
+        except ValueError:
+            continue
+        out[isin_e] = {
+            'isin_matriz':                 isin_m,
+            'ticker_matriz':               entry.get('ticker_matriz', ''),
+            'nombre_matriz':               entry.get('nombre_matriz', ''),
+            'isin_escindida':              isin_e,
+            'ticker_escindida':            entry.get('ticker_escindida', ''),
+            'nombre_escindida':            entry.get('nombre_escindida', ''),
+            'fecha_efectiva':              fecha_eff,
+            'ratio_coste_escindida':       r_e,
+            'ratio_coste_matriz_residual': r_m,
+            'fuente':                      entry.get('fuente', ''),
+            'ratio_canje':                 entry.get('ratio_canje', ''),
+        }
+    return out
+
+
+def _coste_matriz_a_fecha(todas_ops, isin_matriz, fecha_efectiva):
+    """Suma del coste FIFO restante del ISIN matriz a fecha_efectiva.
+
+    Algoritmo: simula el inventario FIFO de la matriz consumido por sus ventas
+    hasta el dia ANTERIOR a fecha_efectiva (las ops del mismo dia tambien
+    cuentan como previas — el spin-off se aplica al cierre de la jornada).
+    Devuelve Decimal('0') si no hay posicion viva.
+
+    No modifica todas_ops; solo recorre y agrega. Asume que el coste de cada
+    lote esta en `importe_eur` y la cantidad en `cantidad`. Splits previos NO
+    se aplican aqui porque el motor multi-anyo los aplica via filas SP cuando
+    se ejecuta calcular_fifo — pero `todas_ops` se le pasa a este helper
+    ANTES del motor, asi que la matriz vive con sus cantidades originales.
+    Para spin-offs en US (donde no hay splits anidados en el mismo evento)
+    es suficiente.
+    """
+    if not isin_matriz or fecha_efectiva is None:
+        return Decimal('0')
+
+    from collections import deque
+    eventos = []
+    for op in todas_ops:
+        if op.get('isin') != isin_matriz:
+            continue
+        tipo = op.get('tipo', '')
+        if tipo not in ('A', 'AD', 'AL', 'T', 'TR', 'VD'):
+            continue
+        f = op.get('fecha')
+        if f is None:
+            continue
+        # Normalizar a date — algunas ops llegan como datetime.
+        if isinstance(f, str):
+            try:
+                d, mo, y = f.split('/')
+                f = date(int(y), int(mo), int(d))
+            except (ValueError, AttributeError):
+                continue
+        elif hasattr(f, 'date') and not isinstance(f, date):
+            f = f.date()
+        # Solo eventos estrictamente antes de fecha_efectiva. Si la matriz
+        # tiene una compra el MISMO dia que el spin-off, se considera previa
+        # (el ex-date del spin-off es el corte natural — los lotes adquiridos
+        # ese mismo dia ya estan en cartera al cierre).
+        if f > fecha_efectiva:
+            continue
+        eventos.append((f, op))
+
+    # Orden cronologico, compras antes que ventas el mismo dia (para FIFO).
+    eventos.sort(key=lambda t: (t[0], 0 if t[1]['tipo'] in ('A', 'AD', 'AL') else 1))
+
+    lotes = deque()  # cada lote: {'cant': Decimal, 'coste_unit': Decimal}
+    for _, op in eventos:
+        tipo = op['tipo']
+        try:
+            cant = Decimal(str(op.get('cantidad', 0)))
+            imp  = Decimal(str(op.get('importe_eur', 0)))
+        except (InvalidOperation, ValueError):
+            continue
+        if cant <= 0:
+            continue
+        if tipo in ('A', 'AD', 'AL'):
+            coste_unit = imp / cant if cant > 0 else Decimal('0')
+            lotes.append({'cant': cant, 'coste_unit': coste_unit})
+        else:  # T, TR, VD — venta consume FIFO
+            restante = cant
+            while restante > 0 and lotes:
+                lote = lotes[0]
+                consumir = min(restante, lote['cant'])
+                lote['cant'] -= consumir
+                restante -= consumir
+                if lote['cant'] <= 0:
+                    lotes.popleft()
+            # Venta huerfana: no podemos restar mas — se ignora.
+
+    coste_vivo = sum((l['cant'] * l['coste_unit'] for l in lotes), Decimal('0'))
+    return coste_vivo.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def _reducir_lotes_matriz_proporcional(todas_ops, isin_matriz, fecha_efectiva,
+                                       ratio_residual):
+    """Multiplica el `importe_eur` de cada operacion AD/A/AL del ISIN matriz
+    con fecha <= fecha_efectiva por ratio_residual. NO modifica la cantidad.
+
+    Preserva la dispersion de costes entre lotes (lotes caros siguen siendo
+    proporcionalmente caros), exigido por Art. 37.1.a §4 LIRPF. Si se restara
+    un importe fijo por accion (reparto lineal), el lote mas barato absorberia
+    un peso desproporcionado y la dispersion historica se distorsionaria.
+
+    Modifica `todas_ops` in-place. Anota `_matriz_ajustada_por_spinoff=True`
+    en cada op tocada para que el comentario del XLSX lo refleje.
+    """
+    if not isin_matriz or fecha_efectiva is None:
+        return
+    ratio_residual = Decimal(str(ratio_residual))
+    for op in todas_ops:
+        if op.get('isin') != isin_matriz:
+            continue
+        if op.get('tipo') not in ('A', 'AD', 'AL'):
+            continue
+        f = op.get('fecha')
+        if f is None:
+            continue
+        # Normalizar a `date`. Las ops de los parsers vienen con fecha
+        # como str 'DD/MM/YYYY' (formato ES); otras pueden venir como
+        # datetime o date. Si no parsea, saltamos la op para no romper.
+        if isinstance(f, str):
+            try:
+                d, mo, y = f.split('/')
+                f = date(int(y), int(mo), int(d))
+            except (ValueError, AttributeError):
+                continue
+        elif hasattr(f, 'date') and not isinstance(f, date):
+            f = f.date()
+        if f > fecha_efectiva:
+            continue
+        try:
+            importe_pre = Decimal(str(op.get('importe_eur', 0)))
+        except (InvalidOperation, ValueError):
+            continue
+        op['importe_eur'] = (importe_pre * ratio_residual).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP,
+        )
+        op['_matriz_ajustada_por_spinoff'] = True
 
 
 _SPLITS_CONOCIDOS_PATH = os.path.join(BASE_DIR, 'splits_conocidos.json')
@@ -4066,6 +4509,14 @@ def parse_tr_splits(filepath):
     con factor coincidente y fecha entre las operaciones del CSV, se usa
     la fecha exacta del catalogo en lugar del dia posterior a la ultima BUY.
 
+    CONTRASPLITS (reverse splits): la heuristica de exhaustion no puede
+    detectarlos (tras un 10:1 inverso, "compre 100 / vendi 10" es identico
+    a "conservo 90 titulos"). Solo se emiten cuando `splits_conocidos.json`
+    documenta un contrasplit (titulos_nuevos < titulos_antiguos) para un
+    ISIN con alguna BUY anterior a la fecha ex-split. Un contrasplit no
+    catalogado sigue siendo indetectable — anadir la entrada al catalogo
+    es la unica via.
+
     Devuelve: list[dict] con filas SP listas para extend a `todas_sp`.
     """
     if not os.path.exists(filepath):
@@ -4080,6 +4531,7 @@ def parse_tr_splits(filepath):
         'buy': Decimal('0'), 'sell': Decimal('0'),
         'nombre': '',
         'max_buy_iso': '', 'first_sell_iso': '', 'first_any_iso': '',
+        'first_buy_iso': '',
     })
 
     f, reader = _tr_open_reader(filepath)
@@ -4112,6 +4564,8 @@ def parse_tr_splits(filepath):
                 bucket['buy'] += qty
                 if fecha_iso > bucket['max_buy_iso']:
                     bucket['max_buy_iso'] = fecha_iso
+                if not bucket['first_buy_iso'] or fecha_iso < bucket['first_buy_iso']:
+                    bucket['first_buy_iso'] = fecha_iso
             else:  # SELL
                 bucket['sell'] += qty
                 if not bucket['first_sell_iso'] or fecha_iso < bucket['first_sell_iso']:
@@ -4174,7 +4628,7 @@ def parse_tr_splits(filepath):
         if fuente_catalogo:
             descripcion += f" [catalogo: {fuente_catalogo}]"
         evento = {
-            'tipo_ca':     'SPLIT',  # contrasplits requeririan factor < 1, no en este set
+            'tipo_ca':     'SPLIT',
             'fecha':       fecha_es,
             'nombre':      d['nombre'][:50],
             'isin_old':    isin,
@@ -4187,6 +4641,45 @@ def parse_tr_splits(filepath):
         row_sp['broker'] = 'TR'
         row_sp['_heuristica_tr'] = True
         sp_ops.append(row_sp)
+
+    # ── Contrasplits (reverse splits) — SOLO via catalogo ────────────────
+    # La heuristica de exhaustion NO puede detectar un contrasplit: tras un
+    # 10:1 inverso, "compre 100 / vendi 10" es indistinguible de "conservo
+    # 90 titulos" mirando solo el CSV. Sin ajuste, el FIFO casaria los 10
+    # titulos vendidos contra las primeras compras a 1/10 del coste real —
+    # cifra erronea sin warning (auditoria 2026-06-11, CL6). Por eso el
+    # contrasplit solo se emite cuando el catalogo verificado lo documenta
+    # y el CSV muestra al menos una BUY anterior a la fecha ex-split (la
+    # posicion pudo existir al aplicarse). Si en esa fecha no quedaban
+    # lotes vivos, _apply_split del motor es un no-op — sin riesgo de
+    # ajuste fantasma.
+    for isin, d in info.items():
+        if d['buy'] <= 0:
+            continue
+        for entry in catalogo_by_isin.get(isin, []):
+            if entry['qty_new'] >= entry['qty_old']:
+                continue  # forward split → lo cubre la heuristica de arriba
+            if not d['first_buy_iso'] or d['first_buy_iso'] >= entry['fecha']:
+                continue  # toda la posicion es post-contrasplit: nada que ajustar
+            nombre = d['nombre'] or entry['nombre']
+            descripcion = (
+                f"{nombre} contrasplit {entry['qty_old']:g}:{entry['qty_new']:g} "
+                f"de catalogo (TR no emite linea) [{entry['fuente'][:60]}]"
+            )
+            evento = {
+                'tipo_ca':     'SPLIT',
+                'fecha':       parse_date(entry['fecha']),
+                'nombre':      nombre[:50],
+                'isin_old':    isin,
+                'isin_new':    isin,
+                'qty_old':     entry['qty_old'],
+                'qty_new':     entry['qty_new'],
+                'descripcion': descripcion[:150],
+            }
+            row_sp = build_sp_row(evento)
+            row_sp['broker'] = 'TR'
+            row_sp['_heuristica_tr'] = True
+            sp_ops.append(row_sp)
 
     return sp_ops
 
@@ -5048,6 +5541,16 @@ def write_informe_corporativas(todos_eventos, filepath,
         cantidad      = ev.get('cantidad', 0)
         fecha_eff     = ev.get('fecha_efectiva', ev.get('fecha', ''))
         fecha_set     = ev.get('fecha', '')
+        # Flag de resolucion automatica via catalogo spinoffs_conocidos.json.
+        # Si no existe, valor neutro 'no' — el bloque sigue ofreciendo la
+        # formula manual para que el usuario edite la celda amarilla.
+        auto = 'si' if ev.get('_spinoff_resuelto_auto') else 'no'
+        fuente_auto = ev.get('_spinoff_fuente', '—') if ev.get('_spinoff_resuelto_auto') else '—'
+        coste_aplicado = ev.get('_spinoff_coste_aplicado', '')
+        coste_aplicado_str = (
+            f"{coste_aplicado:.2f} EUR" if isinstance(coste_aplicado, Decimal)
+            and coste_aplicado > 0 else '—'
+        )
         return (
             f"\n  [SPIN_OFF] {nombre_matriz} → {nombre}\n"
             f"  Fecha efectiva    : {fecha_eff}\n"
@@ -5056,6 +5559,9 @@ def write_informe_corporativas(todos_eventos, filepath,
             f"  Empresa escindida : {nombre}  (ISIN {isin_nueva})\n"
             f"  Acciones recibidas: {cantidad:.0f}\n"
             f"  Descripción       : {ev.get('descripcion','')}\n"
+            f"  Resuelto auto     : {auto}\n"
+            f"  Coste aplicado    : {coste_aplicado_str}\n"
+            f"  Fuente            : {fuente_auto}\n"
             f"\n"
             f"  TRATAMIENTO FISCAL (Art. 37.1.a LIRPF + DGT V1766-12, V0419-13):\n"
             f"    El coste de adquisición de las acciones de {nombre_matriz} se REDISTRIBUYE\n"
@@ -5548,11 +6054,12 @@ def parse_degiro_cuenta(filepath):
     La conversión a EUR se deduce de las filas "Retirada Cambio de Divisa"
     adyacentes, que contienen el tipo de cambio exacto utilizado por DeGiro.
 
-    Retorna lista de dicts:
-      fecha, isin, nombre, tipo ('DIV'|'RET'), importe_eur, divisa, pais
+    Retorna tupla (resultados, ejercidas_isin, gastos_plataforma) — los
+    early-returns deben mantener la MISMA aridad (auditoría 2026-06-11
+    [BAJO]: devolvían [] o [], set() y rompían el unpacking del caller).
     """
     if not os.path.exists(filepath):
-        return []
+        return [], set(), []
 
     # Auto-cargar el caché BCE de disco. Si el caller no llamó a
     # fetch_ecb_rates() antes, los días que caen en festivo BCE
@@ -5570,7 +6077,7 @@ def parse_degiro_cuenta(filepath):
             all_rows.append(row)
 
     if not header:
-        return [], set()
+        return [], set(), []
 
     # Columnas fijas del formato DeGiro cuenta 2025:
     # 0:Fecha  1:Hora  2:Fecha valor  3:Producto  4:ISIN  5:Descripción
@@ -5813,13 +6320,19 @@ def parse_ibkr_dividendos(filepath):
                 if not amount or amount in ('Amount', 'Total'):
                     continue
                 val_local = parse_es(amount.replace(',', ''))
-                if val_local <= 0:
+                if val_local == 0:
                     continue
+                # Conservar el signo: IBKR emite un Amount NEGATIVO cuando es
+                # una reversa/corrección de un dividendo anterior. Descartar
+                # los negativos (abs/<=0 continue) inflaba el bruto al contar
+                # la emisión y no la reversa. Igual que el parser DeGiro/TR.
                 date_iso = (date_s or '').strip()
-                val = _to_eur(val_local, currency, date_iso)
+                val = _to_eur(abs(val_local), currency, date_iso)
                 if val is None:
                     print(f"  [AVISO IBKR Div] {currency} {date_iso} sin BCE — fila omitida")
                     continue
+                if val_local < 0:
+                    val = -val
                 m_isin = re_isin.search(desc)
                 m_name = re_name.match(desc)
                 isin   = m_isin.group(1) if m_isin else ''
@@ -5852,14 +6365,23 @@ def parse_ibkr_dividendos(filepath):
                 amount = col_w('Amount')
                 if not amount or amount in ('Amount', 'Total'):
                     continue
-                val_local = abs(parse_es(amount.replace(',', '')))
-                if val_local <= 0:
+                val_signed = parse_es(amount.replace(',', ''))
+                if val_signed == 0:
                     continue
+                # IBKR registra la retención como Amount NEGATIVO; una
+                # DEVOLUCIÓN de retención llega como Amount POSITIVO. Antes
+                # `abs()` convertía la devolución en retención adicional
+                # (inflaba 0588/0591). Convención de salida (como DeGiro):
+                # importe RET positivo = retenido; negativo = devuelto.
                 date_iso = (date_s or '').strip()
-                val = _to_eur(val_local, currency, date_iso)
+                val = _to_eur(abs(val_signed), currency, date_iso)
                 if val is None:
                     print(f"  [AVISO IBKR Ret] {currency} {date_iso} sin BCE — fila omitida")
                     continue
+                # Amount negativo (retención) → val positivo; positivo
+                # (devolución) → val negativo.
+                if val_signed > 0:
+                    val = -val
                 m_isin = re_isin.search(desc)
                 m_name = re_name.match(desc)
                 isin   = m_isin.group(1) if m_isin else ''
@@ -5952,20 +6474,20 @@ def parse_ibkr_interest(filepath):
     Tipos detectados:
       - **Credit Interest** (positivo): interes cobrado por el broker al
         cliente (cash sweep, USD credit balance, etc.). Es **RCM** — casilla
-        0023 (intereses de cuentas en entidades financieras).
+        0027 (intereses de cuentas, depósitos y activos financieros en general).
       - **Debit Interest** (negativo): interes pagado por el cliente al
         broker (margen, saldo deudor). **NO es deducible automaticamente**
         para particulares — solo seria gasto deducible si esta vinculado a
         la obtencion de RCM (Art. 26.1.b LIRPF), interpretacion conservadora
         de la AEAT. Se reporta como informativo.
       - **Bond Interest**: cupones de bonos (categorizado como tal en CSV
-        IBKR). Es **RCM** — casilla 0023 (intereses obligaciones / deuda).
+        IBKR). Es **RCM** — casilla 0027 (intereses obligaciones / deuda).
 
     Estructura de fila CSV: `Interest,Data,<Currency>,<Date>,<Description>,<Amount>`
 
     Devuelve: lista de dicts con `fecha`, `divisa`, `importe_local`,
     `importe_eur`, `descripcion`, `tipo` ('credit' / 'debit' / 'bond_interest'),
-    `casilla` (0023 / None).
+    `casilla` (0027 / None).
 
     Conversion EUR via BCE del dia (mismo mecanismo que `_ibkr_eur_per_unit`).
     """
@@ -5999,13 +6521,13 @@ def parse_ibkr_interest(filepath):
             desc_up = description.upper()
             if 'BOND INTEREST' in desc_up or 'COUPON' in desc_up:
                 tipo = 'bond_interest'
-                casilla = '0023'
+                casilla = '0027'
             elif importe_local < 0 or 'DEBIT INTEREST' in desc_up:
                 tipo = 'debit'
                 casilla = None  # No deducible automaticamente para particulares
             else:
                 tipo = 'credit'
-                casilla = '0023'
+                casilla = '0027'
 
             # Conversion a EUR. Si la divisa ya es EUR, sin conversion.
             if currency == 'EUR':
@@ -6258,7 +6780,7 @@ def compute_external_fees_summary(todas_ops):
     }
 
 
-def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=None, gastos_plataforma=None, tbills=None, ibkr_interest=None):
+def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=None, gastos_plataforma=None, tbills=None, ibkr_interest=None, staking=None):
     """Escribe informe_dividendos_YYYY.txt."""
     lines = []
     SEP = '─' * 65
@@ -6288,7 +6810,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         "  · Trade Republic cuenta remunerada (IBAN ES / depósito bancario):",
         "    - Los intereses SON intereses bancarios, NO dividendos.",
         "    - TR actúa como banco español → retiene 19% en origen.",
-        "    - Declarar en casilla 0023 (intereses), con retención en casilla 0591.",
+        "    - Declarar en casilla 0027 (intereses), con retención en casilla 0591.",
         "    - No aparecen en este informe (requieren exportación separada de TR).",
         "",
     ]
@@ -6465,7 +6987,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         tbills_lines = [
             "",
             "=" * 65,
-            "  INTERESES — Treasury Bills IBKR (RCM, casilla 0023)",
+            "  INTERESES — Treasury Bills IBKR (RCM, casilla 0030)",
             "=" * 65,
             "  Detectados desde la sección 'Realized & Unrealized Performance",
             "  Summary' del Activity Statement IBKR. Tributan como rendimientos",
@@ -6478,7 +7000,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         tbills_lines += [
             "",
             f"  TOTAL intereses T-Bills: {fmt_es(total_tbills)} EUR",
-            f"  → Declarar en casilla 0023 (intereses cuentas/depósitos).",
+            f"  → Declarar en casilla 0030 (transmisión/amortización de Letras del Tesoro).",
             "  → Verificar Withholding Tax IBKR para retenciones aplicables → 0588.",
             "  → Detalle ampliado en informe_fx_YYYY.txt.",
         ]
@@ -6503,7 +7025,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
             "=" * 65,
             "  INTERESES IBKR — sección 'Interest' del Activity Statement",
             "=" * 65,
-            "  Credit / Bond Interest → RCM, casilla 0023 (intereses cuentas /",
+            "  Credit / Bond Interest → RCM, casilla 0027 (intereses cuentas /",
             "  obligaciones).",
             "  Debit Interest (margen, saldo deudor) → INFORMATIVO. Solo es",
             "  deducible si se vincula a obtención de RCM concretos (Art. 26.1.b",
@@ -6522,7 +7044,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
             )
         interest_lines += [
             "",
-            f"  TOTAL Credit + Bond (declarable casilla 0023): {fmt_es(credit_total)} EUR",
+            f"  TOTAL Credit + Bond (declarable casilla 0027): {fmt_es(credit_total)} EUR",
         ]
         if ret_es_int > 0:
             interest_lines.append(
@@ -6532,6 +7054,36 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         interest_lines.append(
             f"  TOTAL Debit (informativo, NO deducible automático): {fmt_es(debit_total)} EUR"
         )
+
+    staking_lines = []
+    if staking:
+        total_stk = sum((s['importe_eur'] for s in staking),
+                        Decimal('0')).quantize(Decimal('0.01'), ROUND_HALF_UP)
+        activos_stk = sorted({s.get('asset', '') for s in staking if s.get('asset')})
+        staking_lines = [
+            "",
+            "=" * 65,
+            "  STAKING DE CRIPTOMONEDAS — RCM casilla 0027 (DGT V1766-22)",
+            "=" * 65,
+            "  RCM Art. 25.2 LIRPF satisfecho en especie, valorado en EUR al",
+            "  precio de mercado en el momento de cada recepción (Art. 43.1).",
+            "  Alternativa doctrinal: casilla 0031 (cuota idéntica, base ahorro).",
+            "",
+        ]
+        for s_ev in sorted(staking, key=lambda x: x.get('fecha', '')):
+            staking_lines.append(
+                f"  {s_ev.get('fecha', ''):<11} {s_ev.get('asset', ''):<6} "
+                f"{fmt_es(s_ev['importe_eur']):>10} EUR  "
+                f"(x{s_ev.get('cantidad', '')})"
+            )
+        staking_lines += [
+            "",
+            f"  TOTAL staking (declarable casilla 0027): {fmt_es(total_stk)} EUR  "
+            f"({len(staking)} recepciones de {', '.join(activos_stk)})",
+            "  → Sin retención. Al vender el cripto recibido, su coste de",
+            "    adquisición es este valor de recepción (lote 🪙 en Operaciones)",
+            "    — la venta tributa solo por la plusvalía desde ese valor.",
+        ]
 
     lines += [
         "",
@@ -6548,15 +7100,16 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         f"  ✅ CDI recuperable (0588): {fmt_es(total_cdi)} EUR  → campo 'Impuesto satisfecho en el extranjero' del mismo popup",
         f"  ✅ Retención ES           : {fmt_es(total_ret_nac)} EUR  → campo 'Retenciones' del popup individual de 0029 (RentaWEB suma automáticamente)",
         f"  Total exceso (perdido)  : {fmt_es(total_exceso)} EUR",
-    ] + broker_lines + scrip_lines + plataforma_lines + tbills_lines + interest_lines + [
+    ] + broker_lines + scrip_lines + plataforma_lines + tbills_lines + interest_lines + staking_lines + [
         "",
         "  DÓNDE DECLARARLO EN RentaWEB:",
         "  · Todos los dividendos brutos → casilla 0029 (rendimientos capital mobiliario)",
         "  · Retención española (19%) → casilla 0591 junto a cada pagador",
         "  · Deducción doble imposición CDI → casilla 0588 (solo dividendos extranjeros)",
-        "  · Intereses TR cuenta remunerada → casilla 0023 + casilla 0591 (retención TR)",
-        "  · Intereses T-Bills IBKR → casilla 0023 (ver sección INTERESES T-Bills)",
-        "  · Intereses IBKR Credit/Bond → casilla 0023 (ver sección INTERESES IBKR)",
+        "  · Intereses TR cuenta remunerada → casilla 0027 + retención en su popup (0591)",
+        "  · Intereses T-Bills IBKR → casilla 0030 (ver sección INTERESES T-Bills)",
+        "  · Intereses IBKR Credit/Bond → casilla 0027 (ver sección INTERESES IBKR)",
+        "  · Staking de criptomonedas → casilla 0027 (ver sección STAKING)",
         "  · Scrip dividend / venta derechos TIPO B → casilla 0029 (ver sección anterior)",
         "  · Gastos plataforma (conectividad) → gastos deducibles RCM (ver sección anterior)",
         "",
@@ -6632,12 +7185,18 @@ def parse_opciones_degiro(raw_rows, ejercidas_isin=None):
 
         # Importe EUR
         valores_eur = [abs(parse_es(row[11])) for row in rows]
-        if len(set(str(v) for v in valores_eur)) == 1:
+        _opc_duplicado = len(set(str(v) for v in valores_eur)) == 1
+        if _opc_duplicado:
             importe_eur = valores_eur[0]
         else:
             importe_eur = sum(valores_eur)
 
-        gastos_autofx   = max(abs(parse_es(row[13])) for row in rows)
+        # AutoFX por fill: sumar en multi-fill (antes max() perdía gasto
+        # deducible). Si las filas son duplicados (mismo valor) → uno solo.
+        if _opc_duplicado:
+            gastos_autofx = abs(parse_es(rows[0][13]))
+        else:
+            gastos_autofx = sum(abs(parse_es(row[13])) for row in rows)
         gastos_transacc = sum(abs(parse_es(row[14])) for row in rows
                               if parse_es(row[14]) != 0)
         gastos_eur = gastos_autofx + gastos_transacc
@@ -6910,6 +7469,11 @@ def parse_ibkr_opciones(filepath):
                 h = trades_header
                 def col_t(name):
                     return row[h.index(name)].strip() if name in h else ''
+                # Solo filas 'Order' (ver nota en parse_ibkr): las ClosedLot del
+                # export con lot detail duplicarían las posiciones.
+                _disc = col_t('DataDiscriminator')
+                if _disc and _disc != 'Order':
+                    continue
                 try:
                     asset_cat = col_t('Asset Category')
                     if 'Option' not in asset_cat:
@@ -7108,6 +7672,11 @@ def parse_ibkr_futures(filepath):
                 h = trades_header
                 def col_t(name):
                     return row[h.index(name)].strip() if name in h else ''
+                # Solo filas 'Order' (ver nota en parse_ibkr): las ClosedLot del
+                # export con lot detail duplicarían las posiciones.
+                _disc = col_t('DataDiscriminator')
+                if _disc and _disc != 'Order':
+                    continue
                 try:
                     asset_cat = col_t('Asset Category')
                     # SOLO Futures puros — opciones sobre futuros van por
@@ -7205,10 +7774,20 @@ def calcular_resumen_futuros(futuros):
     el contrato → casilla 1626 con clave 4 (Otros elementos patrimoniales)
     de la base imponible del ahorro.
 
+    IMPORTANTE (V3 auditoría 2026-06-11): el Realized P/L de la sección
+    Trades de IBKR YA incorpora las comisiones en la base de coste — cita
+    literal de la guía oficial de informes de IBKR (ibkrguides.com, Trades):
+    "For the purpose of cost basis and realized profit or loss, commissions
+    are netted. For MTM profit or loss, commissions are not netted".
+    Por tanto pl_neto_eur = realized_pl_eur SIN restar gastos otra vez —
+    restarlos duplicaba la deducción (infra-declaraba ganancias / inflaba
+    pérdidas). `gastos_eur` se conserva como columna INFORMATIVA.
+
     Retorna:
       por_contrato: lista de dicts con:
         symbol, descripcion, multiplier, n_cierres, currency_origen,
-        realized_pl_eur (suma), gastos_eur (suma), pl_neto_eur (rpl − gastos)
+        realized_pl_eur (suma), gastos_eur (suma, informativo — ya neteado
+        en el Realized P/L), pl_neto_eur (= realized_pl_eur)
       totales: dict con:
         n_contratos_distintos, n_cierres_total,
         realized_pl_total_eur, gastos_total_eur, pl_neto_eur
@@ -7240,10 +7819,12 @@ def calcular_resumen_futuros(futuros):
         d['fechas'].append(f['fecha'])
 
     # Lista ordenada por |pl_neto| descendente (más relevantes arriba).
+    # pl_neto = realized_pl: las comisiones YA están neteadas dentro del
+    # Realized P/L de IBKR (ver docstring) — restarlas otra vez las
+    # deduciría dos veces.
     por_contrato = []
     for sym, d in by_symbol.items():
-        pl_neto = d['realized_pl_eur'] - d['gastos_eur']
-        d['pl_neto_eur'] = pl_neto
+        d['pl_neto_eur'] = d['realized_pl_eur']
         por_contrato.append(d)
     por_contrato.sort(key=lambda x: abs(x['pl_neto_eur']), reverse=True)
 
@@ -7345,6 +7926,36 @@ def calcular_resumen_opciones(opciones):
         except ValueError:
             return None
 
+    def _split_filas_fifo(filas_sorted, n_contratos):
+        """Divide filas (fecha, importe, gastos, cantidad) ya ordenadas por
+        fecha en (porción que cubre n_contratos, resto), ponderando por
+        CONTRATOS y no por filas (F9 auditoría 2026-06-11: una fila de
+        venta de 5 contratos contaba como 1 al cortar con [:n_comp]).
+        Si el corte parte una fila, importe y gastos se prorratean por la
+        fracción de contratos; el redondeo se asigna a la porción cubierta
+        y el resto conserva la diferencia exacta (sin perder céntimos).
+        """
+        cubiertas, resto = [], []
+        pendiente = (n_contratos if isinstance(n_contratos, Decimal)
+                     else Decimal(str(n_contratos)))
+        for fila in filas_sorted:
+            fecha_f, imp_f, gas_f, qty_f = fila
+            if pendiente <= 0:
+                resto.append(fila)
+                continue
+            if qty_f <= pendiente:
+                cubiertas.append(fila)
+                pendiente -= qty_f
+            else:
+                frac  = pendiente / qty_f
+                imp_c = (imp_f * frac).quantize(Decimal('0.01'), ROUND_HALF_UP)
+                gas_c = (gas_f * frac).quantize(Decimal('0.01'), ROUND_HALF_UP)
+                cubiertas.append((fecha_f, imp_c, gas_c, pendiente))
+                resto.append((fecha_f, imp_f - imp_c, gas_f - gas_c,
+                              qty_f - pendiente))
+                pendiente = Decimal('0')
+        return cubiertas, resto
+
     resultados = []
     for clave, d in by_contrato.items():
         # ── Inferencia de expiración sin valor (Art. 14.1.c LIRPF) ──────────
@@ -7389,17 +8000,27 @@ def calcular_resumen_opciones(opciones):
         pl_neto  = pl_bruto - gastos
 
         # Clasificación fiscal (Art. 14.1.c + 37.1.m LIRPF, DGT V2172-21):
-        # - mixta: ejercida Y tiene compras (buy-to-close) → FIFO: parte cerrada a 1626,
-        #          parte ejercida integra en acciones
-        # - ejercida pura: ejercida sin buy-to-close → prima íntegra a acciones
+        # - mixta: short ejercida Y con buy-to-close (ventas Y compras) → FIFO:
+        #          parte cerrada a 1626, parte ejercida integra en acciones
+        # - ejercida pura (short): ejercida sin buy-to-close → prima cobrada
+        #          íntegra a acciones
+        # - ejercida_larga: LONG ejercida (solo compras + ejercicio) → la prima
+        #          PAGADA se integra en el subyacente (CALL: +coste adquisición;
+        #          PUT: −valor transmisión). NO va a 1626. Antes caía en "mixta"
+        #          con _ventas vacío → pérdida fantasma en 1626 (F9 auditoría).
         # - long_abierta: solo compras sin cierre/expiración → coste diferido al año de cierre
         # - short_abierta: vendida pero NO cerrada/expirada/ejercida al 31/12 → prima
         #   diferida al año de cierre (la alteración patrimonial aún no se ha producido)
         # - roll_abierta: roll dentro del año (sell→buy-close→re-sell) con re-sell abierta
         #   al 31/12 → porción cerrada a 1626, porción abierta diferida al año de extinción
         # - normal: cerrada/expirada en el ejercicio → otros elementos patrimoniales
-        es_mixta = (d['n_ejercidas'] > 0 and d['contratos_comprados'] > 0)
-        es_ejercida = (d['n_ejercidas'] > 0 and not es_mixta)
+        es_mixta = (d['n_ejercidas'] > 0 and d['contratos_comprados'] > 0
+                    and d['contratos_vendidos'] > 0)
+        es_ejercida_larga = (d['n_ejercidas'] > 0
+                             and d['contratos_comprados'] > 0
+                             and d['contratos_vendidos'] == 0)
+        es_ejercida = (d['n_ejercidas'] > 0 and not es_mixta
+                       and not es_ejercida_larga)
         es_long_abierta = (d['contratos_comprados'] > 0
                            and d['contratos_vendidos'] == 0
                            and d['expiradas'] == 0
@@ -7440,6 +8061,7 @@ def calcular_resumen_opciones(opciones):
             'brokers':           ', '.join(sorted(d['brokers'])),
             'n_net_abiertos':    n_net_abiertos,
             'es_ejercida':       es_ejercida,
+            'es_ejercida_larga': es_ejercida_larga,
             'es_long_abierta':   es_long_abierta,
             'es_mixta':          es_mixta,
             'es_short_abierta':  es_short_abierta,
@@ -7450,12 +8072,13 @@ def calcular_resumen_opciones(opciones):
         }
 
         if es_mixta:
-            # FIFO: las ventas más antiguas son cerradas por el buy-to-close;
-            # las ventas restantes (más recientes) son las que se ejercieron.
-            n_comp = int(d['contratos_comprados'])
-            ventas_sorted    = sorted(d['_ventas'], key=lambda x: _parse_ddmmyyyy(x[0]))
-            ventas_cerradas  = ventas_sorted[:n_comp]
-            ventas_ejercidas = ventas_sorted[n_comp:]
+            # FIFO ponderado por CONTRATOS: las ventas más antiguas quedan
+            # cerradas por el buy-to-close (tantos contratos como se
+            # compraron); el resto son las que se ejercieron. NO cortar por
+            # filas — una fila puede agrupar varios contratos.
+            ventas_sorted = sorted(d['_ventas'], key=lambda x: _parse_ddmmyyyy(x[0]))
+            ventas_cerradas, ventas_ejercidas = _split_filas_fifo(
+                ventas_sorted, d['contratos_comprados'])
 
             # `start=Decimal('0')` es obligatorio: si la lista está vacía
             # (caso edge cuando los extractos solapan y la heurística de
@@ -7477,12 +8100,12 @@ def calcular_resumen_opciones(opciones):
             })
 
         if es_roll_abierta:
-            # FIFO: las ventas más antiguas son cerradas por el buy-to-close;
-            # las ventas más recientes quedan abiertas al 31/12 → prima diferida.
-            n_comp_r = int(d['contratos_comprados'])
+            # FIFO ponderado por CONTRATOS (ver _split_filas_fifo): las ventas
+            # más antiguas quedan cerradas por el buy-to-close; las más
+            # recientes quedan abiertas al 31/12 → prima diferida.
             ventas_sorted_r   = sorted(d['_ventas'], key=lambda x: _parse_ddmmyyyy(x[0]))
-            ventas_cerradas_r = ventas_sorted_r[:n_comp_r]
-            ventas_abiertas_r = ventas_sorted_r[n_comp_r:]
+            ventas_cerradas_r, ventas_abiertas_r = _split_filas_fifo(
+                ventas_sorted_r, d['contratos_comprados'])
 
             prima_cerrada_r  = sum((v[1] for v in ventas_cerradas_r), Decimal('0'))
             prima_abierta_r  = sum((v[1] for v in ventas_abiertas_r), Decimal('0'))
@@ -7507,8 +8130,10 @@ def calcular_resumen_opciones(opciones):
     normales       = [r for r in resultados
                       if not r['es_ejercida'] and not r['es_long_abierta']
                       and not r['es_mixta'] and not r['es_short_abierta']
-                      and not r['es_roll_abierta']]
-    ejercidas      = [r for r in resultados if r['es_ejercida']]   # ejercidas puras
+                      and not r['es_roll_abierta']
+                      and not r['es_ejercida_larga']]
+    ejercidas      = [r for r in resultados if r['es_ejercida']]   # short ejercidas puras
+    ejercidas_largas = [r for r in resultados if r['es_ejercida_larga']]
     mixtas         = [r for r in resultados if r['es_mixta']]
     long_abiertas  = [r for r in resultados if r['es_long_abierta']]
     short_abiertas = [r for r in resultados if r['es_short_abierta']]
@@ -7542,6 +8167,15 @@ def calcular_resumen_opciones(opciones):
                                      + sum(d['_prima_ejercida'] for d in mixtas)),
         'ejercidas_gastos':         (sum(d['gastos_cobradas']  for d in ejercidas)
                                      + sum(d['_gastos_ejercida'] for d in mixtas)),
+        # Long ejercidas: prima PAGADA a integrar en el subyacente (V2172-21:
+        # CALL → suma al coste de adquisición; PUT → resta del valor de
+        # transmisión). Nota informativa, no va a 1626.
+        'ejercidas_larga_coste_integrar': sum((d['primas_pagadas']
+                                               for d in ejercidas_largas),
+                                              Decimal('0')),
+        'ejercidas_larga_gastos':         sum((d['gastos_pagadas']
+                                               for d in ejercidas_largas),
+                                              Decimal('0')),
         # Long abiertas (coste diferido, no deducible en este ejercicio)
         'long_abiertas_coste':  sum(d['primas_pagadas'] for d in long_abiertas),
         'long_abiertas_gastos': sum(d['gastos_pagadas'] for d in long_abiertas),
@@ -7553,6 +8187,7 @@ def calcular_resumen_opciones(opciones):
         # Listas clasificadas
         '_normales':       normales,
         '_ejercidas':      ejercidas,
+        '_ejercidas_largas': ejercidas_largas,
         '_mixtas':         mixtas,
         '_long_abiertas':  long_abiertas,
         '_short_abiertas': short_abiertas,
@@ -7607,7 +8242,7 @@ def write_informe_fx(fx_pl_data, filepath):
     total_unrealized = Decimal('0')
 
     if fx_rows:
-        lines.append("REALIZED — pérdidas/ganancias materializadas en 2025")
+        lines.append(f"REALIZED — pérdidas/ganancias materializadas en {EJERCICIO}")
         lines.append(SEP)
         for r in sorted(fx_rows, key=lambda x: x['divisa']):
             realized = r['realized'].quantize(Decimal('0.01'), ROUND_HALF_UP)
@@ -7631,7 +8266,7 @@ def write_informe_fx(fx_pl_data, filepath):
         lines.append("INSTRUCCIONES")
         lines.append(SEP)
         if total_realized < 0:
-            lines.append(f"  Pérdida realizada agregada 2025: {fmt_es(total_realized)} EUR")
+            lines.append(f"  Pérdida realizada agregada {EJERCICIO}: {fmt_es(total_realized)} EUR")
             if abs(total_realized) < 1000:
                 lines.append("  · Importe < 1.000 EUR → la AEAT suele tolerar no declarar")
                 lines.append("    (criterio DGT V0563-09, orientativo).")
@@ -7641,8 +8276,20 @@ def write_informe_fx(fx_pl_data, filepath):
             lines.append(f"    RentaWEB → F2 → casillas {C('otros')} → 'Otros elementos patrimoniales'")
             lines.append(f"    Tipo (casilla {C('otros_clave_tipo')}): 'Resto'")
             lines.append(f"    Importe: {fmt_es(total_realized)} EUR (signo negativo: pérdida)")
+            lines.append("")
+            lines.append("  ⚠️  REGLA DEL AÑO — Art. 33.5.e LIRPF (no implementada, verificar):")
+            lines.append("    Si se RECOMPRÓ la misma divisa dentro del año siguiente a la")
+            lines.append("    transmisión con pérdida (lo habitual en cuentas con operativa")
+            lines.append("    activa en esa divisa), la pérdida se DIFIERE — no se anula —")
+            lines.append("    hasta la transmisión posterior de lo recomprado. A las divisas")
+            lines.append("    les aplica la ventana de 1 AÑO del 33.5.e (elementos no")
+            lines.append("    admitidos a negociación en mercado regulado), no la de 2 meses.")
+            lines.append("    IBKR solo reporta el agregado anual por divisa, sin lotes —")
+            lines.append("    Cuádrate NO puede comprobar la recompra automáticamente.")
+            lines.append("    Criterio conservador: declara la pérdida solo si no recompraste")
+            lines.append("    esa divisa en la ventana; en caso de duda, difiérela.")
         else:
-            lines.append(f"  Ganancia realizada agregada 2025: {fmt_es(total_realized)} EUR")
+            lines.append(f"  Ganancia realizada agregada {EJERCICIO}: {fmt_es(total_realized)} EUR")
             lines.append("  · Las ganancias por diferencia de cambio son SIEMPRE declarables")
             lines.append("    (la regla de minimis solo aplica a pérdidas tolerables).")
             lines.append(f"    RentaWEB → F2 → casillas {C('otros')} → 'Otros elementos patrimoniales'")
@@ -7661,8 +8308,11 @@ def write_informe_fx(fx_pl_data, filepath):
         lines.append(SEP)
         lines.append(f"  TOTAL T-Bills: {fmt_es(total_tbill)} EUR")
         lines.append("")
-        lines.append(f"  → Estos importes son INTERESES (rendimiento de capital mobiliario).")
-        lines.append(f"  → Casilla RentaWEB: {C('intereses')} (intereses cuentas/depósitos).")
+        lines.append(f"  → Estos importes son RCM (Art. 25.2 LIRPF, base del ahorro).")
+        lines.append(f"  → Casilla RentaWEB: {C('letras_tesoro')} (transmisión/amortización de Letras del Tesoro).")
+        lines.append(f"    Alternativa doctrinal para T-Bills extranjeros: 0031 (otros activos")
+        lines.append(f"    financieros) — cuota IDÉNTICA en base del ahorro; el manual AEAT no")
+        lines.append(f"    distingue deuda pública extranjera de forma expresa.")
         lines.append("  → Verificar en sección Withholding Tax si hubo retención sobre")
         lines.append(f"    estos T-Bills (en ese caso → casilla {C('cdi')} = recuperable CDI).")
         lines.append("  → También listados en informe_dividendos para visibilidad.")
@@ -7688,6 +8338,7 @@ def write_informe_opciones(por_contrato, totales, filepath, no_encontradas=None)
 
     normales       = totales['_normales']
     ejercidas      = totales['_ejercidas']
+    ejercidas_largas = totales.get('_ejercidas_largas', [])
     mixtas         = totales['_mixtas']
     long_abiertas  = totales['_long_abiertas']
     short_abiertas = totales['_short_abiertas']
@@ -7733,6 +8384,8 @@ def write_informe_opciones(por_contrato, totales, filepath, no_encontradas=None)
         "    La alteración patrimonial no se produce hasta la extinción del contrato.",
         "  · Short ejercida: prima cobrada ÍNTEGRA modifica el precio de acciones.",
         "    NO va al bloque 1624-1654; ajusta precio transmisión/adquisición del subyacente.",
+        "  · Long EJERCIDA: prima pagada se integra en el subyacente (CALL: suma al",
+        "    coste de adquisición; PUT: resta del valor de transmisión). NO va a 1624-1654.",
         "  · Long abierta al 31/12: coste DIFERIDO hasta cierre/vencimiento (año siguiente).",
         "  · Long cerrada con ganancia/pérdida: va a casillas 1624-1654 (otros elementos patrimoniales).",
         "",
@@ -7883,7 +8536,7 @@ def write_informe_opciones(por_contrato, totales, filepath, no_encontradas=None)
         "  La prima cobrada modifica el precio de venta/adquisición del subyacente.",
         SEP2,
     ]
-    if ejercidas or mixtas:
+    if ejercidas or mixtas or ejercidas_largas:
         # Ejercidas puras
         for d in ejercidas:
             lineas_extra = []
@@ -7922,12 +8575,39 @@ def write_informe_opciones(por_contrato, totales, filepath, no_encontradas=None)
                     lines.append(
                         f"  → PUT ejercida: restar {fmt_es(prima_ej)} EUR del coste de adquisición"
                         f" de las acciones compradas (baja precio de adquisición).")
+        # Largas ejercidas (lado comprador, V2172-21): prima PAGADA integra.
+        for d in ejercidas_largas:
+            tipo_str = {'C': 'CALL', 'P': 'PUT'}.get(d['tipo_op'], d['tipo_op'])
+            pagadas  = d['primas_pagadas']
+            lines += [
+                "",
+                SEP,
+                f"  {d['subyacente']}  {tipo_str}  Strike {d['strike']}  Venc. {d['vencimiento']}  ⚠️ LARGA EJERCIDA",
+                SEP,
+                f"  Broker                  : {d['brokers']}",
+                f"  Contratos ejercidos     : {d['n_ejercidas']}",
+                f"  Prima pagada a integrar : {fmt_es(pagadas)} EUR",
+            ]
+            if pagadas > 0:
+                if d['tipo_op'] == 'C':
+                    lines.append(
+                        f"  → CALL larga ejercida: sumar {fmt_es(pagadas)} EUR al coste de"
+                        f" adquisición de las acciones compradas al strike (sube precio de adquisición).")
+                elif d['tipo_op'] == 'P':
+                    lines.append(
+                        f"  → PUT larga ejercida: restar {fmt_es(pagadas)} EUR del valor de"
+                        f" transmisión de las acciones vendidas al strike (baja precio de venta).")
         prima_integrar = totales['ejercidas_prima_integrar']
         lines += [
             "",
             f"  Prima total a integrar en acciones: {fmt_es(prima_integrar)} EUR",
-            f"  (No declarar en el bloque 1624-1654 — ajustar en transmisión de acciones, casillas 326-338)",
         ]
+        coste_larga_integrar = totales.get('ejercidas_larga_coste_integrar', Decimal('0'))
+        if coste_larga_integrar:
+            lines.append(
+                f"  Prima pagada (largas ejercidas) a integrar: {fmt_es(coste_larga_integrar)} EUR")
+        lines.append(
+            f"  (No declarar en el bloque 1624-1654 — ajustar en transmisión de acciones, casillas 326-338)")
     else:
         lines += ["", "  (ninguna opción ejercida en este ejercicio)"]
 
@@ -8119,6 +8799,8 @@ def main():
     degiro_raw_rows = []  # filas crudas para parser de opciones
     todos_corp_posibles_liberadas = []  # candidatos a acciones liberadas scrip (DeGiro)
     todas_no_soportadas = []  # categoría no soportada (cripto IBKR, derivados DeGiro/IBKR, bonds, etc.)
+    bond_data_dg = None  # cupones de bonos DeGiro — se construye con DEGIRO_FILE
+                         # o, si falta, en la sección del extracto de cuenta (F8)
 
     if os.path.exists(DEGIRO_FILE):
         # Tasas externas (ITF, Stamp Duty, FTT) viven en el CSV de Cuenta —
@@ -8250,7 +8932,7 @@ def main():
             _debit_total  = sum(r['importe_eur'] for r in ibkr_interest
                                 if r['tipo'] == 'debit')
             print(f"    Intereses (Interest)     : {len(ibkr_interest)} "
-                  f"(credit/bond {fmt_es(_credit_total)} EUR -> casilla 0023, "
+                  f"(credit/bond {fmt_es(_credit_total)} EUR -> casilla 0027, "
                   f"debit {fmt_es(_debit_total)} EUR informativo)")
         scrip_chains = corp.get('scrip_chains', [])
         if scrip_chains:
@@ -8443,6 +9125,21 @@ def main():
             print(f"       · Doctrina: DGT V1766-22 — RCM Art. 25.2 LIRPF, valorado en")
             print(f"         EUR al momento de cada recepción (Art. 43.1 LIRPF, en especie).")
             print(f"       · Alternativa doctrinal: casilla 0031 (cuota idéntica en base ahorro).")
+
+            # CL7 auditoría 2026-06-11: cada reward genera además un LOTE de
+            # adquisición para el FIFO (coste = valor RCM de recepción). Sin
+            # él, la venta posterior del cripto salía huérfana (coste 0) y el
+            # valor de recepción tributaba dos veces. Mismo patrón de filtrado
+            # por ejercicio que el resto de eventos TR: los lotes viajan a
+            # años posteriores vía la cadena de XLSXs (parse_csv_irpf).
+            staking_ops, staking_avisos = staking_a_lotes(tr_staking)
+            for _av in staking_avisos:
+                print(f"       ⚠️  {_av}")
+            if staking_ops:
+                todas_ops.extend(staking_ops)
+                print(f"       · Lotes de adquisición creados: {len(staking_ops)} "
+                      f"(coste = valor de recepción; la venta futura tributará "
+                      f"solo por la plusvalía desde ese valor)")
             print(f"       · Activos: {', '.join(assets)}")
 
     # ── Dividendos DeGiro (extracto de cuenta) ─────────────────────────────
@@ -8464,6 +9161,22 @@ def main():
         if gastos_plataforma_dg:
             total_plat = sum(g['importe_eur'] for g in gastos_plataforma_dg)
             print(f"    Comisiones conectividad  : {len(gastos_plataforma_dg)} cargos = {total_plat:.2f} EUR")
+
+        # ── Cupones periódicos de bonos DeGiro → RCM casilla 0027 (F8) ────
+        # Se recolectaban en bond_data pero NUNCA se inyectaban en la lista
+        # de intereses RCM → omitidos en informe/XLSX/PDF/sidecar.
+        if bond_data_dg is None:
+            bond_data_dg = _build_degiro_bond_data(DEGIRO_CUENTA_FILE)
+        cupones_entries, cupones_avisos = cupones_bonos_a_intereses(
+            bond_data_dg, EJERCICIO)
+        for _aviso in cupones_avisos:
+            print(f"  ⚠️  {_aviso}")
+        if cupones_entries:
+            ibkr_interest.extend(cupones_entries)
+            bruto_cup = sum((e['importe_eur'] for e in cupones_entries),
+                            Decimal('0'))
+            print(f"    Cupones de bonos         : {len(cupones_entries)} pagos  "
+                  f"bruto {fmt_es(bruto_cup)} EUR → casilla 0027 RCM")
 
     # ── Opciones DeGiro ────────────────────────────────────────────────────
     opts_anios_anteriores_no_encontradas = []  # para el informe
@@ -8958,7 +9671,12 @@ def main():
     # usuario lo edite con el coste prorrateado real (Art. 37.1.a LIRPF).
     spin_offs_corp = [e for e in todos_corp if e.get('tipo_ca') == CA_SPIN_OFF]
     if spin_offs_corp:
+        # Cargar catalogo de spin-offs con ratios conocidos. Si vacio, los
+        # spin-offs detectados caen al flujo manual (coste 0 + comentario
+        # amarillo del XLSX) — mismo comportamiento de hoy.
+        _SPINOFFS_CATALOGO = _cargar_spinoffs_conocidos()
         spinoff_ops = []
+        n_auto = 0
         for ev in spin_offs_corp:
             isin_nueva    = ev.get('isin', '')
             cantidad      = ev.get('cantidad', 0)
@@ -8968,7 +9686,7 @@ def main():
             isin_matriz   = ev.get('isin_old', '')
             if not isin_nueva or cantidad <= 0:
                 continue
-            spinoff_ops.append({
+            op = {
                 'tipo':            'A',          # se emite como AD en el CSV
                 'isin':            isin_nueva,
                 'nombre':          nombre_nueva[:50],
@@ -8980,10 +9698,67 @@ def main():
                 '_es_spinoff':     True,
                 '_spinoff_matriz': nombre_matriz,
                 '_spinoff_isin_matriz': isin_matriz,
-            })
+            }
+
+            # ── Aplicacion automatica si el ISIN escindida esta en el catalogo ──
+            catalogo = _SPINOFFS_CATALOGO.get(isin_nueva)
+            if catalogo:
+                # Normalizar fecha_efectiva a `date`. El evento corp suele
+                # traerla como 'DD/MM/YYYY' string (formato ES) — convertimos
+                # para el helper de coste FIFO. Si parse falla, usamos la del
+                # catalogo como autoridad.
+                fecha_ev_date = catalogo['fecha_efectiva']
+                if isinstance(fecha_eff, str) and re.match(r'^\d{2}/\d{2}/\d{4}$', fecha_eff):
+                    try:
+                        d, m, y = fecha_eff.split('/')
+                        fecha_ev_date = date(int(y), int(m), int(d))
+                    except ValueError:
+                        pass
+                elif isinstance(fecha_eff, date):
+                    fecha_ev_date = fecha_eff
+                coste_matriz = _coste_matriz_a_fecha(
+                    todas_ops, catalogo['isin_matriz'], fecha_ev_date,
+                )
+                if coste_matriz > 0:
+                    # PASO 1: coste prorrateado a la escindida.
+                    op['importe_eur'] = (
+                        coste_matriz * catalogo['ratio_coste_escindida']
+                    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                    op['_spinoff_resuelto_auto']     = True
+                    op['_spinoff_fuente']            = catalogo['fuente']
+                    op['_spinoff_ratio_escindida']   = catalogo['ratio_coste_escindida']
+                    op['_spinoff_ratio_matriz']     = catalogo['ratio_coste_matriz_residual']
+                    # Tambien anotar el evento corp para que `fmt_spin_off`
+                    # (informe_corporativas TXT) lo recoja al escribir el bloque.
+                    ev['_spinoff_resuelto_auto'] = True
+                    ev['_spinoff_fuente']        = catalogo['fuente']
+                    ev['_spinoff_coste_aplicado'] = op['importe_eur']
+                    ev['_spinoff_ratio_escindida']   = catalogo['ratio_coste_escindida']
+                    ev['_spinoff_ratio_matriz']     = catalogo['ratio_coste_matriz_residual']
+                    # PASO 2 CRITICO: reducir cada lote de la matriz por
+                    # ratio_residual. Si esto se olvida, el coste total se
+                    # DUPLICA al vender la matriz (regresion silenciosa peor
+                    # que el flujo manual).
+                    _reducir_lotes_matriz_proporcional(
+                        todas_ops,
+                        catalogo['isin_matriz'],
+                        fecha_ev_date,
+                        catalogo['ratio_coste_matriz_residual'],
+                    )
+                    n_auto += 1
+            # Si el ISIN no esta en catalogo o el coste matriz era 0 (sin
+            # posicion previa registrada), op queda con coste 0 y el flujo
+            # manual del XLSX se activa.
+
+            spinoff_ops.append(op)
+
         if spinoff_ops:
-            print(f"  ✅ Acciones de escisión: {len(spinoff_ops)} entrada(s) → CSV como AD coste 0")
-            print(f"     ⚠️  EDITA el coste prorrateado contra la matriz antes de presentar")
+            n_manual = len(spinoff_ops) - n_auto
+            print(f"  ✅ Acciones de escisión: {len(spinoff_ops)} entrada(s) → CSV como AD")
+            if n_auto:
+                print(f"     ✓ {n_auto} resueltas automaticamente (catalogo spinoffs_conocidos.json — Art. 37.1.a §4 LIRPF)")
+            if n_manual:
+                print(f"     ⚠️  {n_manual} EDITA el coste prorrateado contra la matriz antes de presentar")
             todas_ops.extend(spinoff_ops)
             todas_ops.sort(key=sort_key)
 
@@ -9064,6 +9839,31 @@ def main():
                 'strike':  _d['strike'],
                 'prima':   _prima,
                 'gastos':  _gastos_ej,             # comisión proporcional a contratos ejercidos
+                'tipo_op': _tipo_op,
+                'subyacente': _sub,
+            }
+            if _fecha_venc:
+                _add_ejercicio_lookup(_fecha_venc, _trade_tipo, _sub, info)
+            if _fecha_cierre and _fecha_cierre != _fecha_venc:
+                _add_ejercicio_lookup(_fecha_cierre, _trade_tipo, _sub, info)
+        # Largas ejercidas (V2172-21, lado del COMPRADOR de la opción): la
+        # prima PAGADA se integra en el subyacente. El sentido del trade es
+        # el INVERSO al del vendedor: CALL larga ejercida → el titular COMPRA
+        # acciones al strike ('A', coste += prima pagada); PUT larga ejercida
+        # → el titular VENDE ('T', valor de transmisión −= prima pagada). El
+        # ajuste de signo del consumidor (C → +prima, P → −prima) es el mismo
+        # que para shorts. Antes estas primas acababan en 1626 como pérdida
+        # vía la clasificación errónea como "mixta" (F9 auditoría 2026-06-11).
+        for _d in opts_totales_pre['_ejercidas_largas']:
+            _fecha_venc   = _venc_to_ddmmyyyy(_d.get('vencimiento', ''))
+            _fecha_cierre = _d.get('fecha_cierre', '')
+            _tipo_op      = _d['tipo_op']
+            _trade_tipo   = 'A' if _tipo_op == 'C' else 'T'
+            _sub          = _d.get('subyacente', '')
+            info = {
+                'strike':  _d['strike'],
+                'prima':   _d['primas_pagadas'],
+                'gastos':  _d['gastos_pagadas'],   # comisión de la opción larga
                 'tipo_op': _tipo_op,
                 'subyacente': _sub,
             }
@@ -9225,12 +10025,31 @@ def main():
         elif op.get('_es_spinoff'):
             matriz = op.get('_spinoff_matriz', '')
             isin_m = op.get('_spinoff_isin_matriz', '')
-            denom = (
-                f"{denom} [ESCISIÓN de {matriz} ({isin_m}) — "
-                f"EDITA coste con prorrateo Art.37.1.a + DGT V1766-12; "
-                f"reduce también coste de la matriz]"
-            )
-            requiere_revision = True
+            if op.get('_spinoff_resuelto_auto'):
+                # Cuádrate ya aplico el doble ajuste (Art. 37.1.a §4 LIRPF)
+                # desde spinoffs_conocidos.json. Coste ya prorrateado en
+                # esta fila + lotes de la matriz reducidos × ratio_residual.
+                # Sin marca de revision: no requiere accion del usuario.
+                coste_aplicado = op.get('importe_eur', Decimal('0'))
+                denom = (
+                    f"{denom} [ESCISIÓN resuelta auto — "
+                    f"coste {coste_aplicado} EUR prorrateado Art.37.1.a §4 LIRPF; "
+                    f"lotes de la matriz ({isin_m}) reducidos × ratio_residual]"
+                )
+                # NO marcar requiere_revision: ya esta hecho.
+            else:
+                # Sin catalogo: flujo manual. Coste provisional 0, el usuario
+                # debe editar el XLSX.
+                denom = (
+                    f"{denom} [ESCISIÓN de {matriz} ({isin_m}) — "
+                    f"EDITA coste con prorrateo Art.37.1.a + DGT V1766-12; "
+                    f"reduce también coste de la matriz]"
+                )
+                requiere_revision = True
+        elif op.get('_es_staking_reward'):
+            denom = (f"{denom} [🪙 STAKING — lote con coste = valor RCM de "
+                     f"recepción (V1766-22 + Art. 43.1 LIRPF); el ingreso ya "
+                     f"tributó en 0027]")
 
         op['_tipo_csv']             = tipo_csv
         op['_denom_csv']            = denom
@@ -9267,7 +10086,8 @@ def main():
                                  derechos_scrip=None,  # ventas en mercado son G/P, no van aquí
                                  gastos_plataforma=gastos_plataforma_dg if gastos_plataforma_dg else None,
                                  tbills=ibkr_fx_pl['tbills'] if ibkr_fx_pl['tbills'] else None,
-                                 ibkr_interest=ibkr_interest if ibkr_interest else None)
+                                 ibkr_interest=ibkr_interest if ibkr_interest else None,
+                                 staking=tr_staking if tr_staking else None)
         total_bruto_d   = sum((d['bruto']       for d in resumen_divs),                               Decimal('0'))
         total_cdi_d     = sum((d['recuperable'] for d in resumen_divs if not d.get('es_nacional')),   Decimal('0'))
         # Casilla 0591 = retención española de TODAS las filas (nacional ACS +
@@ -9359,17 +10179,15 @@ def main():
                 lotes[isin].append((qty, coste_lote))
                 continue
 
-            ej = _match_ejercicio(op)
-            if ej:
-                prima_ej = ej['prima']
-                if ej['tipo_op'] == 'C':
-                    importe_ajust = op['importe_eur'] + prima_ej
-                else:
-                    importe_ajust = op['importe_eur'] - prima_ej
-                gastos_ajust = op['gastos_eur'] + ej['gastos']
-            else:
-                importe_ajust = op['importe_eur']
-                gastos_ajust = op['gastos_eur']
+            # Ajuste de primas (Art. 37.1.m): reutilizar los importes YA
+            # ajustados por el Paso 4 (op['_importe_csv'] / op['_gastos_csv']).
+            # Antes se re-llamaba a _match_ejercicio aquí, pero el set
+            # ejercicio_consumido quedaba drenado por el Paso 4 y este
+            # segundo pase nunca casaba → la estimación de G/P para la
+            # compensación perdía el ajuste de primas de las opciones
+            # ejercidas (auditoría 2026-06-11, fleco ejercicio_consumido).
+            importe_ajust = op.get('_importe_csv', op['importe_eur'])
+            gastos_ajust = op.get('_gastos_csv', op['gastos_eur'])
 
             if tipo == 'A':
                 if qty > 0:
@@ -9640,14 +10458,21 @@ def main():
             _corp_compact = []
             for ev in todos_corp:
                 tipo = ev.get('tipo_ca') or ''
-                if tipo not in (CA_CORTO_FORZADO, CA_MARKET_TRANSFER, CA_ISIN_CHANGE):
+                # Incluimos CA_SPIN_OFF SOLO cuando se resolvio automaticamente
+                # (catalogo spinoffs_conocidos.json). El PDF de anyos
+                # posteriores lo lee para informar al usuario de las
+                # escisiones aplicadas que afectan a sus lotes vivos.
+                is_spinoff_auto = (tipo == CA_SPIN_OFF
+                                   and ev.get('_spinoff_resuelto_auto'))
+                if tipo not in (CA_CORTO_FORZADO, CA_MARKET_TRANSFER, CA_ISIN_CHANGE) \
+                        and not is_spinoff_auto:
                     continue
-                fecha_ev = ev.get('fecha')
+                fecha_ev = ev.get('fecha_efectiva') if is_spinoff_auto else ev.get('fecha')
                 if hasattr(fecha_ev, 'strftime'):
                     fecha_str = fecha_ev.strftime('%d/%m/%Y')
                 else:
                     fecha_str = str(fecha_ev or '')
-                _corp_compact.append({
+                entry = {
                     'tipo_ca':        tipo,
                     'fecha':          fecha_str,
                     'isin':           ev.get('isin') or ev.get('isin_new') or ev.get('isin_old') or '',
@@ -9658,7 +10483,23 @@ def main():
                     'mercado_origen': ev.get('mercado_origen') or '',
                     'mercado_destino': ev.get('mercado_destino') or '',
                     'descripcion':    ev.get('descripcion') or '',
-                })
+                }
+                if is_spinoff_auto:
+                    coste_aplicado = ev.get('_spinoff_coste_aplicado')
+                    entry.update({
+                        'resuelto_auto':           True,
+                        'nombre_matriz':           ev.get('nombre_matriz', ''),
+                        'isin_matriz':             ev.get('isin_old', ''),
+                        'isin_escindida':          ev.get('isin', ''),
+                        'fuente':                  ev.get('_spinoff_fuente', ''),
+                        'coste_aplicado_eur':      (float(coste_aplicado)
+                                                    if coste_aplicado else 0.0),
+                        'ratio_coste_escindida':   (float(ev.get('_spinoff_ratio_escindida', 0))
+                                                    if ev.get('_spinoff_ratio_escindida') else 0.0),
+                        'ratio_coste_matriz':      (float(ev.get('_spinoff_ratio_matriz', 0))
+                                                    if ev.get('_spinoff_ratio_matriz') else 0.0),
+                    })
+                _corp_compact.append(entry)
             with open(_corp_sidecar_path, 'w', encoding='utf-8') as _f:
                 import json as _json
                 _json.dump({
@@ -9726,7 +10567,7 @@ def main():
         print(f"     → P&L de opciones por contrato (casillas 1624-1654 RentaWEB)")
     if ibkr_fx_pl['fx'] or ibkr_fx_pl['tbills']:
         print(f"  📄 {os.path.basename(INFORME_FX_FILE)}")
-        print(f"     → G/P de divisa IBKR (Art. 33 LIRPF) e intereses T-Bills (casilla 0023)")
+        print(f"     → G/P de divisa IBKR (Art. 33 LIRPF) e intereses T-Bills (casilla 0030)")
     print()
     print("  CÓMO DECLARAR EN RentaWEB:")
     print("  ─────────────────────────────────────────────────────")

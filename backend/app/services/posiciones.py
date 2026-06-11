@@ -15,6 +15,7 @@ Columnas (todas opcionales salvo PM real):
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -84,16 +85,43 @@ def _tipo_activo(isin: str | None, nombre: str | None) -> str:
         return "STOCK"
 
 
+def _split_factor(t: models.Transaccion) -> Decimal | None:
+    """Factor qty_new/qty_old de un CORPORATE_SPLIT (misma meta JSON que
+    consume fifo.aplicar_split). None si la meta no es parseable."""
+    if not t.notas:
+        return None
+    try:
+        sp = json.loads(t.notas)["split"]
+        qty_old = Decimal(str(sp["qty_old"]))
+        qty_new = Decimal(str(sp["qty_new"]))
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+    if qty_old <= 0 or qty_new <= 0:
+        return None
+    return qty_new / qty_old
+
+
 def _coste_medio_ponderado(txs: list[models.Transaccion]) -> Decimal:
     """Coste de adquisición del holding actual por MEDIA PONDERADA MÓVIL (como
     los brokers y el Excel), incluyendo gastos y comisiones de compra. En cada
     compra recalcula el coste medio; en cada venta reduce el coste al medio
     vigente sin alterarlo. Difiere del coste FIFO cuando hay ventas parciales.
     NO incorpora primas de opciones ni dividendos (eso lo aplican pm_fiscal_es y
-    pm_desc sobre esta misma base). `txs` ordenado por fecha ascendente."""
+    pm_desc sobre esta misma base). `txs` ordenado por fecha ascendente.
+
+    CORPORATE_SPLIT escala el contador de acciones (el coste total no cambia,
+    Art. 37.3 LIRPF). Sin esto, una venta parcial post-split descontaba coste
+    en unidades pre-split y el holding restante quedaba con coste ~0 →
+    plusvalía latente 100% falsa (auditoría Cima 2026-06-11, C1; el FIFO ya
+    lo hacía bien — solo esta vía de media ponderada estaba rota)."""
     coste = Decimal("0")
     acciones = Decimal("0")
     for t in txs:
+        if t.tipo == "CORPORATE_SPLIT":
+            factor = _split_factor(t)
+            if factor is not None and acciones > 0:
+                acciones *= factor
+            continue
         q = Decimal(str(t.cantidad))
         if t.tipo == "BUY":
             coste += (Decimal(str(t.importe_eur)) + Decimal(str(t.gastos_eur))
@@ -142,7 +170,7 @@ def calcular_metricas_posiciones(
         select(models.Transaccion)
         .where(models.Transaccion.cartera_id == cartera_id)
         .where(models.Transaccion.estado == "confirmada")
-        .where(models.Transaccion.tipo.in_(["BUY", "SELL"]))
+        .where(models.Transaccion.tipo.in_(["BUY", "SELL", "CORPORATE_SPLIT"]))
         .order_by(models.Transaccion.fecha, models.Transaccion.id)
     ).scalars():
         tx_por_pos.setdefault(t.posicion_id, []).append(t)

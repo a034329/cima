@@ -109,6 +109,10 @@ def parse_tr_aportaciones(
     type CUSTOMER_INBOUND / TRANSFER_INBOUND (+) y *_OUTBOUND (−)."""
     import csv as _csv
 
+    from app.adapters.cuadrate import _ensure_cuadrate_importable
+    _ensure_cuadrate_importable()
+    import generar_irpf as g  # type: ignore[import-not-found]
+
     out: list[AportacionCandidata] = []
     try:
         with open(str(csv_path), encoding="utf-8") as f:
@@ -125,11 +129,13 @@ def parse_tr_aportaciones(
                     signo = -1
                 else:
                     continue
-                amt_str = (row.get("amount") or "0").replace(",", ".")
-                try:
-                    importe = Decimal(amt_str) * signo
-                except Exception:
-                    continue
+                # parse_es del vendor: maneja '1234.56', '1234,56' y el
+                # mixto es-ES '1.234,56'. El replace(',','.') ingenuo
+                # anterior rompía con separador de miles ('1.234,56' →
+                # InvalidOperation → fila tragada): los depósitos ≥1.000 €
+                # desaparecían en silencio del capital aportado (auditoría
+                # Cima 2026-06-11, C4 — misma familia que CL5/F8 de Cuádrate).
+                importe = g.parse_es((row.get("amount") or "0").strip()) * signo
                 if importe == 0:
                     continue
                 fecha_str = (row.get("date") or row.get("datetime") or "")[:10]

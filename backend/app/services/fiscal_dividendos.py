@@ -85,8 +85,17 @@ def calcular_dividendos(
             "fecha": fecha_str,
         })
         if Decimal(str(t.retencion_eur)) > 0:
+            # El RET sí respeta `retencion_pais` cuando es 'ES': es retención
+            # IRPF española (TR Sucursal ES al 19% sobre dividendo extranjero)
+            # → casilla 0591, NO retención en origen. El motor vendorizado
+            # separa 0591/0588 exactamente por RET con pais='ES'
+            # (auditoría Cima 2026-06-11, C2: antes la retención ES entraba
+            # al cómputo CDI, se capaba al tope y la 0591 quedaba vacía —
+            # inconsistente además con fiscal._calcular_rcm_neto, que sí usa
+            # retencion_pais). El DIV mantiene el país del emisor.
+            pais_ret = "ES" if t.retencion_pais == "ES" else pais
             registros.append({
-                "isin": isin, "nombre": nombre, "pais": pais, "tipo": "RET",
+                "isin": isin, "nombre": nombre, "pais": pais_ret, "tipo": "RET",
                 "importe_eur": Decimal(str(t.retencion_eur)), "broker": broker,
                 "fecha": fecha_str,
             })

@@ -185,6 +185,12 @@ def aplicar_fifo(db: Session, tx: models.Transaccion) -> None:
         aplicar_sell(db, tx)
     elif tx.tipo == "CORPORATE_SPLIT":
         aplicar_split(db, tx)
+    elif tx.tipo == "STAKING_REWARD" and tx.cantidad and tx.cantidad > 0:
+        # El reward crea LOTE con coste = valor EUR de recepción (que ya
+        # tributa como RCM en especie, V1766-22 + Art. 43.1): sin él, la
+        # venta del cripto recibido fallaba con FIFOInsuficiente y el valor
+        # de recepción tributaba dos veces (auditoría Cima 2026-06-11, A2).
+        aplicar_buy(db, tx)
     # Otros tipos no afectan inventario en esta versión.
 
 
@@ -238,6 +244,9 @@ def rebuild_for_posicion(db: Session, posicion_id: str) -> RebuildResultado:
         if tx.tipo == "BUY":
             aplicar_buy(db, tx)
             resultado.n_lots_creados += 1
+        elif tx.tipo == "STAKING_REWARD" and tx.cantidad and tx.cantidad > 0:
+            aplicar_buy(db, tx)   # lote con coste = valor RCM de recepción
+            resultado.n_lots_creados += 1
         elif tx.tipo == "SELL":
             try:
                 aplicar_sell(db, tx)
@@ -249,7 +258,7 @@ def rebuild_for_posicion(db: Session, posicion_id: str) -> RebuildResultado:
                 )
         elif tx.tipo == "CORPORATE_SPLIT":
             aplicar_split(db, tx)
-        # DIVIDEND/INTEREST/STAKING/otros CORPORATE_*: no afectan inventario.
+        # DIVIDEND/INTEREST/otros CORPORATE_*: no afectan inventario.
 
     db.flush()
     return resultado

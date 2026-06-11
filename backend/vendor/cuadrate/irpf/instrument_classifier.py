@@ -5,7 +5,7 @@ Implicación fiscal:
   - Acciones (STOCK): casillas 0326-0340 (apartado F2 RentaWEB).
   - ETFs / IIC: 2224-2236 desde Renta 2025 (RD 249/2023 + Art. 75.3.j RIRPF);
     junto a acciones en 0326-0340 hasta Renta 2024.
-  - Derivados estructurados (turbos, factor certificates): 1624-1654 clave 5.
+  - Derivados estructurados (turbos, factor certificates): 1624-1654 clave 4.
   - Criptomonedas: 1800-1814.
   - Bonos individuales: 0030-0033 (RCM, Art. 25.2 LIRPF).
   - SOCIMI españolas (Ley 11/2009): 0324/0325 (apartado F2, subapartado
@@ -27,7 +27,9 @@ Prioridad de fuentes (de mayor a menor fiabilidad):
   4. Stock blacklist — ISIN está en `stock_blacklist.json` (acciones con
      nombre engañoso tipo MSCI Inc., S&P Global Inc., Aperam SA…) → STOCK.
   5. Heurística estricta por nombre — ETF probable solo si combina patrón de
-     gestora conocida (iShares, Vanguard, Amundi…) + ISIN europeo (IE/LU/DE/FR).
+     gestora conocida (iShares, Vanguard, Amundi…) + ISIN europeo (IE/LU/DE/FR)
+     + término de fondo/índice (UCITS, MSCI, FTSE…). Sin el término, la marca
+     sola puede ser la ACCIÓN de la propia gestora (Amundi SA) → STOCK UNKNOWN.
   6. Default → STOCK (con flag UNKNOWN si la heurística era marginal, para
      que el usuario pueda re-marcar como ETF en el Excel).
 """
@@ -98,6 +100,18 @@ _ETF_FRIENDLY_COUNTRIES = {'IE', 'LU', 'DE', 'FR', 'NL', 'JE', 'GG'}
 
 # Compat: algunos checks usan prefijos de 4 chars (legacy).
 _ETF_FRIENDLY_ISIN_PREFIXES = ('IE00', 'LU00', 'LU01', 'LU02', 'DE00', 'FR00', 'NL00', 'JE00', 'GG00')
+
+# Señal adicional de fondo/índice exigida junto a la marca de gestora.
+# Varias gestoras son a la vez empresas cotizadas (Amundi SA en Euronext
+# París, HSBC Holdings, Franklin Resources…): "AMUNDI" + ISIN FR encajaría
+# en la heurística marca+ISIN-europeo y la ACCIÓN de la gestora acabaría
+# clasificada como ETF con confianza. Sin esta señal → STOCK + UNKNOWN.
+_RE_ETF_SENAL_FONDO = re.compile(
+    r'\b(UCITS|OEIC|SICAV|ETFS?|ETP|INDEX|MSCI|FTSE|STOXX|RUSSELL|SOLACTIVE'
+    r'|NIKKEI|NASDAQ|TOPIX|DAX|TRACKER)\b'
+    r'|S&P\s?-?500|IBEX\s?35|CAC\s?40',
+    re.IGNORECASE,
+)
 
 
 # ── Heurística de derivados estructurados (DeGiro sin Asset Category) ────────
@@ -249,12 +263,14 @@ def _is_etc_by_name_heuristic(name_norm: str) -> tuple[bool, str]:
         return (False, '')
     name_up = name_norm.upper()
 
-    # Sufijo explícito "ETC" al final del nombre (separador espacio o final).
+    # Sufijo explícito "ETC" ANCLADO al final del nombre (con espacio antes).
     # Patrón típico: "iShares Physical Gold ETC", "Invesco Physical Gold ETC".
-    # Exigimos boundary para evitar matchear "FACTOR ETC..." (que no existe
-    # pero defensividad). El test '\bETC\b' al final es el más limpio.
-    if re.search(r'\bETC\b', name_up):
-        return (True, 'sufijo "ETC" en nombre')
+    # NO usar '\bETC\b' en cualquier posición: empresas/productos con "ETC"
+    # como palabra intermedia (p.ej. emisores tipo "ETC Group ...") acabarían
+    # en la casilla 0031 incorrecta. Los ETC con sufijo de clase tras "ETC"
+    # ("... ETC USD Acc") se cubren por la señal PHYSICAL+commodity de abajo.
+    if re.search(r'\sETC$', name_up):
+        return (True, 'sufijo "ETC" al final del nombre')
 
     # PHYSICAL + commodity colateralizable.
     if 'PHYSICAL' in name_up:
@@ -354,26 +370,17 @@ def classify_isin(
                 f"ISIN en whitelist SOCIMI ES ({entry.get('nombre', isin)} — {entry.get('mercado', '?')})",
                 False)
 
-    # 2.5. ETC físico — whitelist por ISIN (anclaje primario) + heurística
-    # por nombre como fallback. Va ANTES de ETF whitelist porque algunos
-    # ETCs tienen ISIN europeo (IE/JE/DE) que también encajaría en heurística
-    # ETF — la doctrina V0267-25 los califica como RCM 0031, no IIC 2224.
+    # 2.5. ETC físico — whitelist por ISIN (anclaje primario). Va ANTES de
+    # ETF whitelist porque algunos ETCs tienen ISIN europeo (IE/JE/DE) que
+    # también encajaría en heurística ETF — la doctrina V0267-25 los califica
+    # como RCM 0031, no IIC 2224. La heurística ETC por nombre (fallback) va
+    # después de las listas curadas, en el paso 3.5.
     etc_list = _load_etc_whitelist()
     if isin in etc_list:
         entry = etc_list[isin]
         return ('ETC',
                 f"ISIN en whitelist ETC ({entry.get('ticker', '?')} - {entry.get('nombre', isin)})",
                 False)
-    # Heurística por nombre — conservadora, solo dispara si hay señal clara
-    # ("PHYSICAL"+commodity o sufijo " ETC"). Si no, cae al classifier ETF/STOCK
-    # normal — preferimos falso negativo (ETC tratado como ETF) que falso
-    # positivo (ETF de mineras enviado a 0031 incorrecta).
-    is_etc_h, motivo_h = _is_etc_by_name_heuristic(name_norm)
-    if is_etc_h:
-        # Marcamos UNKNOWN=True para que el usuario pueda re-clasificar
-        # manualmente desde el Excel si la heurística se equivocó.
-        return ('ETC', f'Heurística ETC: {motivo_h}', True)
-
     # 3. ETF whitelist por ISIN — fuente curada.
     etf_list = _load_etf_whitelist()
     if isin in etf_list:
@@ -384,6 +391,19 @@ def classify_isin(
     blacklist = _load_stock_blacklist()
     if isin in blacklist:
         return ('STOCK', f"ISIN en blacklist (empresa con nombre engañoso): {blacklist[isin].get('motivo', '')}", False)
+
+    # 3.5. Heurística ETC por nombre — conservadora, solo dispara si hay señal
+    # clara ("PHYSICAL"+commodity o sufijo " ETC" al final). Va DESPUÉS de las
+    # whitelists ETF y blacklist STOCK (prioridad documentada: fuente curada >
+    # heurística) — un ISIN curado como ETF/STOCK nunca debe acabar en 0031
+    # por su nombre. Si no hay señal, cae al classifier ETF/STOCK normal —
+    # preferimos falso negativo (ETC tratado como ETF) que falso positivo
+    # (ETF de mineras enviado a 0031 incorrecta).
+    is_etc_h, motivo_h = _is_etc_by_name_heuristic(name_norm)
+    if is_etc_h:
+        # Marcamos UNKNOWN=True para que el usuario pueda re-clasificar
+        # manualmente desde el Excel si la heurística se equivocó.
+        return ('ETC', f'Heurística ETC: {motivo_h}', True)
 
     # 4. Heurística DERIVATIVE (DeGiro no expone Asset Category).
     # Se aplica ANTES de la heurística ETF para que un nombre tipo
@@ -428,12 +448,19 @@ def classify_isin(
 
     # 5. Heurística ETF — marca de gestora + ISIN europeo.
     if name_norm:
-        # Marca de gestora reconocida → señal fuerte.
+        # Marca de gestora reconocida → señal fuerte, pero NO suficiente:
+        # la propia gestora puede ser una acción cotizada (Amundi SA cotiza
+        # en Euronext París con ISIN FR). Exigimos además una señal de fondo
+        # (UCITS/ETF/índice) en el nombre.
         for marca in _ETF_GESTORA_MARCAS:
             if marca.lower() in name_norm.lower():
                 # Reforzar con ISIN europeo para confirmar.
                 if isin[:2] in _ETF_FRIENDLY_COUNTRIES:
-                    return ('ETF', f"Marca gestora '{marca}' + ISIN europeo {isin[:2]}", False)
+                    if _RE_ETF_SENAL_FONDO.search(name_norm):
+                        return ('ETF', f"Marca gestora '{marca}' + ISIN europeo {isin[:2]} + término de fondo/índice", False)
+                    # Marca + ISIN europeo pero sin UCITS/índice en el nombre:
+                    # probable acción de la propia gestora → STOCK revisable.
+                    return ('STOCK', f"Marca gestora '{marca}' + ISIN europeo {isin[:2]} pero sin término de fondo/índice (UCITS, MSCI…) — posible acción de la gestora, tratado como acción (UNKNOWN, revisable)", True)
                 else:
                     # Marca pero ISIN no europeo — improbable que sea ETF UCITS, dudoso.
                     return ('STOCK', f"Marca gestora '{marca}' detectada pero ISIN no europeo ({isin[:2]}) — tratado como acción por defensividad", True)

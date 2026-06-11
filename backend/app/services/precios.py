@@ -256,12 +256,18 @@ def _fx_eur(divisa: str, cache: dict) -> Decimal | None:
     par = f"EUR{base}=X"
     entry = cache.get(f"fx:{par}", {})
     rate = entry.get("valor")
-    if not rate:
+    # TTL: el FX caduca como los precios (auditoría Cima 2026-06-11, A1 —
+    # antes `if not rate` nunca refrescaba: un tipo de cambio de hace meses
+    # se mezclaba con precios frescos en todas las valoraciones, pese a que
+    # el docstring del módulo promete TTL 6h). Si el refetch falla, se
+    # conserva el valor rancio (mejor FX viejo que posición sin valorar).
+    if not rate or not _fresco(entry, _TTL_PX):
         v = _precio_y_divisa(par)   # los pares FX también via history
-        if v is None:
+        if v is not None:
+            rate = v[0]
+            cache[f"fx:{par}"] = {"valor": rate, "ts": time.time()}
+        elif not rate:
             return None
-        rate = v[0]
-        cache[f"fx:{par}"] = {"valor": rate, "ts": time.time()}
     return (Decimal("1") / Decimal(str(rate))) * escala
 
 

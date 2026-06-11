@@ -1,12 +1,19 @@
-"""Cálculo de intereses — RCM (casilla 0023) e informativo no deducible.
+"""Cálculo de intereses — RCM (casilla 0027) e informativo no deducible.
 
-Lee las transacciones tipo INTEREST. El tipo (credit / debit / bond_interest)
+Lee las transacciones tipo INTEREST y STAKING_REWARD. El tipo (credit / debit / bond_interest)
 y la casilla se guardaron en `notas` como JSON al importar (ver adapter). Si la
 nota no es JSON (formato antiguo) se infiere el tipo por el signo del importe.
 
 Clasificación fiscal (Cuádrate):
-  - credit  → RCM, casilla 0023 (intereses de cuentas).
-  - bond_interest → RCM, casilla 0023 (cupones).
+  - credit  → RCM, casilla 0027 (intereses de cuentas).
+  - bond_interest → RCM, casilla 0027 (cupones).
+  - staking → RCM en especie, casilla 0027 (DGT V1766-22, Art. 25.2 + 43.1
+    LIRPF; alternativa doctrinal 0031, cuota idéntica).
+
+NOTA casilla: el 0023 anterior era el default legacy erróneo arrastrado de
+Cuádrate (V1 auditoría 2026-06-11 — la casilla verificada contra RentaWEB
+es 0027). Las notas JSON de importaciones antiguas pueden traer '0023';
+se normalizan a '0027' al leer.
   - debit   → interés pagado al broker. NO deducible automáticamente para
     particulares (Art. 26.1.b LIRPF, criterio AEAT). Informativo.
 """
@@ -27,7 +34,7 @@ from app.db import models
 class InteresLinea:
     fecha: date
     tipo: str                # credit / debit / bond_interest
-    casilla: str | None      # '0023' o None
+    casilla: str | None      # '0027' o None
     descripcion: str
     divisa: str
     importe_eur: Decimal
@@ -38,7 +45,7 @@ class InteresLinea:
 class InteresesResultado:
     ejercicio: int                   # 0 = acumulado
     lineas: list[InteresLinea]
-    rcm_total: Decimal               # credit + bond → casilla 0023
+    rcm_total: Decimal               # credit + bond + staking → casilla 0027
     debit_total: Decimal             # informativo, no deducible (negativo)
     neto_total: Decimal              # suma de todos los importes
     fecha_calculo: date
@@ -64,7 +71,7 @@ def _meta_de_notas(notas: str | None, importe: Decimal) -> dict:
     if importe < 0:
         return {"tipo": "debit", "casilla": None, "descripcion": notas or "",
                 "divisa": "EUR"}
-    return {"tipo": "credit", "casilla": "0023", "descripcion": notas or "",
+    return {"tipo": "credit", "casilla": "0027", "descripcion": notas or "",
             "divisa": "EUR"}
 
 
@@ -75,7 +82,7 @@ def calcular_intereses(
         select(models.Transaccion)
         .where(models.Transaccion.cartera_id == cartera_id)
         .where(models.Transaccion.estado == "confirmada")
-        .where(models.Transaccion.tipo == "INTEREST")
+        .where(models.Transaccion.tipo.in_(["INTEREST", "STAKING_REWARD"]))
         .order_by(models.Transaccion.fecha)
     ).scalars())
     if ejercicio is not None:
@@ -88,9 +95,18 @@ def calcular_intereses(
     neto_total = Decimal("0")
     for t in txs:
         importe = Decimal(str(t.importe_eur))
-        meta = _meta_de_notas(t.notas, importe)
+        if t.tipo == "STAKING_REWARD":
+            # RCM en especie (DGT V1766-22): valor EUR al momento de la
+            # recepción. Antes era INVISIBLE para el resumen fiscal
+            # (auditoría Cima 2026-06-11, A2 — espejo del CL7 de Cuádrate).
+            meta = {"tipo": "staking", "casilla": "0027",
+                    "descripcion": t.notas or "Staking reward", "divisa": "EUR"}
+        else:
+            meta = _meta_de_notas(t.notas, importe)
         tipo = meta.get("tipo") or ("debit" if importe < 0 else "credit")
         casilla = meta.get("casilla")
+        if casilla == "0023":
+            casilla = "0027"   # normalizar legacy (V1)
         if t.broker_id not in alias_cache:
             alias_cache[t.broker_id] = _broker_alias(db, t.broker_id)
         lineas.append(InteresLinea(
@@ -103,7 +119,7 @@ def calcular_intereses(
             broker=alias_cache[t.broker_id],
         ))
         neto_total += importe
-        if tipo in ("credit", "bond_interest"):
+        if tipo in ("credit", "bond_interest", "staking"):
             rcm_total += importe
         elif tipo == "debit":
             debit_total += importe

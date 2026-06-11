@@ -1,12 +1,12 @@
 {
-  "_comentario": "Lista curada de ISINs de ETFs UCITS y SICAV índice cotizadas más comunes en carteras retail españolas. Usado por instrument_classifier.py para clasificar operaciones DeGiro como ETF vs Acción. AMPLIABLE: añadir nuevas entradas según aparezcan en informes de usuarios (los UNKNOWN del classifier son la fuente principal de candidatos a añadir).",
+  "_comentario": "Lista curada de ISINs de ETFs UCITS y SICAV índice cotizadas más comunes en carteras retail españolas. Usado por instrument_classifier.py para clasificar operaciones DeGiro como ETF vs Acción. AMPLIABLE: añadir nuevas entradas según aparezcan en informes de usuarios (los UNKNOWN del classifier son la fuente principal de candidatos a añadir). IMPORTANTE: los ETC físicos (Physical Gold/Silver…) NO van aquí sino en etc_isin_list.json (RCM 0031, DGT V0267-25) — auditoría 2026-06-11 retiró IE00B4ND3602, IE00B579F325 y JE00B1VS3770 que colisionaban o estaban mal archivados.",
   "_fuentes": [
     "Listados públicos de gestoras: ishares.com, vanguard.com, amundi.com, xtrackers.com, ssga.com, invesco.com",
     "justETF.com (catálogo UCITS)",
     "Verificación cruzada con tickers más comunes en DeGiro/IBKR para inversores españoles"
   ],
   "_estructura": "Cada entrada: ISIN → {nombre, gestora, indice} (campos opcionales además de ISIN)",
-  "_actualizado": "2026-05-06",
+  "_actualizado": "2026-06-11",
 
   "etfs": {
     "IE00B4L5Y983": {"nombre": "iShares Core MSCI World UCITS ETF (Acc)", "gestora": "iShares", "indice": "MSCI World"},
@@ -16,7 +16,6 @@
     "IE00B53L3W79": {"nombre": "iShares Core EURO STOXX 50 UCITS ETF", "gestora": "iShares", "indice": "EURO STOXX 50"},
     "IE00B14X4M10": {"nombre": "iShares MSCI Europe UCITS ETF", "gestora": "iShares", "indice": "MSCI Europe"},
     "IE00B14X4S71": {"nombre": "iShares MSCI North America UCITS ETF", "gestora": "iShares", "indice": "MSCI North America"},
-    "IE00B4ND3602": {"nombre": "iShares Core MSCI Pacific ex-Japan UCITS", "gestora": "iShares", "indice": "MSCI Pacific ex-Japan"},
     "IE00B441G979": {"nombre": "iShares MSCI Japan UCITS ETF", "gestora": "iShares", "indice": "MSCI Japan"},
     "IE00BKBF6H66": {"nombre": "iShares MSCI World ESG Screened UCITS", "gestora": "iShares", "indice": "MSCI World ESG"},
     "IE00BFY0GT14": {"nombre": "SPDR MSCI ACWI IMI UCITS ETF", "gestora": "SPDR", "indice": "MSCI ACWI IMI"},
@@ -83,8 +82,6 @@
     "IE00B4L60045": {"nombre": "iShares MSCI World Small Cap UCITS", "gestora": "iShares", "indice": "MSCI World Small Cap"},
     "IE00BJZ2DD79": {"nombre": "SPDR Bloomberg Barclays U.S. Treasury Bond UCITS", "gestora": "SPDR", "indice": "Bloomberg US Treasury"},
     "IE00BMTX1Y45": {"nombre": "Invesco Bloomberg Commodity UCITS", "gestora": "Invesco", "indice": "Bloomberg Commodity"},
-    "IE00B579F325": {"nombre": "WisdomTree Physical Gold", "gestora": "WisdomTree", "indice": "Gold"},
-    "JE00B1VS3770": {"nombre": "WisdomTree Physical Silver", "gestora": "WisdomTree", "indice": "Silver"},
     "DE000A0H0728": {"nombre": "iShares Stoxx Europe 600 UCITS ETF", "gestora": "iShares", "indice": "Stoxx Europe 600"},
     "DE0005933931": {"nombre": "iShares EURO STOXX 50 UCITS (DE)", "gestora": "iShares", "indice": "EURO STOXX 50"},
     "DE0005933923": {"nombre": "iShares Core DAX UCITS", "gestora": "iShares", "indice": "DAX"},

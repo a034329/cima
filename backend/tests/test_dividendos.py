@@ -163,9 +163,17 @@ def pos_etf_irlandes(db: Session, cartera: models.Cartera) -> models.Posicion:
 def test_etf_extranjero_con_retencion_pais_es_no_es_nacional(
     db, cartera, broker_degiro, pos_etf_irlandes,
 ) -> None:
-    """Regresión: un ETF irlandés con `retencion_pais='ES'` (retención a cuenta
-    de broker español) NO debe contar como pagador nacional ni inflar la
-    retención ES. El país se deriva del domicilio del ISIN (IE), como Cuádrate."""
+    """Un ETF irlandés con `retencion_pais='ES'` (retención a cuenta de broker
+    español, TR Sucursal/DeGiro ES) NO es pagador nacional — el país se deriva
+    del domicilio del ISIN (IE) — pero su retención SÍ es retención IRPF
+    española acreditable (0591/0597, la que el broker reporta al Modelo 198).
+
+    ACTUALIZADO en la auditoría 2026-06-11 (C2): la versión anterior exigía
+    ret_es_total == 0, lo que mandaba la retención ES al cómputo CDI (capada
+    al tope del convenio → crédito perdido y 0591 vacío). El contrato del
+    vendor post-F2 y la nota justificativa AEAT real (JEPQ 1.322,18/161,32
+    declarados como retención española) fijan el comportamiento correcto:
+    pagador extranjero + retención española separada."""
     db.add(_div(cartera=cartera, broker=broker_degiro, posicion=pos_etf_irlandes,
                 fecha=date(2025, 3, 7), bruto=Decimal("1000"),
                 retencion=Decimal("121"), pais="ES"))
@@ -174,7 +182,8 @@ def test_etf_extranjero_con_retencion_pais_es_no_es_nacional(
     pagador = r.resumen[0]
     assert pagador["pais"] == "IE"
     assert pagador["es_nacional"] is False
-    assert r.ret_es_total == Decimal("0")     # no es retención de pagador ES
+    assert r.ret_es_total == Decimal("121")   # retención ES acreditable (0591)
+    assert r.cdi_recuperable_total == Decimal("0")  # nada al CDI: no hubo origen
 
 
 def test_serie_dividendos_por_anio_y_mes(db, cartera, broker_degiro, pos_us) -> None:

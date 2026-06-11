@@ -1,4 +1,4 @@
-"""Endpoint de Intereses — RCM (casilla 0023) e informativo no deducible."""
+"""Endpoint de Intereses — RCM (casilla 0027) e informativo no deducible."""
 from __future__ import annotations
 
 from datetime import date
@@ -32,7 +32,7 @@ class InteresLineaOut(BaseModel):
 class InteresesResumen(BaseModel):
     ejercicio: int
     fecha_calculo: date
-    rcm_total: Decimal = Field(decimal_places=2)       # casilla 0023
+    rcm_total: Decimal = Field(decimal_places=2)       # casilla 0027
     debit_total: Decimal = Field(decimal_places=2)     # informativo no deducible
     neto_total: Decimal = Field(decimal_places=2)
     n_lineas: int
@@ -79,7 +79,7 @@ def get_intereses_acumulado(db: Session = Depends(get_db)) -> InteresesResumen:
 
 
 @router.get("/{ejercicio}", response_model=InteresesResumen,
-            summary="Intereses del ejercicio (RCM casilla 0023)")
+            summary="Intereses del ejercicio (RCM casilla 0027)")
 def get_intereses(ejercicio: int, db: Session = Depends(get_db)) -> InteresesResumen:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(

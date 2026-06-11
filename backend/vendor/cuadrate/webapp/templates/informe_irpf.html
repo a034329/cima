@@ -395,7 +395,8 @@
     {% if matches_by_isin_crypto|length > 0 %}<li><a href="#sec-crypto">Criptomonedas</a> <span class="casilla">1800-1806</span></li>{% endif %}
     {% if dividendos %}<li><a href="#sec-divs">Dividendos y deducción CDI</a> <span class="casilla">0029 · 0588</span></li>{% endif %}
     {% if interest_data %}<li><a href="#sec-interest-ibkr">Intereses IBKR (Credit / Debit / Bond)</a> <span class="casilla">0027 (IBKR)</span></li>{% endif %}
-    {% if tbills_data %}<li><a href="#sec-tbills">Intereses Treasury Bills</a> <span class="casilla">0027 (IBKR)</span></li>{% endif %}
+    {% if tbills_data %}<li><a href="#sec-tbills">Intereses Treasury Bills</a> <span class="casilla">0030 (IBKR)</span></li>{% endif %}
+    {% if staking_data %}<li><a href="#sec-staking">Staking de criptomonedas</a> <span class="casilla">0027</span></li>{% endif %}
     {% if plataforma_data and plataforma_data.total > 0 %}<li><a href="#sec-plataforma">Gastos del broker (administración y depósito)</a> <span class="casilla">0037</span></li>{% endif %}
     {% if compensacion %}<li><a href="#sec-compensacion">Compensación de pérdidas (Art. 49 LIRPF)</a> <span class="casilla">1186+</span></li>{% endif %}
     {% if por_broker %}<li><a href="#sec-por-broker">Desglose por broker (auditoría Modelo 198)</a> <span class="casilla">verificación</span></li>{% endif %}
@@ -473,6 +474,33 @@
   <p style="font-size:9pt;margin-top:6px">
     Guía completa con casos reales y mecánica AEAT paso a paso:
     <a href="https://cuadrate.es{{ perfil_daytrader.url_pillar }}" style="color:#4f46e5;text-decoration:underline">cuadrate.es/blog/daytrader-degiro-ibkr-renta-2025-guia-fiscal</a>.
+  </p>
+</div>
+{% endif %}
+
+{# BANNER AGRUPACIÓN RENTAWEB — Cuando hay ISINs con n_matches ≥ 20 los
+   colapsamos a max 2 filas/ISIN (Reg A integrable + Reg B 2M diferida) con
+   fechas en rango FIFO. El usuario teclea esas filas directamente en
+   RentaWeb sin tener que registrar las N operaciones individuales — el
+   resultado fiscal es matemáticamente equivalente (Σ G/P de las N ops =
+   Σ G/P de los 1-2 registros agregados, fila a fila). #}
+{% if intensive_isins_stats and intensive_isins_stats.n_total > 0 %}
+<div class="warning-box" style="background:#ecfdf5;border-color:#059669;margin-bottom:14px">
+  <strong>📋 Agrupación automática lista-para-RentaWeb</strong>
+  <p style="font-size:9pt;margin-top:6px">
+    Se han detectado <strong>{{ intensive_isins_stats.n_total }} valor{{ '' if intensive_isins_stats.n_total == 1 else 'es' }} con operativa intensiva</strong>
+    {% if intensive_isins_stats.n_daytrading > 0 and intensive_isins_stats.n_swing > 0 %}({{ intensive_isins_stats.n_daytrading }} daytrading, {{ intensive_isins_stats.n_swing }} swing intensivo){% elif intensive_isins_stats.n_daytrading > 0 %}({{ intensive_isins_stats.n_daytrading }} daytrading){% else %}({{ intensive_isins_stats.n_swing }} swing intensivo){% endif %},
+    sumando <strong>{{ intensive_isins_stats.n_matches_total }} operaciones FIFO</strong>.
+    En lugar del detalle operación-a-operación, las verás colapsadas a un <strong>máximo de 2 filas por ISIN</strong>:
+  </p>
+  <ul style="font-size:9pt;margin-top:4px;padding-left:18px">
+    <li><strong>Reg A — Integrable:</strong> ganancias y pérdidas sin regla 2M, con la PD aflorada sumada al valor de adquisición (forma A doctrinal, Art. 33.5.f LIRPF último párrafo).</li>
+    <li><strong>Reg B — Diferida 2M:</strong> pérdidas no computables este año por recompra en 2 meses. En RentaWeb marca el checkbox <em>«No imputación de pérdidas por recompra de valores homogéneos»</em>.</li>
+  </ul>
+  <p style="font-size:9pt;margin-top:6px">
+    <strong>Fechas:</strong> rango FIFO consumido (lote más antiguo → última venta del bloque), convención utilizada por los certificados pre-IRPF de Renta4 / Mediolanum / Singular.
+    <strong>Garantía matemática:</strong> Σ G/P de las {{ intensive_isins_stats.n_matches_total }} operaciones = Σ G/P de las filas agregadas, fila a fila.
+    El detalle operación-a-operación está en la hoja <code>G_P_por_valor</code> del XLSX (botón [+] del ISIN para expandirlo).
   </p>
 </div>
 {% endif %}
@@ -641,15 +669,15 @@
     {% if split_etcs.n_matches > 0 %}
     <tr>
       <td><span class="casilla">0031</span></td>
-      <td>RCM ETCs físicos (oro / plata / platino / paladio) — {{ split_etcs.n_matches }} match{{ '' if split_etcs.n_matches == 1 else 'es' }} · Art. 25.2.b LIRPF · DGT V0267-25</td>
-      <td class="text-right {{ 'gain' if split_etcs.bruto >= 0 else 'loss' }}"><strong>{{ format_eur(split_etcs.bruto) }}</strong></td>
+      <td>RCM ETCs físicos (oro / plata / platino / paladio) — {{ split_etcs.n_matches }} match{{ '' if split_etcs.n_matches == 1 else 'es' }} · Art. 25.2.b LIRPF · DGT V0267-25{% if split_etcs.no_deducible_2m != 0 %}<br><span style="font-size:8pt;color:#dd6b20">Incluye {{ format_eur(split_etcs.no_deducible_2m) }} de RCM negativo diferido por recompra ±2M (Art. 25.2 último párrafo) — excluido del total</span>{% endif %}</td>
+      <td class="text-right {{ 'gain' if split_etcs.neto_deducible >= 0 else 'loss' }}"><strong>{{ format_eur(split_etcs.neto_deducible) }}</strong></td>
     </tr>
     {% endif %}
     {% if split_bonds.n_matches > 0 %}
     <tr>
       <td><span class="casilla">0031</span></td>
-      <td>G/P Bonos individuales — transmisión / amortización ({{ split_bonds.n_matches }} match{{ '' if split_bonds.n_matches == 1 else 'es' }}). Cupones cobrados → casilla 0027 (intereses)</td>
-      <td class="text-right {{ 'gain' if split_bonds.bruto >= 0 else 'loss' }}"><strong>{{ format_eur(split_bonds.bruto) }}</strong></td>
+      <td>G/P Bonos individuales — transmisión / amortización ({{ split_bonds.n_matches }} match{{ '' if split_bonds.n_matches == 1 else 'es' }}). Cupones cobrados → casilla 0027 (intereses){% if split_bonds.no_deducible_2m != 0 %}<br><span style="font-size:8pt;color:#dd6b20">Incluye {{ format_eur(split_bonds.no_deducible_2m) }} de RCM negativo diferido por recompra ±2M (Art. 25.2 último párrafo) — excluido del total</span>{% endif %}</td>
+      <td class="text-right {{ 'gain' if split_bonds.neto_deducible >= 0 else 'loss' }}"><strong>{{ format_eur(split_bonds.neto_deducible) }}</strong></td>
     </tr>
     {% endif %}
 
@@ -697,6 +725,13 @@
     </tr>
     {% else %}
     <tr><td><span class="casilla">0030</span></td><td>Letras del Tesoro</td><td class="text-right text-muted">—</td></tr>
+    {% endif %}
+    {% if staking_data %}
+    <tr>
+      <td><span class="casilla">0027</span></td>
+      <td>Staking de criptomonedas (RCM en especie — DGT V1766-22)</td>
+      <td class="text-right gain"><strong>{{ format_eur(staking_data.total) }}</strong></td>
+    </tr>
     {% endif %}
     {% if plataforma_data and plataforma_data.total > 0 %}
     <tr>
@@ -768,6 +803,66 @@
 </div>
 {% endif %}
 
+<!-- ══ 7-bis. ESCISIONES RESUELTAS AUTOMATICAMENTE ══════════════════════════ -->
+{% if spinoffs_aplicados_previos %}
+<h2 id="sec-spinoffs-auto">Escisiones resueltas automáticamente — auditoria
+  <span class="traffic-light tl-verde">🟢 NO REQUIERE ACCIÓN</span>
+</h2>
+<div class="success-box" style="background:#dcfce7;border-left:4px solid #15803d;padding:10px 14px;border-radius:4px;margin:6px 0">
+  <strong>✅ Cuádrate ha aplicado el doble ajuste automáticamente</strong> para las
+  escisiones del catálogo verificado (Form 8937 oficial del emisor). El coste
+  prorrateado ya está en la fila <code>AD</code> de la empresa escindida
+  <strong>y</strong> los lotes anteriores de la matriz se han reducido × el
+  ratio residual. No tienes que editar el XLSX para estos casos — sólo se
+  listan abajo para que puedas auditar lo aplicado contra el Form 8937.
+  <br><br>
+  Doctrina: <strong>Art. 37.1.a §4 LIRPF</strong> (reparto proporcional del
+  valor de adquisición entre matriz y escindida según valor de mercado en la
+  fecha efectiva).
+</div>
+<table class="data">
+  <thead>
+    <tr>
+      <th>Fecha efectiva</th>
+      <th>Matriz</th>
+      <th>Escindida</th>
+      <th class="text-right">Ratio escindida</th>
+      <th class="text-right">Ratio matriz residual</th>
+      <th class="text-right">Coste aplicado a la escindida</th>
+      <th>Fuente (Form 8937)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in spinoffs_aplicados_previos %}
+    <tr>
+      <td class="nowrap">{{ s.fecha }}</td>
+      <td>{{ s.nombre_matriz }} <code style="font-size:.78em">{{ s.isin_matriz }}</code></td>
+      <td>{{ s.nombre_escindida }} <code style="font-size:.78em">{{ s.isin_escindida }}</code></td>
+      <td class="text-right nowrap">{{ "%.4f"|format(s.ratio_coste_escindida) }}</td>
+      <td class="text-right nowrap">{{ "%.4f"|format(s.ratio_coste_matriz) }}</td>
+      <td class="text-right nowrap">{{ "%.2f"|format(s.coste_aplicado_eur) }} €</td>
+      <td style="font-size:.78em">{{ s.fuente[:120] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p style="font-size:8.5pt;color:#475569;margin-top:6px">
+  ↑ <strong>Cómo auditarlo</strong>: abre <code>cartera_valores_irpf_AAAA.xlsx</code> → hoja
+  <em>Operaciones</em> → busca las filas <code>AD</code> del ISIN matriz anteriores
+  a la fecha efectiva. Su columna <em>Coste/Importe</em> es el coste original del
+  extracto del broker × <em>ratio matriz residual</em>. La fila <code>AD</code> de la
+  escindida lleva el coste prorrateado (col F) y un comentario con la trazabilidad
+  completa. Si tu broker o asesor usa un ratio distinto, edita ambas zonas manualmente.
+</p>
+<p style="font-size:8.5pt;color:#475569;margin-top:4px;font-style:italic">
+  Para <strong>"Mi cartera de valores"</strong> de RentaWEB: edita el
+  <em>Valor de adquisición</em> de cada operación AD original de la matriz al
+  importe ya reducido del XLSX. No hay código MCV específico para escisión;
+  la edición es legítima — no rectifica declaraciones pasadas, sólo ajusta
+  la base FIFO para futuras transmisiones.
+</p>
+{% endif %}
+
 <!-- ══ 8. REVISAR MANUALMENTE ══════════════════════════════════════════════ -->
 {% if corp_complejos or corp_sin_clasif or corp_spin_offs or warnings or ns_man.residuales_pendientes > 0 %}
 <h2 id="sec-revisar">Revisar manualmente — eventos que requieren tu atención
@@ -794,9 +889,66 @@
     <li>Busca el valor de mercado de matriz y escindida en la <strong>fecha efectiva de la escisión</strong> (Yahoo Finance, AEAT, web del emisor).</li>
     <li>Calcula el % de coste a transferir: <em>ValorMdo_escindida / (ValorMdo_matriz + ValorMdo_escindida)</em>.</li>
     <li>Abre <code>cartera_valores_irpf_{{ ejercicio }}.xlsx</code> → hoja <strong>Operaciones</strong> → busca la fila de la compra de la empresa escindida (coste actual 0 EUR, resaltada en rojo/amarillo). Edita la celda <strong>columna F (Coste/Importe)</strong> con el coste prorrateado.</li>
-    <li>En la misma hoja <em>Operaciones</em>, busca la fila de la compra de la <strong>matriz</strong> y <strong>réstale</strong> ese mismo importe en su columna F (Coste/Importe).</li>
+    <li>En la misma hoja <em>Operaciones</em>, busca <strong>TODAS las filas AD anteriores de la matriz</strong> (una por cada compra histórica) y <strong>multiplica</strong> el Coste/Importe de cada una por <em>(1 − r)</em>. <strong>NO restes un importe fijo a una sola fila</strong>: el reparto es proporcional al coste de cada lote, así los lotes caros siguen siendo proporcionalmente caros (Art. 37.1.a §4 LIRPF). El ejemplo numérico de abajo muestra cómo aplicarlo a una cartera con varios lotes.</li>
     <li>Las G/P por valor, totales por casilla y la hoja <em>Resumen</em> se recalculan automáticamente mediante las fórmulas FIFO enlazadas.</li>
   </ol>
+  <details style="margin-top:8px">
+    <summary style="cursor:pointer;color:#9a7515;font-weight:600">
+      Ver ejemplo numérico (3M → Solventum)
+    </summary>
+    <div style="margin-top:6px;padding:8px;background:#fffbf0;border-left:3px solid #e6b763;border-radius:4px;font-size:.8rem">
+      <p><strong>Ratio oficial Form 8937</strong> (3M Company, abr-2024):
+      <code>r = 0,1552</code>. La matriz residual mantiene <code>1 − r = 0,8448</code>.
+      Fuente: <a href="https://d1io3yog0oux5.cloudfront.net/_fce4b6e1ccf794ceb01e5f143ac774ea/3m/files/pages/3m/db/3298/description/Form_8937_SOLVSpin.pdf" target="_blank" rel="noopener">3M Form 8937 — Attachment Part II</a>
+      (precios cierre 1-abr-2024: MMM $94,02; SOLV $69,10).</p>
+
+      <p><strong>Cartera previa de 3M</strong> (3 lotes en años distintos):</p>
+      <table style="width:auto;border-collapse:collapse;margin:6px 0">
+        <tr><th>Lote</th><th>Año</th><th>Cant.</th><th>Coste/acc</th><th>Coste lote</th></tr>
+        <tr><td>L1</td><td>2017</td><td>10</td><td>180 €</td><td>1.800 €</td></tr>
+        <tr><td>L2</td><td>2019</td><td>20</td><td>200 €</td><td>4.000 €</td></tr>
+        <tr><td>L3</td><td>2022</td><td>30</td><td>130 €</td><td>3.900 €</td></tr>
+        <tr style="border-top:1px solid #999">
+          <td colspan="4"><strong>Total pre</strong></td><td><strong>9.700 €</strong></td>
+        </tr>
+      </table>
+
+      <p><strong>PASO 1 — Coste a transferir a Solventum</strong> (en esta fila AD del XLSX):</p>
+      <p style="font-family:monospace;background:#fff;padding:6px;border-radius:4px">
+        9.700 × 0,1552 = <strong>1.505,44 €</strong>
+      </p>
+
+      <p><strong>PASO 2 — Reducir cada lote de 3M proporcionalmente</strong>
+      (multiplicar Coste/Importe × 0,8448, no restar un importe fijo):</p>
+      <table style="width:auto;border-collapse:collapse;margin:6px 0">
+        <tr><th>Lote</th><th>Pre</th><th>× 0,8448</th><th>Post</th><th>Coste/acc post</th></tr>
+        <tr><td>L1</td><td>1.800 €</td><td></td><td>1.520,64 €</td><td>152,06 €</td></tr>
+        <tr><td>L2</td><td>4.000 €</td><td></td><td>3.379,20 €</td><td>168,96 €</td></tr>
+        <tr><td>L3</td><td>3.900 €</td><td></td><td>3.294,72 €</td><td>109,82 €</td></tr>
+        <tr style="border-top:1px solid #999">
+          <td colspan="3"><strong>Total post</strong></td><td><strong>8.194,56 €</strong></td><td></td>
+        </tr>
+      </table>
+
+      <p><strong>Comprobación:</strong>
+      <code>8.194,56 + 1.505,44 = 9.700,00 €</code> ✓ — el coste original se conserva, se reparte.</p>
+
+      <p style="margin-top:8px;font-style:italic;color:#666">
+        Si lo transcribes a "Mi cartera de valores" de RentaWEB: edita el
+        <strong>Valor de adquisición</strong> de cada operación AD original de 3M
+        al nuevo importe de la columna "Post". No hay código MCV específico para
+        escisión; la edición es legítima porque la AD no es hecho imponible
+        — no rectifica declaraciones pasadas.
+      </p>
+
+      <p style="margin-top:6px;color:#666;font-size:.75rem">
+        ⚠️ Si en lugar de proporcional restaras un importe lineal por acción
+        (1.505,44 / 60 = 25,09 €/acc), el lote más barato (L3) absorbería un peso
+        desproporcionado y la dispersión histórica de tu cartera se distorsionaría.
+        La AEAT no admite ese reparto (Art. 37.1.a §4).
+      </p>
+    </div>
+  </details>
 </div>
 <table class="data">
   <thead>
@@ -971,30 +1123,40 @@
 </div>
 {% endif %}
 
-{% macro render_monthly_aggregate(group) -%}
-{% for agg in group.matches_mensual %}
-{% set _gp_integ_mes = agg.ganancia_perdida - agg.perdida_diferida_aflorada %}
-<tr{% if agg.n_regla_2m > 0 %} style="background:var(--c-amber-2)"{% elif agg.perdida_diferida_aflorada > 0 %} style="background:#dcfce7"{% endif %}>
-  <td colspan="2" class="nowrap"><strong>{{ agg.label }}</strong> · {{ agg.n_matches }} op.</td>
-  <td class="text-right">{{ agg.cantidad }}</td>
-  <td class="text-right nowrap">{{ format_eur(agg.coste_adquisicion + agg.perdida_diferida_aflorada) }}{% if agg.perdida_diferida_aflorada > 0 %} <span style="font-size:.78em;color:#15803d;font-weight:600">✓ PD</span>{% endif %}</td>
-  <td class="text-right nowrap">{{ format_eur(agg.importe_transmision) }}</td>
-  <td class="text-right nowrap">{{ format_eur(agg.gastos_venta) }}</td>
-  <td class="text-right nowrap {{ 'gain' if _gp_integ_mes >= 0 else 'loss' }}">{{ format_eur(_gp_integ_mes) }}</td>
+{% macro render_rentaweb_aggregate(group) -%}
+{# Vista "lista-para-RentaWeb": hasta 2 filas por ISIN — Reg A (integrable)
+   y Reg B (diferida 2M). Reemplaza el detalle operacion-a-operacion cuando
+   el ISIN tiene >=20 matches. El usuario teclea estas 1-2 filas directamente
+   en RentaWeb (casilla 0326-0340 / 2224-2236 / etc.) y obtiene exactamente
+   el mismo resultado fiscal que si introdujera N operaciones individuales.
+   Detalle por operacion: hoja G_P_por_valor del XLSX (outline expandible).  #}
+<tr style="background:#eff6ff;font-size:8.5pt">
+  <td colspan="8" style="padding:6px 8px;color:#1e3a8a;border-bottom:1px solid #93c5fd">
+    {% if group.pattern == "daytrading" %}<span style="background:#dc2626;color:#fff;padding:2px 7px;border-radius:3px;font-weight:700;font-size:8pt">DAYTRADING DETECTADO</span>
+    {% else %}<span style="background:#d97706;color:#fff;padding:2px 7px;border-radius:3px;font-weight:700;font-size:8pt">SWING INTENSIVO</span>
+    {% endif %}
+    <strong>{{ group.n_matches }} operaciones</strong>{% if group.n_intraday > 0 %} · {{ ((group.ratio_intraday * 100) | round(0) | int) }}% intradia ({{ group.n_intraday }} ops mismo dia){% endif %} ·
+    agregado a <strong>{{ group.rentaweb_aggregate | length }} fila{{ '' if (group.rentaweb_aggregate | length) == 1 else 's' }} lista{{ '' if (group.rentaweb_aggregate | length) == 1 else 's' }}-para-RentaWeb</strong>.
+    Detalle por operacion: hoja <strong>G_P_por_valor</strong> del XLSX (expandir el [+] del ISIN).
+  </td>
+</tr>
+{% for reg in group.rentaweb_aggregate %}
+<tr{% if reg.marca_2m %} style="background:var(--c-amber-2)"{% elif reg.pd_aflorada > 0 %} style="background:#dcfce7"{% endif %}>
+  <td class="nowrap" title="Fecha de adquisicion mas antigua del lote FIFO consumido">{{ reg.fecha_adquisicion.strftime('%d/%m/%Y') }}</td>
+  <td class="nowrap" title="Fecha de transmision mas reciente del bloque">{{ reg.fecha_transmision.strftime('%d/%m/%Y') }}</td>
+  <td class="text-right">{{ reg.cantidad }}</td>
+  <td class="text-right nowrap"{% if reg.pd_aflorada > 0 %} title="Coste FIFO {{ format_eur(reg.coste_fifo) }} + PD aflorada {{ format_eur(reg.pd_aflorada) }} (Art. 33.5.f LIRPF ultimo parrafo)"{% endif %}>
+    {{ format_eur(reg.coste_a_declarar) }}{% if reg.pd_aflorada > 0 %} <span style="font-size:.78em;color:#15803d;font-weight:600">✓ PD</span>{% endif %}
+  </td>
+  <td class="text-right nowrap">{{ format_eur(reg.importe_transmision) }}</td>
+  <td class="text-right nowrap">{{ format_eur(reg.gastos_venta) }}</td>
+  <td class="text-right nowrap {{ 'gain' if reg.ganancia_perdida >= 0 else 'loss' }}">{{ format_eur(reg.ganancia_perdida) }}</td>
   <td style="font-size:.78em">
-    {% if agg.n_regla_2m > 0 %}<span class="badge-2m" title="{{ agg.n_regla_2m }} matches del mes con regla 2M">2M×{{ agg.n_regla_2m }}</span> {% endif %}
-    {% if agg.perdida_diferida_aflorada > 0 %}<span class="badge-2m" style="background:#15803d" title="Suma de PD afloradas del mes">PD +{{ format_eur(agg.perdida_diferida_aflorada) }}</span> {% endif %}
-    {% if agg.n_scrip > 0 %}<span class="badge-scrip">SCRIP×{{ agg.n_scrip }}</span> {% endif %}
+    <strong>{{ reg.label }}</strong> · {{ reg.n_matches }} op.
+    {% if reg.marca_2m %}<br><span class="badge-2m" title="Marcar checkbox 'No imputacion de perdidas por recompra' en RentaWeb">☑ 2M NO COMPUTABLE</span>{% endif %}
   </td>
 </tr>
 {% endfor %}
-<tr style="background:#f1f5f9;font-size:8pt;color:#475569">
-  <td colspan="8" style="text-align:left;font-style:italic;padding:6px 8px">
-    ↑ Vista mensual ({{ group.n_matches }} matches agregados; umbral colapso: 30).
-    Detalle por operacion en la hoja <strong>G_P_por_valor</strong> del XLSX
-    (cartera_valores_irpf_AAAA.xlsx).
-  </td>
-</tr>
 {%- endmacro %}
 
 {% for group in matches_by_isin_acciones %}
@@ -1017,7 +1179,7 @@
     </thead>
     <tbody>
       {% if group.collapsed %}
-      {{ render_monthly_aggregate(group) }}
+      {{ render_rentaweb_aggregate(group) }}
       {% else %}
       {% for m in group.matches %}
       {% set _has_pd = m.perdida_diferida_aflorada_eur > 0 %}
@@ -1227,7 +1389,7 @@
     </thead>
     <tbody>
       {% if group.collapsed %}
-      {{ render_monthly_aggregate(group) }}
+      {{ render_rentaweb_aggregate(group) }}
       {% else %}
       {% for m in group.matches %}
       <tr{% if m.regla_2_meses %} style="background:var(--c-amber-2)"{% endif %}>
@@ -1371,7 +1533,7 @@
     </thead>
     <tbody>
       {% if group.collapsed %}
-      {{ render_monthly_aggregate(group) }}
+      {{ render_rentaweb_aggregate(group) }}
       {% else %}
       {% for m in group.matches %}
       <tr{% if m.regla_2_meses %} style="background:var(--c-amber-2)"{% endif %}>
@@ -1880,7 +2042,7 @@
 </h2>
 
 <div class="warning-box" style="background:#fef2f2;border-color:#dc2626">
-  <strong>📌 Futuros IBKR detectados</strong> (Asset Category = <code>Futures</code> en el Activity Statement). El P&amp;L que se muestra es el <strong>Realized P/L</strong> que IBKR ya consolida por contrato — incluye el multiplier (ES = 50, MES = 5, NQ = 20, MNQ = 2, CL = 1.000 barriles, GC = 100 oz, etc.) y la conversión a EUR.
+  <strong>📌 Futuros IBKR detectados</strong> (Asset Category = <code>Futures</code> en el Activity Statement). El P&amp;L que se muestra es el <strong>Realized P/L</strong> que IBKR ya consolida por contrato — incluye el multiplier (ES = 50, MES = 5, NQ = 20, MNQ = 2, CL = 1.000 barriles, GC = 100 oz, etc.), la conversión a EUR y <strong>las comisiones, ya neteadas en la base de coste</strong> (guía oficial de informes IBKR: <em>"for the purpose of cost basis and realized profit or loss, commissions are netted"</em>).
   <ul style="margin:6px 0 0 16px">
     <li><strong>Doctrina:</strong> Manual práctico AEAT, capítulo 11, sección 14 ("Operaciones realizadas en los mercados de futuros y opciones"). Las G/P de futuros especulativos van a la <strong>casilla 1626 con clave 4</strong> (Otros elementos patrimoniales no afectos a actividades económicas) del Art. 33 LIRPF, base imponible del ahorro.</li>
     <li><strong>Imputación:</strong> al ejercicio en que se <em>liquida la posición o se extingue el contrato</em>. El cross-año es automático: si abriste el contrato en el año previo y lo cerraste este año, IBKR ya consolida el Realized P/L en el statement del año del cierre — el motor lo lee tal cual y lo imputa al año correcto.</li>
@@ -1890,7 +2052,7 @@
 </div>
 
 <p style="margin-bottom: 10px; font-size: 9pt;">
-  Agregación por <strong>Symbol</strong> (cada contrato/vencimiento). El P&amp;L neto es Realized P/L menos comisiones del cierre (que IBKR liquida aparte).
+  Agregación por <strong>Symbol</strong> (cada contrato/vencimiento). El P&amp;L declarable es el Realized P/L tal cual — las comisiones ya están neteadas dentro de él; la columna Comisiones es informativa y <strong>no se resta otra vez</strong>.
 </p>
 
 <table class="data">
@@ -1902,8 +2064,8 @@
       <th class="text-right">Cierres</th>
       <th>Moneda</th>
       <th class="text-right">Realized P/L</th>
-      <th class="text-right">Comisiones</th>
-      <th class="text-right">P&amp;L neto</th>
+      <th class="text-right">Comisiones (info.)</th>
+      <th class="text-right">P&amp;L</th>
     </tr>
   </thead>
   <tbody>
@@ -2093,6 +2255,7 @@
   <strong>📌 Bonos detectados</strong> por presencia de "Cupón corrido" en DeGiro_Cuenta o por <code>Asset Category=Bonds</code> en el Activity Statement de IBKR (con cruce contra las secciones <em>Bond Interest Paid</em> / <em>Received</em> para el cupón corrido). A diferencia de las acciones, los bonos individuales se declaran en el bloque <strong>B (Rendimientos del capital mobiliario)</strong>, NO en F2 patrimoniales:
   <ul style="margin:6px 0 0 16px">
     <li><strong>Transmisión / amortización</strong> (precio limpio venta − precio limpio compra − gastos) → casilla <strong>0031</strong> (Rendimientos por transmisión, amortización o reembolso de otros activos financieros).</li>
+    <li><strong>Rendimientos negativos con recompra:</strong> si se adquirieron activos financieros homogéneos (misma emisión) en los <strong>2 meses anteriores o posteriores</strong> a la transmisión con pérdida, el Art. 25.2 LIRPF (último párrafo) difiere ese RCM negativo — se integra a medida que se transmitan los títulos que permanezcan. Las operaciones afectadas llevan el badge <span class="badge-2m">2M · Art. 25.2</span> y están excluidas del total a declarar.</li>
     <li><strong>Cupones cobrados durante la tenencia</strong> → casilla <strong>0027</strong> (Intereses de cuentas, depósitos y activos financieros en general).</li>
     <li><strong>Cupón corrido</strong> pagado al comprar suma al coste; cobrado al vender resta al importe — Cuádrate ya aplica el ajuste automáticamente al precio limpio.</li>
   </ul>
@@ -2135,7 +2298,7 @@
     </thead>
     <tbody>
       {% if group.collapsed %}
-      {{ render_monthly_aggregate(group) }}
+      {{ render_rentaweb_aggregate(group) }}
       {% else %}
       {% for m in group.matches %}
       <tr{% if m.amortizacion_inferida %} style="background:var(--c-amber-2)"{% endif %}>
@@ -2148,6 +2311,8 @@
         <td class="text-right nowrap {{ 'gain' if m.ganancia_perdida >= 0 else 'loss' }}">{{ format_eur(m.ganancia_perdida) }}</td>
         <td>
           {% if m.amortizacion_inferida %}<span class="badge-2m" style="background:#dd6b20">AMORT</span> inferida{% endif %}
+          {% if m.regla_2_meses %}<span class="badge-2m" title="{{ m.regla_2_meses_detalle }}">2M · Art. 25.2</span>{% endif %}
+          {% if m.perdida_diferida_aflorada_eur and m.perdida_diferida_aflorada_eur > 0 %}<span class="badge-2m" style="background:#15803d" title="RCM negativo diferido en ejercicio(s) anteriores que se integra en esta transmisión (Art. 25.2 LIRPF último párrafo)">PD +{{ format_eur(m.perdida_diferida_aflorada_eur) }}</span>{% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -2172,9 +2337,21 @@
 
 <table class="data" style="margin-top:14px">
   <tbody>
+    {% if split_bonds.no_deducible_2m != 0 or split_bonds.pd_aflorada != 0 %}
+    <tr>
+      <td style="font-size:8.5pt;color:#64748b">Rendimiento del año (incluye RCM negativos con recompra ±2M{% if split_bonds.pd_aflorada != 0 %} y PD aflorada{% endif %})</td>
+      <td class="text-right {{ 'gain' if split_bonds.bruto >= 0 else 'loss' }}">{{ format_eur(split_bonds.bruto) }}</td>
+    </tr>
+    {% if split_bonds.no_deducible_2m != 0 %}
+    <tr>
+      <td style="font-size:8.5pt;color:#64748b">+ RCM negativos diferidos — recompra de homogéneos ±2M (Art. 25.2 LIRPF último párrafo; filas con badge <span class="badge-2m">2M · Art. 25.2</span> — NO se integran este año)</td>
+      <td class="text-right">{{ format_eur(-split_bonds.no_deducible_2m) }}</td>
+    </tr>
+    {% endif %}
+    {% endif %}
     <tr style="background:#f0f9ff">
-      <td><strong>TOTAL Transmisión bonos {{ ejercicio }} (casilla 0031)</strong></td>
-      <td class="text-right {{ 'gain' if split_bonds.bruto >= 0 else 'loss' }}"><strong>{{ format_eur(split_bonds.bruto) }}</strong></td>
+      <td><strong>TOTAL Transmisión bonos {{ ejercicio }} a declarar (casilla 0031)</strong></td>
+      <td class="text-right {{ 'gain' if split_bonds.neto_deducible >= 0 else 'loss' }}"><strong>{{ format_eur(split_bonds.neto_deducible) }}</strong></td>
     </tr>
   </tbody>
 </table>
@@ -2183,7 +2360,7 @@
   <span class="label">Cómo introducirlo en RentaWEB</span>
   <ol style="margin:4px 0 0 16px">
     <li>Apartado <strong>B (Rendimientos del capital mobiliario)</strong> → "Alta capital mobiliario" → casilla <span class="value">0031</span> "Rendimientos procedentes de la transmisión, amortización o reembolso de otros activos financieros".</li>
-    <li>En el popup introduce <strong>Ingresos íntegros</strong> = {{ format_eur(split_bonds.bruto) }} (G/P transmisión bonos del año, cupón corrido ya integrado en el precio).</li>
+    <li>En el popup introduce <strong>Ingresos íntegros</strong> = {{ format_eur(split_bonds.neto_deducible) }} (G/P transmisión bonos del año, cupón corrido ya integrado en el precio{% if split_bonds.no_deducible_2m != 0 %}, excluidos los RCM negativos diferidos por recompra de homogéneos ±2M — Art. 25.2 LIRPF último párrafo, filas con badge 2M{% endif %}).</li>
     <li>Si cobraste cupones anuales durante la tenencia, esos van a casilla <span class="value">0027</span> (intereses) — verifica el detalle por bono en la sección de cuenta de DeGiro.</li>
   </ol>
   <p style="margin-top:8px;font-size:8.5pt;color:#dc2626">
@@ -2203,6 +2380,7 @@
   <ul style="margin:6px 0 0 16px">
     <li><strong>Doctrina vinculante:</strong> DGT <strong>V0267-25</strong> (13-03-2025) califica la transmisión de ETCs/ETN colateralizados como rendimiento del capital mobiliario por cesión a terceros (<strong>Art. 25.2.b LIRPF</strong>) — NO como ganancia/pérdida patrimonial.</li>
     <li><strong>Casilla destino:</strong> <strong>0031</strong> (Rendimientos por transmisión, amortización o reembolso de otros activos financieros) en el apartado <strong>B (Rendimientos del capital mobiliario)</strong>. NO va a 0326-0340 (acciones) ni a 2224-2236 (ETFs UCITS).</li>
+    <li><strong>Rendimientos negativos con recompra:</strong> el Art. 25.2 LIRPF (último párrafo) difiere los RCM negativos si se adquirieron activos financieros homogéneos en los <strong>2 meses anteriores o posteriores</strong> a la transmisión — se integran a medida que se transmitan los títulos que permanezcan. Es el equivalente en RCM de la regla 2M de las acciones. Las operaciones afectadas llevan el badge <span class="badge-2m">2M · Art. 25.2</span> y están excluidas del total a declarar.</li>
     <li><strong>Regla 2 meses NO aplica:</strong> el Art. 33.5.f LIRPF habla de "pérdidas patrimoniales" — los RCM no son pérdidas patrimoniales, así que una pérdida por venta de ETC sí es deducible íntegramente en el año aunque recompres el mismo ETC poco después.</li>
     <li><strong>Compensación cruzada (Art. 49 LIRPF):</strong> pérdidas RCM ETC y pérdidas G/P patrimoniales se cruzan al 25% — el resto, dentro de cada bolsa.</li>
   </ul>
@@ -2231,9 +2409,12 @@
     </thead>
     <tbody>
       {% for m in group.matches %}
-      <tr>
+      <tr{% if m.regla_2_meses %} style="background:var(--c-amber-2)"{% endif %}>
         <td class="nowrap">{{ m.fecha_compra.strftime('%d/%m/%Y') }}</td>
-        <td class="nowrap">{{ m.fecha_venta.strftime('%d/%m/%Y') }}</td>
+        <td class="nowrap">{{ m.fecha_venta.strftime('%d/%m/%Y') }}
+          {% if m.regla_2_meses %}<br><span class="badge-2m" title="{{ m.regla_2_meses_detalle }}">2M · Art. 25.2</span>{% endif %}
+          {% if m.perdida_diferida_aflorada_eur and m.perdida_diferida_aflorada_eur > 0 %}<br><span class="badge-2m" style="background:#15803d" title="RCM negativo diferido en ejercicio(s) anteriores que se integra en esta transmisión (Art. 25.2 LIRPF último párrafo)">PD +{{ format_eur(m.perdida_diferida_aflorada_eur) }}</span>{% endif %}
+        </td>
         <td class="text-right">{{ m.cantidad }}</td>
         <td class="text-right nowrap">{{ format_eur(m.coste_adquisicion) }}</td>
         <td class="text-right nowrap">{{ format_eur(m.importe_transmision) }}</td>
@@ -2254,9 +2435,21 @@
 
 <table class="data" style="margin-top:14px">
   <tbody>
+    {% if split_etcs.no_deducible_2m != 0 or split_etcs.pd_aflorada != 0 %}
+    <tr>
+      <td style="font-size:8.5pt;color:#64748b">Rendimiento del año (incluye RCM negativos con recompra ±2M{% if split_etcs.pd_aflorada != 0 %} y PD aflorada{% endif %})</td>
+      <td class="text-right {{ 'gain' if split_etcs.bruto >= 0 else 'loss' }}">{{ format_eur(split_etcs.bruto) }}</td>
+    </tr>
+    {% if split_etcs.no_deducible_2m != 0 %}
+    <tr>
+      <td style="font-size:8.5pt;color:#64748b">+ RCM negativos diferidos — recompra de homogéneos ±2M (Art. 25.2 LIRPF último párrafo; filas con badge <span class="badge-2m">2M · Art. 25.2</span> — NO se integran este año)</td>
+      <td class="text-right">{{ format_eur(-split_etcs.no_deducible_2m) }}</td>
+    </tr>
+    {% endif %}
+    {% endif %}
     <tr style="background:#f0f9ff">
-      <td><strong>TOTAL RCM ETCs físicos {{ ejercicio }} (casilla 0031)</strong></td>
-      <td class="text-right {{ 'gain' if split_etcs.bruto >= 0 else 'loss' }}"><strong>{{ format_eur(split_etcs.bruto) }}</strong></td>
+      <td><strong>TOTAL RCM ETCs físicos {{ ejercicio }} a declarar (casilla 0031)</strong></td>
+      <td class="text-right {{ 'gain' if split_etcs.neto_deducible >= 0 else 'loss' }}"><strong>{{ format_eur(split_etcs.neto_deducible) }}</strong></td>
     </tr>
   </tbody>
 </table>
@@ -2265,8 +2458,8 @@
   <span class="label">Cómo introducirlo en RentaWEB</span>
   <ol style="margin:4px 0 0 16px">
     <li>Apartado <strong>B (Rendimientos del capital mobiliario)</strong> → "Alta capital mobiliario" → casilla <span class="value">0031</span> "Rendimientos procedentes de la transmisión, amortización o reembolso de otros activos financieros".</li>
-    <li>En el popup introduce <strong>Ingresos íntegros</strong> = {{ format_eur(split_etcs.bruto) }} (rendimiento total por venta de ETCs del año, con comisiones ya descontadas según Art. 26.1.a LIRPF).</li>
-    <li>Si el rendimiento es <strong>negativo</strong> (pérdida), igualmente va a 0031 — se compensa con otros RCM (intereses, dividendos…) y, si queda saldo negativo, al 25% con G/P patrimoniales (Art. 49 LIRPF).</li>
+    <li>En el popup introduce <strong>Ingresos íntegros</strong> = {{ format_eur(split_etcs.neto_deducible) }} (rendimiento a declarar por venta de ETCs del año, con comisiones ya descontadas según Art. 26.1.a LIRPF{% if split_etcs.no_deducible_2m != 0 %} y excluidos los RCM negativos diferidos por recompra ±2M{% endif %}).</li>
+    <li>Si el rendimiento es <strong>negativo</strong> (pérdida), igualmente va a 0031 — se compensa con otros RCM (intereses, dividendos…) y, si queda saldo negativo, al 25% con G/P patrimoniales (Art. 49 LIRPF). <strong>Excepción</strong>: si recompraste participaciones homogéneas del mismo ETC dentro de los 2 meses anteriores o posteriores a la venta, ese rendimiento negativo NO se integra este año (Art. 25.2 LIRPF último párrafo) — se integra a medida que transmitas los títulos que permanezcan. Las filas afectadas llevan el badge <span class="badge-2m">2M · Art. 25.2</span> y ya están excluidas del total a declarar.</li>
   </ol>
   <p style="margin-top:8px;font-size:8.5pt;color:#475569">
     <strong>Detección:</strong> Cuádrate combina una whitelist de ISINs canónicos (SGLN, SGLD, PHPD…) con una heurística por nombre conservadora ("PHYSICAL" + commodity, sufijo " ETC"). Los ETFs UCITS sobre <em>empresas mineras</em> de oro/plata (RING, NUGT…) NO son ETCs y siguen yendo a 2224-2236, porque son IIC sobre acciones, no notas de deuda colateralizadas. Si tu informe marca como ETC algún producto que no lo es, recalifícalo en la hoja <em>Operaciones</em> del XLSX cambiando la columna <em>Tipo activo</em>.
@@ -2463,9 +2656,37 @@
 </div>
 {% endif %}
 
+<!-- ══ 6.5bis STAKING DE CRIPTOMONEDAS (RCM en especie, TR) ═══════════════ -->
+{% if staking_data %}
+<h2 id="sec-staking">Staking de criptomonedas <span class="casilla">0027 · RCM en especie</span>
+  <span class="traffic-light tl-rojo">🔴 declarable obligatorio</span>
+</h2>
+
+<div class="info-box">
+  <strong>¿Qué es esto?</strong> Recompensas de staking recibidas en Trade Republic ({{ staking_data.n_eventos }} recepci{{ 'ones' if staking_data.n_eventos != 1 else 'ón' }}{% if staking_data.activos %} de {{ staking_data.activos|join(', ') }}{% endif %}). La DGT (consulta <strong>V1766-22</strong>, de 26-07-2022) las califica como <strong>rendimiento del capital mobiliario por la cesión a terceros de capitales propios satisfecho en especie</strong> (Art. 25.2 LIRPF), valorado en EUR al precio de mercado en el momento de cada recepción (Art. 43.1 LIRPF). La consulta no fija casilla concreta: se usa la <strong>0027</strong> por analogía con un rendimiento periódico; la alternativa doctrinal es la 0031 — la cuota es idéntica en la base del ahorro.
+</div>
+
+<table class="data">
+  <thead><tr><th>Concepto</th><th class="text-right">Importe (EUR)</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Valor de mercado de las recompensas al recibirse <span class="casilla">→ 0027</span></td>
+      <td class="text-right gain"><strong>{{ format_eur(staking_data.total) }}</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="instruction">
+  <span class="label">Cómo declararlo en RentaWEB</span>
+  Apartado de <strong>Rendimientos del capital mobiliario</strong> → casilla <span class="value">0027</span> → suma este importe a los demás intereses. Trade Republic no practica retención sobre el staking.
+  <br><br>
+  <strong>Al vender el cripto recibido:</strong> el coste de adquisición de esas monedas es este mismo valor de recepción (que ya ha tributado como RCM) — el XLSX lo registra como lote de compra (marca 🪙 STAKING en la hoja Operaciones), de modo que la venta futura tributa solo por la plusvalía desde ese valor, sin doble imposición. El detalle evento a evento está en la hoja <strong>Staking</strong> del XLSX maestro.
+</div>
+{% endif %}
+
 <!-- ══ 6.6. TREASURY BILLS (intereses, IBKR) ═══════════════════════════════ -->
 {% if tbills_data %}
-<h2 id="sec-tbills">Intereses Treasury Bills <span class="casilla">0027 · RCM intereses</span>
+<h2 id="sec-tbills">Intereses Treasury Bills <span class="casilla">0030 · RCM Letras del Tesoro</span>
   <span class="traffic-light tl-rojo">🔴 declarable obligatorio</span>
 </h2>
 
@@ -2483,7 +2704,7 @@
     </tr>
     {% endfor %}
     <tr style="background:#f0f9ff">
-      <td><strong>TOTAL — casilla 0027</strong></td>
+      <td><strong>TOTAL — casilla 0030</strong></td>
       <td class="text-right gain"><strong>{{ format_eur(tbills_data.total) }}</strong></td>
     </tr>
   </tbody>
@@ -2491,7 +2712,7 @@
 
 <div class="instruction">
   <span class="label">Cómo declararlo en RentaWEB</span>
-  Apartado de <strong>Rendimientos del capital mobiliario</strong> → casilla <span class="value">0027</span> ("Intereses de cuentas, depósitos y activos financieros") → suma este importe a otros intereses (TR cuenta remunerada, depósitos a plazo, etc.).
+  Apartado de <strong>Rendimientos del capital mobiliario</strong> → casilla <span class="value">0030</span> ("Rendimientos procedentes de la transmisión o amortización de Letras del Tesoro") → introduce el rendimiento por amortización de los T-Bills. Alternativa doctrinal para T-Bills extranjeros: casilla 0031 (otros activos financieros) — la cuota en base del ahorro es idéntica; el manual AEAT no distingue de forma expresa la deuda pública extranjera.
   <br><br>
   Si IBKR retuvo en origen sobre estos T-Bills (ver sección Withholding Tax del Activity Statement), declarar también en <span class="casilla">0588</span> con tope CDI España-EEUU del <strong>10%</strong> sobre intereses.
 </div>

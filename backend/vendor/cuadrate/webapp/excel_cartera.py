@@ -43,6 +43,19 @@ from openpyxl.workbook.defined_name import DefinedName
 from clasificacion_origen import clasificar_isin
 
 
+def _safe_cell(v):
+    """Neutraliza la inyección de fórmulas en celdas XLSX (CSV/formula
+    injection): Excel evalúa una celda de texto que empieza por = + - @ (o
+    tab/CR) como fórmula. Los nombres de empresa y descripciones vienen del
+    CSV del usuario y el XLSX se abre por el propio usuario o su asesor (y se
+    envía por email). Prefijamos un apóstrofo para forzar interpretación como
+    texto. Solo aplica a strings; números/fechas/None pasan intactos.
+    """
+    if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
 # ── Paleta Cuádrate (mismos colores que el PDF y el email) ────────────────────
 C_AZUL       = "0B2B8F"
 C_AZUL_2     = "1E40AF"   # secundario para gradientes y bordes
@@ -633,30 +646,53 @@ def generate_cartera_xlsx(
     def _por_casilla(pred):
         return sum((_gpi(m) for m in matches_anyo_xlsx if pred(m)), Decimal("0"))
 
+    def _split_casilla(pred):
+        """Devuelve (neto_deducible, no_deducible_2m) para los matches del
+        bloque `pred`, con la MISMA fórmula que pdf_generator._gp_split:
+            no_deducible_2m = Σ G/P bruta de los matches 2M con pérdida
+            neto_deducible  = Σ G/P integrable (gpi) − no_deducible_2m
+        Antes el XLSX restaba la PD aflorada también de la parte no-deducible
+        (usaba _gpi en ambos buckets), divergiendo del PDF justo cuando un
+        match es 2M Y aflora una PD (esquina de cascada). Unificado al PDF."""
+        bruto = sum((_gpi(m) for m in matches_anyo_xlsx if pred(m)), Decimal("0"))
+        no_ded = sum((m.ganancia_perdida for m in matches_anyo_xlsx
+                      if pred(m) and m.regla_2_meses and m.ganancia_perdida < 0),
+                     Decimal("0"))
+        return (bruto - no_ded, no_ded)
+
     # Casilla 0326-0340 = SOLO acciones cotizadas (instrument_type=STOCK).
     # En Renta 2025+ los ETFs van a 2224-2236; los derivados a 1624-1654;
     # la cripto a 1800-1806; las SOCIMI ES a 0324/0325. Antes, casilla_0326_0340
     # incluía todo y generaba inconsistencia entre PDF (que ya separa) y XLSX.
     _es_stock = lambda m: getattr(m, 'instrument_type', 'STOCK') == 'STOCK'
     _es_socimi = lambda m: getattr(m, 'instrument_type', 'STOCK') == 'SOCIMI'
-    total_326_338_deducible = _por_casilla(
-        lambda m: (not m.es_derecho) and _es_stock(m)
-        and not (m.regla_2_meses and m.ganancia_perdida < 0)
-    )
-    total_326_338_no_ded_2m = _por_casilla(
-        lambda m: (not m.es_derecho) and _es_stock(m)
-        and m.regla_2_meses and m.ganancia_perdida < 0
-    )
+    total_326_338_deducible, total_326_338_no_ded_2m = _split_casilla(
+        lambda m: (not m.es_derecho) and _es_stock(m))
     total_341_346 = _por_casilla(lambda m: m.es_derecho)
     # Casillas 0324/0325 — SOCIMI españolas (Ley 11/2009).
-    total_324_325_deducible = _por_casilla(
-        lambda m: (not m.es_derecho) and _es_socimi(m)
-        and not (m.regla_2_meses and m.ganancia_perdida < 0)
-    )
-    total_324_325_no_ded_2m = _por_casilla(
-        lambda m: (not m.es_derecho) and _es_socimi(m)
-        and m.regla_2_meses and m.ganancia_perdida < 0
-    )
+    total_324_325_deducible, total_324_325_no_ded_2m = _split_casilla(
+        lambda m: (not m.es_derecho) and _es_socimi(m))
+    # Casilla 0031 — RCM por transmisión de activos financieros: bonos
+    # (BOND) y ETCs físicos (ETC, DGT V0267-25) por separado. El RCM
+    # negativo con recompra de homogéneos ±2M se difiere por el Art. 25.2
+    # LIRPF último párrafo (espejo de la 2M en RCM) — mismo split
+    # deducible / no-deducible que en acciones.
+    _es_bond = lambda m: getattr(m, 'instrument_type', 'STOCK') == 'BOND'
+    _es_etc = lambda m: getattr(m, 'instrument_type', 'STOCK') == 'ETC'
+    total_0031_bonos_deducible, total_0031_bonos_no_ded_2m = _split_casilla(_es_bond)
+    total_0031_etc_deducible, total_0031_etc_no_ded_2m = _split_casilla(_es_etc)
+    # Casillas 2224-2236 (ETFs UCITS), 1800-1806 (cripto) y 1624-1654 c.4
+    # (derivados estructurados). Se añaden al sidecar para que el test de
+    # consistencia PDF↔XLSX cubra TODAS las casillas, no solo acciones/0031.
+    _es_etf = lambda m: getattr(m, 'instrument_type', 'STOCK') == 'ETF'
+    _es_crypto = lambda m: getattr(m, 'instrument_type', 'STOCK') == 'CRYPTO'
+    _es_deriv = lambda m: getattr(m, 'instrument_type', 'STOCK') in ('DERIVATIVE', 'STRUCTURED')
+    total_2224_deducible, total_2224_no_ded_2m = _split_casilla(_es_etf)
+    total_1800_deducible, total_1800_no_ded_2m = _split_casilla(_es_crypto)
+    total_1624_deducible, total_1624_no_ded_2m = _split_casilla(_es_deriv)
+    n_etf = sum(1 for m in matches_anyo_xlsx if _es_etf(m))
+    n_crypto = sum(1 for m in matches_anyo_xlsx if _es_crypto(m))
+    n_deriv = sum(1 for m in matches_anyo_xlsx if _es_deriv(m))
 
     def _d(x):
         if x is None:
@@ -725,6 +761,33 @@ def generate_cartera_xlsx(
             "neto_deducible": _d(total_324_325_deducible),
             "no_deducible_2m": _d(total_324_325_no_ded_2m),
         },
+        # Casilla 0031 — Bonos individuales (RCM transmisión/amortización).
+        # no_deducible_2m = RCM negativos diferidos Art. 25.2 últ. párrafo.
+        "casilla_0031": {
+            "neto_deducible": _d(total_0031_bonos_deducible),
+            "no_deducible_2m": _d(total_0031_bonos_no_ded_2m),
+        },
+        # Casilla 0031 (ETCs físicos) — misma casilla AEAT, desglose aparte
+        # (coherente con la etiqueta "0031-ETC" de la hoja G_P_por_valor).
+        "casilla_0031_etc": {
+            "neto_deducible": _d(total_0031_etc_deducible),
+            "no_deducible_2m": _d(total_0031_etc_no_ded_2m),
+        },
+        # Casillas 2224-2236 — ETFs UCITS (Renta 2025+). Solo si hay matches.
+        "casilla_2224_2236": ({
+            "neto_deducible": _d(total_2224_deducible),
+            "no_deducible_2m": _d(total_2224_no_ded_2m),
+        } if n_etf > 0 else None),
+        # Casillas 1800-1806 — Criptomonedas.
+        "casilla_1800_1806": ({
+            "neto_deducible": _d(total_1800_deducible),
+            "no_deducible_2m": _d(total_1800_no_ded_2m),
+        } if n_crypto > 0 else None),
+        # Casillas 1624-1654 clave 4 — Derivados estructurados.
+        "casilla_1624_1654_derivados": ({
+            "neto_deducible": _d(total_1624_deducible),
+            "no_deducible_2m": _d(total_1624_no_ded_2m),
+        } if n_deriv > 0 else None),
         # Casilla 0029 — Dividendos brutos. La retención IRPF española y los
         # gastos de administración y depósito se introducen DENTRO del popup
         # individual de 0029, no en casillas independientes.
@@ -740,6 +803,19 @@ def generate_cartera_xlsx(
         "casilla_1624_1654": {
             "pl_opciones": _d(opt_pl) if opt_pl is not None else None,
         },
+        # Casilla 0027 (staking cripto) — RCM Art. 25.2 LIRPF satisfecho en
+        # especie (DGT V1766-22), valorado en EUR al momento de cada
+        # recepción. Alternativa doctrinal: 0031 (cuota idéntica). Esta
+        # clave alimenta también la sección de staking del PDF (que la lee
+        # de este sidecar) — antes el staking solo existía en stdout y en
+        # la hoja Staking del XLSX y el PDF lo omitía.
+        "casilla_0027_staking": ({
+            "total": _d(sum((Decimal(str(s.get("importe_eur", 0)))
+                             for s in tr_staking), Decimal("0"))),
+            "n_eventos": len(tr_staking),
+            "activos": sorted({s.get("asset", "") for s in tr_staking
+                               if s.get("asset")}),
+        } if tr_staking else None),
     }
     # Casilla 0030 — Letras del Tesoro (sólo si IBKR aporta T-Bills).
     # FX (Art. 33 LIRPF) NO entra al sidecar: aplica minimis y la decisión
@@ -860,11 +936,17 @@ def _build_operaciones(wb, ejercicio: int, fecha_gen: str,
         prima    = op.get('_prima_str', '')
         tipo_op  = op.get('_tipo_op_str', '')
 
-        requiere_amarillo = bool(op.get('_es_spinoff') or op.get('_requiere_revision'))
+        # Los spin-offs resueltos automaticamente (catalogo spinoffs_conocidos)
+        # NO requieren accion del usuario — coste ya aplicado al ratio del
+        # Form 8937 + lotes de la matriz ajustados. Solo los spin-offs sin
+        # catalogo (flujo manual) llevan amarillo "EDITA esta celda".
+        es_spinoff_pendiente = (op.get('_es_spinoff')
+                                and not op.get('_spinoff_resuelto_auto'))
+        requiere_amarillo = bool(es_spinoff_pendiente or op.get('_requiere_revision'))
 
         ws.cell(row=next_row, column=1, value=tipo_csv)
         ws.cell(row=next_row, column=2, value=op.get('isin', ''))
-        ws.cell(row=next_row, column=3, value=denom)
+        ws.cell(row=next_row, column=3, value=_safe_cell(denom))
         ws.cell(row=next_row, column=4, value=fecha)
         ws.cell(row=next_row, column=5, value=cantidad)
         c_imp = ws.cell(row=next_row, column=6, value=importe)
@@ -943,31 +1025,106 @@ def _build_operaciones(wb, ejercicio: int, fecha_gen: str,
             c_gas.fill = FILL_EDITABLE
             c_gas.font = FONT_EDIT
 
+        # ─── Spin-off resuelto automaticamente via catalogo ───
+        # Va FUERA del bloque amarillo: la fila NO requiere accion del
+        # usuario (coste ya aplicado + lotes matriz ya reducidos). Solo
+        # comentario informativo con la trazabilidad y fuente.
+        if op.get('_es_spinoff') and op.get('_spinoff_resuelto_auto'):
+            from openpyxl.comments import Comment
+            matriz = op.get('_spinoff_matriz', '')
+            isin_m = op.get('_spinoff_isin_matriz', '')
+            fuente = op.get('_spinoff_fuente', 'spinoffs_conocidos.json')
+            ratio_e = op.get('_spinoff_ratio_escindida', '')
+            ratio_m = op.get('_spinoff_ratio_matriz', '')
+            c_imp.comment = Comment(
+                f"ESCISIÓN resuelta automáticamente.\n\n"
+                f"Coste prorrateado aplicado segun Art. 37.1.a §4 LIRPF:\n"
+                f"   ratio_escindida = {ratio_e}\n"
+                f"   ratio_matriz_residual = {ratio_m}\n"
+                f"Fuente: {fuente}\n\n"
+                f"Las filas AD anteriores de {matriz} ({isin_m}) en esta\n"
+                f"hoja YA estan ajustadas (multiplicadas por ratio_matriz).\n"
+                f"Total preservado: el coste original se reparte entre\n"
+                f"matriz y escindida, no se duplica.\n\n"
+                f"Si discrepas con el ratio del catalogo (ej. tu broker o\n"
+                f"asesor usa una asignacion distinta), EDITA esta celda y\n"
+                f"recalcula tambien las filas AD de la matriz por el\n"
+                f"complemento (1 - tu_ratio_escindida). Las G/P se\n"
+                f"recalculan automaticamente.",
+                "Cuádrate"
+            )
+            c_imp.comment.width = 400
+            c_imp.comment.height = 250
+
         if requiere_amarillo:
             requiere_revision_count[0] += 1
             # Marcar TODA la fila en amarillo para resaltar la fila que
-            # necesita revisión (escisiones, eventos sin clasificar).
+            # necesita revisión (escisiones manuales, eventos sin clasificar).
             for col in range(1, 17):
                 c = ws.cell(row=next_row, column=col)
                 c.fill = FILL_EDITABLE
             if op.get('_es_spinoff'):
+                # ─── Flujo manual (catalogo vacio o no cubre este ISIN) ───
+                # Coste provisional 0 + comentario amarillo con metodologia
+                # y ejemplo numerico (3M -> Solventum).
                 from openpyxl.comments import Comment
                 matriz = op.get('_spinoff_matriz', '')
                 isin_m = op.get('_spinoff_isin_matriz', '')
                 c_imp.comment = Comment(
                     f"ESCISIÓN de {matriz} ({isin_m}) — coste provisional 0.\n\n"
                     f"Aplica el coste prorrateado según Art. 37.1.a §4 LIRPF:\n"
-                    f"   Coste = Coste_matriz_total × "
-                    f"(ValorMdo_escindida / ValorMdo_total)\n"
-                    f"en la fecha efectiva de la escisión.\n\n"
-                    f"EDITA ESTA CELDA con el coste prorrateado real. "
-                    f"Las G/P, totales por casilla y hoja Resumen se "
-                    f"recalculan automáticamente.\n\n"
-                    f"Recuerda REDUCIR también el coste de la matriz "
-                    f"({isin_m}) en su fila para cuadrar (el coste total "
-                    f"no se duplica — se reparte).",
+                    f"   r = ValorMdo_escindida / (ValorMdo_matriz_post + ValorMdo_escindida)\n"
+                    f"en la fecha efectiva. (Form 8937 IRS o nota CNMV del emisor.)\n\n"
+                    f"PASO 1 — Esta celda: EDITA con coste = (coste_total_matriz × r).\n\n"
+                    f"PASO 2 — TODAS las filas AD anteriores de {matriz} ({isin_m}):\n"
+                    f"   multiplica el Coste/Importe de cada una por (1 − r).\n"
+                    f"   NO restes un importe fijo. El reparto es PROPORCIONAL al coste\n"
+                    f"   de cada lote (lotes caros siguen siendo proporcionalmente caros).\n\n"
+                    f"PASO 3 — Si tu cartera está en 'Mi cartera de valores' de RentaWEB:\n"
+                    f"   edita el 'Valor de adquisición' de cada operación AD original\n"
+                    f"   de {matriz} bajándolo por (1 − r). No hay código MCV específico\n"
+                    f"   para escisión; la edición es legítima — no rectifica declaraciones\n"
+                    f"   pasadas, sólo ajusta la base FIFO para futuras transmisiones.\n\n"
+                    f"─── EJEMPLO (3M → Solventum, abr-2024, r = 0,1552 oficial Form 8937) ───\n"
+                    f"Tenías 3 lotes de 3M:\n"
+                    f"  L1  2017  10 acc × 180 € = 1.800 €\n"
+                    f"  L2  2019  20 acc × 200 € = 4.000 €\n"
+                    f"  L3  2022  30 acc × 130 € = 3.900 €\n"
+                    f"  Total matriz pre = 9.700 €\n\n"
+                    f"Coste asignado a Solventum (esta fila):\n"
+                    f"  9.700 × 0,1552 = 1.505,44 €    ← edita esta celda\n\n"
+                    f"Lotes 3M post (multiplicar cada uno × 0,8448):\n"
+                    f"  L1 → 1.800 × 0,8448 = 1.520,64 €  (152,06 €/acc)\n"
+                    f"  L2 → 4.000 × 0,8448 = 3.379,20 €  (168,96 €/acc)\n"
+                    f"  L3 → 3.900 × 0,8448 = 3.294,72 €  (109,82 €/acc)\n"
+                    f"  Total matriz post = 8.194,56 €\n\n"
+                    f"Comprobación: 8.194,56 + 1.505,44 = 9.700,00 €  ✓ (el coste se reparte, no se duplica)\n"
+                    f"─────────────────────────────────────────────────────",
                     "Cuádrate"
                 )
+                # Comment por defecto es 144×80 pt — insuficiente para este texto
+                # extendido. Ampliamos para que el usuario lo lea sin scroll horizontal
+                # al pasar el ratón en Excel.
+                c_imp.comment.width = 500
+                c_imp.comment.height = 540
+
+        # ── Filas AD de la matriz ajustadas por spin-off catalogado ──
+        # No llevan amarillo (no requieren accion del usuario) — solo un
+        # comentario informativo para que el lector entienda por que el
+        # coste de esa fila es distinto del importe del extracto original.
+        if (not op.get('_es_spinoff')
+                and op.get('_matriz_ajustada_por_spinoff')):
+            from openpyxl.comments import Comment
+            c_imp.comment = Comment(
+                "Coste ajustado automáticamente por escisión (spin-off): "
+                "este lote se multiplicó por ratio_matriz_residual segun "
+                "Art. 37.1.a §4 LIRPF. El coste original del extracto se "
+                "ha redistribuido entre la matriz y la escindida (ver fila "
+                "AD de la escindida del mismo emisor para detalles).",
+                "Cuádrate"
+            )
+            c_imp.comment.width = 360
+            c_imp.comment.height = 140
 
         if tipo_csv in ('A', 'AD', 'AL'):
             if registrar_indice:
@@ -1330,11 +1487,34 @@ def _build_gp_por_valor(wb, ejercicio: int, fecha_gen: str,
             else:
                 c.alignment = ALIGN_LEFT
 
+    # Umbral de operativa intensiva (idéntico al del PDF). Si un ISIN supera
+    # este número, la fila resumen indica el patrón detectado (DAYTRADING /
+    # SWING). POLÍTICA UX (decisión 2026-06-09, test_rentaweb_aggregate):
+    # las hijas arrancan SIEMPRE visibles — collapsed+hidden con
+    # summaryBelow=False no renderiza el botón [+] en Excel real y el
+    # usuario no descubriría el detalle oculto. El colapso es manual ([−]).
+    _INTENSIVE_THRESHOLD = 20
+    _DAYTRADING_INTRADAY_RATIO = 0.5
+
+    def _clasif_pattern(ms):
+        n = len(ms)
+        if n < _INTENSIVE_THRESHOLD:
+            return ("normal", 0, 0.0)
+        n_intra = sum(1 for m in ms if m.fecha_compra == m.fecha_venta)
+        ratio = n_intra / n if n else 0.0
+        return (
+            "daytrading" if ratio >= _DAYTRADING_INTRADAY_RATIO else "swing",
+            n_intra,
+            ratio,
+        )
+
     # ─── 1ª pasada: escribir filas resumen + hijas ─────────────────────────
     for key in grupos_orden:
         (casilla, isin, nombre) = key
         grupo_matches = grupos_dict[key]
         n_hijas = len(grupo_matches)
+        pattern, n_intra, ratio_intra = _clasif_pattern(grupo_matches)
+        es_intensivo = pattern in ("daytrading", "swing")
 
         # Fila resumen (outline_level=0)
         summary_row = next_row
@@ -1351,7 +1531,7 @@ def _build_gp_por_valor(wb, ejercicio: int, fecha_gen: str,
 
         ws.cell(row=summary_row, column=COL_CASILLA, value=casilla)
         ws.cell(row=summary_row, column=COL_ISIN, value=isin)
-        ws.cell(row=summary_row, column=COL_EMPRESA, value=nombre)
+        ws.cell(row=summary_row, column=COL_EMPRESA, value=_safe_cell(nombre))
         ws.cell(row=summary_row, column=COL_ORIGEN, value=clasificar_isin(isin))
         ws.cell(row=summary_row, column=COL_FVENTA,
                 value=f"{n_hijas} match{'es' if n_hijas != 1 else ''}")
@@ -1377,8 +1557,20 @@ def _build_gp_por_valor(wb, ejercicio: int, fecha_gen: str,
                 value=f"=SUM({rng_gpfiscal})")
         ws.cell(row=summary_row, column=COL_TIPO,
                 value=_tipo_label_casilla.get(casilla, "Acción"))
-        ws.cell(row=summary_row, column=COL_NOTAS,
-                value="Resumen ISIN — colapsa con el botón [−] para vista agregada")
+        if es_intensivo:
+            etiqueta = ("DAYTRADING" if pattern == "daytrading"
+                        else "SWING INTENSIVO")
+            ws.cell(
+                row=summary_row, column=COL_NOTAS,
+                value=(
+                    f"⚡ {etiqueta} ({n_intra}/{n_hijas} intradia, "
+                    f"{int(round(ratio_intra * 100))}%) — pulsa [−] del "
+                    f"margen para colapsar el detalle"
+                ),
+            )
+        else:
+            ws.cell(row=summary_row, column=COL_NOTAS,
+                    value="Resumen ISIN — colapsa con el botón [−] para vista agregada")
 
         _estilo_fila(summary_row, fill=FILL_SUBHEADER, fuente=FONT_BOLD)
         for col in (COL_COSTE, COL_IMPORTE, COL_GASTOS, COL_GPBRUTA,
@@ -1402,7 +1594,7 @@ def _build_gp_por_valor(wb, ejercicio: int, fecha_gen: str,
 
             ws.cell(row=r, column=COL_CASILLA, value=casilla)
             ws.cell(row=r, column=COL_ISIN, value=m.isin)
-            ws.cell(row=r, column=COL_EMPRESA, value=nombre)
+            ws.cell(row=r, column=COL_EMPRESA, value=_safe_cell(nombre))
             ws.cell(row=r, column=COL_ORIGEN, value=clasificar_isin(m.isin))
             ws.cell(row=r, column=COL_FVENTA,
                     value=m.fecha_venta.strftime("%d/%m/%Y"))
@@ -1706,7 +1898,10 @@ def _build_dividendos(wb, ejercicio: int, fecha_gen: str,
     next_row += 1
 
     NCOLS = 13
-    PCT_FMT = "0,00%"
+    # Los códigos de formato de Excel son independientes del locale y usan
+    # SIEMPRE punto decimal; "0,00%" se interpretaba como separador de
+    # millares y el porcentaje se mostraba mal (auditoría 2026-06-11 [BAJO]).
+    PCT_FMT = "0.00%"
 
     if not resumen:
         ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=NCOLS)
@@ -1722,7 +1917,7 @@ def _build_dividendos(wb, ejercicio: int, fecha_gen: str,
         r = next_row
         # ── Fila resumen del ISIN (outline_level=0) ──
         ws.cell(row=r, column=1, value=d.get('isin', ''))
-        ws.cell(row=r, column=2, value=d.get('nombre', ''))
+        ws.cell(row=r, column=2, value=_safe_cell(d.get('nombre', '')))
         ws.cell(row=r, column=3, value=d.get('pais', ''))
         ws.cell(row=r, column=4, value="")  # fecha: vacía en agregado
 
@@ -2054,70 +2249,107 @@ def _build_opciones(wb, ejercicio: int, fecha_gen: str,
     ws = wb.create_sheet("Opciones")
     next_row = _put_brand_header(ws, ejercicio,
                                  "Opciones — todas las posiciones del ejercicio",
-                                 fecha_gen, ncols=8)
+                                 fecha_gen, ncols=9)
 
-    ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=8)
+    ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=9)
     leg = ws.cell(row=next_row, column=1,
                   value="Esta hoja lista TODAS las opciones del ejercicio con su "
                         "estado fiscal en la columna 'Estado'. Solo el bloque "
-                        "CERRADA/EXPIRADA suma al TOTAL P&L de la casilla 1626 "
-                        "(otros elementos patrimoniales). Las EJERCIDAS aparecen "
-                        "como informativo: su prima ya está integrada en el coste "
+                        "DECLARABLES suma al TOTAL P&L de la casilla 1626 "
+                        "(otros elementos patrimoniales); las posiciones MIXTAS "
+                        "y los ROLLS aparecen partidos en dos filas (porción "
+                        "cerrada → declarable; porción ejercida/abierta → "
+                        "informativa) para que el TOTAL cuadre al céntimo con el "
+                        "PDF y el informe. Las EJERCIDAS aparecen como "
+                        "informativo: su prima ya está integrada en el coste "
                         "o precio del subyacente en la hoja Operaciones (filas con "
                         "marca OPC, Art. 37.1.m LIRPF). Las ABIERTAS a 31/12 se "
                         "difieren al año de extinción (DGT V2172-21).")
     leg.font = FONT_MUTED
     leg.alignment = ALIGN_WRAP
-    ws.row_dimensions[next_row].height = 80
+    ws.row_dimensions[next_row].height = 92
     next_row += 2
 
     headers = ["Subyacente", "Tipo", "Strike", "Vencimiento", "Estado",
-               "Primas cobradas", "Primas pagadas", "P&L"]
-    widths  = [30, 8, 10, 12, 18, 18, 18, 16]
+               "Primas cobradas", "Primas pagadas", "Gastos", "P&L"]
+    widths  = [30, 8, 10, 12, 24, 18, 18, 12, 16]
     _put_table_header(ws, next_row, headers, widths)
     header_row = next_row
     next_row += 1
 
     if not por_contrato:
-        ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=8)
+        ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=9)
         c = ws.cell(row=next_row, column=1, value="(sin operaciones de opciones)")
         c.font = FONT_MUTED
         c.alignment = ALIGN_CENTER
         ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
         return ws, {"pl_total": None}
 
-    def _estado(d: dict) -> tuple[str, str]:
-        """Devuelve (etiqueta_estado, grupo_fiscal). El grupo determina si la
-        fila suma al TOTAL casilla 1626. Grupos:
-            'declarable' : cerrada/expirada → 1626
-            'opc'        : ejercida o parte ejercida → integrada en acciones
-            'diferida'   : abierta al 31/12 → tributa en año de cierre
+    def _filas_render(d: dict) -> list[dict]:
+        """Convierte un contrato en 1-2 filas de render con su grupo fiscal:
+            'declarable' : suma al TOTAL casilla 1626
+            'opc'        : prima integrada en acciones (informativo)
+            'diferida'   : abierta al 31/12 → tributa en año de extinción
+        MIXTAS y ROLLS se parten en dos filas (C2 auditoría 2026-06-11: el
+        TOTAL de la hoja excluía su porción cerrada, divergiendo del
+        pl_neto del sidecar/PDF/stdout). Cada fila lleva sus gastos para
+        que P&L = cobradas − pagadas − gastos cuadre con el pl_neto fiscal.
         """
+        base = {
+            'subyacente':  d.get('subyacente', ''),
+            'tipo_op':     d.get('tipo_op', '?'),
+            'strike':      d.get('strike', 0),
+            'vencimiento': d.get('vencimiento', ''),
+        }
         if d.get('es_mixta'):
-            return ('MIXTA (parte 1626 + parte OPC)', 'opc')
-        if d.get('es_ejercida'):
-            return ('EJERCIDA (prima en acciones)', 'opc')
-        if d.get('es_long_abierta'):
-            return ('ABIERTA long — diferida', 'diferida')
-        if d.get('es_short_abierta'):
-            return ('ABIERTA short — diferida', 'diferida')
+            return [
+                {**base, 'etiqueta': 'MIXTA — porción cerrada', 'grupo': 'declarable',
+                 'cobradas': d.get('_prima_cerrada', 0),
+                 'pagadas':  d.get('primas_pagadas', 0),
+                 'gastos':   d.get('_gastos_cerrado', 0)},
+                {**base, 'etiqueta': 'MIXTA — porción ejercida (en acciones)', 'grupo': 'opc',
+                 'cobradas': d.get('_prima_ejercida', 0),
+                 'pagadas':  0,
+                 'gastos':   d.get('_gastos_ejercida', 0)},
+            ]
         if d.get('es_roll_abierta'):
-            return ('ABIERTA roll — parte en año', 'diferida')
-        if d.get('expiradas', 0) > 0:
-            return ('EXPIRADA', 'declarable')
-        return ('CERRADA', 'declarable')
+            return [
+                {**base, 'etiqueta': 'ROLL — porción cerrada', 'grupo': 'declarable',
+                 'cobradas': d.get('_prima_cerrada_r', 0),
+                 'pagadas':  d.get('primas_pagadas', 0),
+                 'gastos':   d.get('_gastos_cerrado_r', 0)},
+                {**base, 'etiqueta': 'ROLL — porción abierta al 31/12', 'grupo': 'diferida',
+                 'cobradas': d.get('_prima_abierta_r', 0),
+                 'pagadas':  0,
+                 'gastos':   d.get('_gastos_abierta_r', 0)},
+            ]
+        fila = {**base,
+                'cobradas': d.get('primas_cobradas', 0),
+                'pagadas':  d.get('primas_pagadas', 0),
+                'gastos':   d.get('gastos', 0)}
+        if d.get('es_ejercida_larga'):
+            fila.update(etiqueta='LARGA EJERCIDA (prima al subyacente)', grupo='opc')
+        elif d.get('es_ejercida'):
+            fila.update(etiqueta='EJERCIDA (prima en acciones)', grupo='opc')
+        elif d.get('es_long_abierta'):
+            fila.update(etiqueta='ABIERTA long — diferida', grupo='diferida')
+        elif d.get('es_short_abierta'):
+            fila.update(etiqueta='ABIERTA short — diferida', grupo='diferida')
+        elif d.get('expiradas', 0) > 0:
+            fila.update(etiqueta='EXPIRADA', grupo='declarable')
+        else:
+            fila.update(etiqueta='CERRADA', grupo='declarable')
+        return [fila]
 
     # Renderizar filas en 3 grupos: declarable, opc, diferida.
     # Dentro de cada grupo, ordenar por subyacente + vencimiento.
     grupo_orden = {'declarable': 0, 'opc': 1, 'diferida': 2}
-    contratos_clasificados = []
+    filas_clasificadas = []
     for d in por_contrato:
-        etiqueta, grupo = _estado(d)
-        contratos_clasificados.append((grupo_orden[grupo], grupo, etiqueta, d))
-    contratos_clasificados.sort(
-        key=lambda x: (x[0],
-                       x[3].get('subyacente', ''),
-                       x[3].get('vencimiento', ''))
+        for fila in _filas_render(d):
+            filas_clasificadas.append((grupo_orden[fila['grupo']], fila))
+    filas_clasificadas.sort(
+        key=lambda x: (x[0], x[1]['subyacente'], x[1]['vencimiento'])
     )
 
     fila_inicio_decl = None  # primera fila del grupo declarable (para SUMA)
@@ -2126,72 +2358,80 @@ def _build_opciones(wb, ejercicio: int, fecha_gen: str,
     pl_opc_total     = Decimal('0')   # informativo (prima ejercida ya en acciones)
     pl_dif_total     = Decimal('0')   # informativo (diferida al año de cierre)
 
-    for orden, grupo, etiqueta, d in contratos_clasificados:
+    for orden, fila in filas_clasificadas:
+        grupo = fila['grupo']
         # Cabecera de bloque cuando cambia el grupo
         if grupo != grupo_actual:
             grupo_actual = grupo
             sep_label = {
-                'declarable': '── DECLARABLES (cerradas/expiradas) → casilla 1626 ──',
-                'opc':        '── EJERCIDAS / MIXTAS (informativo, ya en acciones con OPC) ──',
+                'declarable': '── DECLARABLES (cerradas/expiradas + porción cerrada de mixtas/rolls) → casilla 1626 ──',
+                'opc':        '── EJERCIDAS / porción ejercida (informativo, ya en acciones con OPC) ──',
                 'diferida':   '── ABIERTAS al 31/12 (diferidas al año de extinción) ──',
             }[grupo]
-            ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=8)
+            ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=9)
             c = ws.cell(row=next_row, column=1, value=sep_label)
             c.font = FONT_BOLD
             c.fill = FILL_SUBHEADER
             c.alignment = ALIGN_LEFT
             next_row += 1
 
-        ws.cell(row=next_row, column=1, value=d.get('subyacente', ''))
+        ws.cell(row=next_row, column=1, value=fila['subyacente'])
         ws.cell(row=next_row, column=2,
-                value={'C': 'CALL', 'P': 'PUT'}.get(d.get('tipo_op', '?'), '?'))
-        ws.cell(row=next_row, column=3, value=_to_float(d.get('strike', 0)))
-        ws.cell(row=next_row, column=4, value=d.get('vencimiento', ''))
-        ws.cell(row=next_row, column=5, value=etiqueta)
-        c_cob = ws.cell(row=next_row, column=6, value=_to_float(d.get('primas_cobradas', 0)))
-        c_pag = ws.cell(row=next_row, column=7, value=_to_float(d.get('primas_pagadas', 0)))
+                value={'C': 'CALL', 'P': 'PUT'}.get(fila['tipo_op'], '?'))
+        ws.cell(row=next_row, column=3, value=_to_float(fila['strike']))
+        ws.cell(row=next_row, column=4, value=fila['vencimiento'])
+        ws.cell(row=next_row, column=5, value=fila['etiqueta'])
+        c_cob = ws.cell(row=next_row, column=6, value=_to_float(fila['cobradas']))
+        c_pag = ws.cell(row=next_row, column=7, value=_to_float(fila['pagadas']))
+        c_gas = ws.cell(row=next_row, column=8, value=_to_float(fila['gastos']))
         col_f = get_column_letter(6)
         col_g = get_column_letter(7)
-        c_pl = ws.cell(row=next_row, column=8,
-                       value=f"={col_f}{next_row}-{col_g}{next_row}")
+        col_h = get_column_letter(8)
+        c_pl = ws.cell(row=next_row, column=9,
+                       value=f"={col_f}{next_row}-{col_g}{next_row}-{col_h}{next_row}")
 
-        for col in range(1, 9):
+        for col in range(1, 10):
             c = ws.cell(row=next_row, column=col)
             c.border = BORDER_ALL
             c.font = FONT_BODY
             if col in (2, 4, 5):
                 c.alignment = ALIGN_CENTER
-            elif col in (3, 6, 7, 8):
+            elif col in (3, 6, 7, 8, 9):
                 c.alignment = ALIGN_RIGHT
             else:
                 c.alignment = ALIGN_LEFT
         ws.cell(row=next_row, column=3).number_format = NUM_FMT
         c_cob.number_format = EUR_FMT
         c_pag.number_format = EUR_FMT
+        c_gas.number_format = EUR_FMT
         c_pl.number_format = EUR_FMT
         c_pl.font = FONT_BOLD
 
+        pl_fila = (Decimal(str(fila['cobradas'])) - Decimal(str(fila['pagadas']))
+                   - Decimal(str(fila['gastos'])))
         # Solo las declarables son editables (las ejercidas/abiertas son
         # informativas; modificarlas aquí no afectaría a la fiscalidad real)
         if grupo == 'declarable':
             c_cob.fill = FILL_EDITABLE
             c_pag.fill = FILL_EDITABLE
+            c_gas.fill = FILL_EDITABLE
             c_cob.font = FONT_EDIT
             c_pag.font = FONT_EDIT
+            c_gas.font = FONT_EDIT
             if fila_inicio_decl is None:
                 fila_inicio_decl = next_row
             fila_fin_decl = next_row
         elif grupo == 'opc':
-            pl_opc_total += (Decimal(str(d.get('primas_cobradas', 0)))
-                             - Decimal(str(d.get('primas_pagadas', 0))))
+            pl_opc_total += pl_fila
         else:  # diferida
-            pl_dif_total += (Decimal(str(d.get('primas_cobradas', 0)))
-                             - Decimal(str(d.get('primas_pagadas', 0))))
+            pl_dif_total += pl_fila
         next_row += 1
 
     next_row += 1
 
-    # Total declarable (casilla 1626) — única fila que el Resumen referencia
+    # Total declarable (casilla 1626) — única fila que el Resumen referencia.
+    # Con las porciones cerradas de mixtas/rolls y la columna Gastos, esta
+    # SUMA coincide al céntimo con opciones_totales['pl_neto'] (sidecar/PDF).
     ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=5)
     c_lbl = ws.cell(row=next_row, column=1,
                     value="TOTAL P&L opciones declarables (casilla 1626)")
@@ -2200,7 +2440,7 @@ def _build_opciones(wb, ejercicio: int, fecha_gen: str,
     c_lbl.alignment = ALIGN_RIGHT
     c_lbl.border = BORDER_BOTTOM_THICK
     if fila_inicio_decl is not None:
-        for col in (6, 7, 8):
+        for col in (6, 7, 8, 9):
             colL = get_column_letter(col)
             c = ws.cell(row=next_row, column=col)
             c.value = f"=SUM({colL}{fila_inicio_decl}:{colL}{fila_fin_decl})"
@@ -2209,10 +2449,10 @@ def _build_opciones(wb, ejercicio: int, fecha_gen: str,
             c.alignment = ALIGN_RIGHT
             c.border = BORDER_BOTTOM_THICK
             c.number_format = EUR_FMT
-        pl_ref = (get_column_letter(8), next_row)
+        pl_ref = (get_column_letter(9), next_row)
     else:
         # No hay declarables → 0 explícito y sin referencia al Resumen
-        for col in (6, 7, 8):
+        for col in (6, 7, 8, 9):
             c = ws.cell(row=next_row, column=col, value=0)
             c.font = FONT_TOTAL
             c.fill = FILL_TOTAL
@@ -2224,28 +2464,28 @@ def _build_opciones(wb, ejercicio: int, fecha_gen: str,
 
     # Subtotales informativos (no van a casilla 1626)
     if pl_opc_total != 0:
-        ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=7)
+        ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=8)
         c = ws.cell(row=next_row, column=1,
-                    value="Subtotal P&L primas EJERCIDAS / MIXTAS — informativo "
+                    value="Subtotal P&L primas EJERCIDAS / porción ejercida — informativo "
                           "(ya integrado en acciones via OPC)")
         c.font = FONT_MUTED
         c.alignment = ALIGN_RIGHT
-        c8 = ws.cell(row=next_row, column=8, value=float(pl_opc_total))
-        c8.font = FONT_MUTED
-        c8.number_format = EUR_FMT
-        c8.alignment = ALIGN_RIGHT
+        c9 = ws.cell(row=next_row, column=9, value=float(pl_opc_total))
+        c9.font = FONT_MUTED
+        c9.number_format = EUR_FMT
+        c9.alignment = ALIGN_RIGHT
         next_row += 1
     if pl_dif_total != 0:
-        ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=7)
+        ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=8)
         c = ws.cell(row=next_row, column=1,
                     value="Subtotal P&L primas DIFERIDAS — informativo (tributarán "
                           "en el año de extinción)")
         c.font = FONT_MUTED
         c.alignment = ALIGN_RIGHT
-        c8 = ws.cell(row=next_row, column=8, value=float(pl_dif_total))
-        c8.font = FONT_MUTED
-        c8.number_format = EUR_FMT
-        c8.alignment = ALIGN_RIGHT
+        c9 = ws.cell(row=next_row, column=9, value=float(pl_dif_total))
+        c9.font = FONT_MUTED
+        c9.number_format = EUR_FMT
+        c9.alignment = ALIGN_RIGHT
         next_row += 1
 
     ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
@@ -2257,10 +2497,14 @@ def _build_futuros(wb, ejercicio: int, fecha_gen: str,
                    por_contrato: Optional[list[dict]],
                    totales: Optional[dict]) -> tuple:
     """Hoja Futuros del Excel maestro. Una fila por contrato con su
-    Realized P/L EUR consolidado por IBKR (incluye multiplier y FX),
-    comisiones del cierre y P&L neto. El TOTAL P&L neto del bloque
-    es lo que va a la casilla 1626 c.4 (Otros elementos patrimoniales)
-    de la base imponible del ahorro — Manual práctico AEAT cap 11 §14.
+    Realized P/L EUR consolidado por IBKR (incluye multiplier, FX y las
+    COMISIONES ya neteadas en la base de coste — guía oficial de informes
+    IBKR: "for the purpose of cost basis and realized profit or loss,
+    commissions are netted"). La columna Comisiones es INFORMATIVA y NO
+    se resta del P&L (V3 auditoría 2026-06-11: restarla duplicaba la
+    deducción). El TOTAL P&L del bloque es lo que va a la casilla 1626
+    c.4 (Otros elementos patrimoniales) de la base imponible del ahorro
+    — Manual práctico AEAT cap 11 §14.
 
     Devuelve (ws, {"pl_ref": (col_letter, row) | None}).
     El Resumen usa pl_ref para enlazar la celda del P&L neto.
@@ -2278,9 +2522,11 @@ def _build_futuros(wb, ejercicio: int, fecha_gen: str,
             "Una fila por Symbol (cada contrato/vencimiento) del Activity "
             "Statement IBKR (Asset Category=Futures estricto). Realized P/L "
             "consolidado por IBKR — incluye multiplier (ES=50, MES=5, NQ=20, "
-            "MNQ=2, CL=1.000, GC=100, etc.) y conversión a EUR al tipo de "
-            "cambio oficial publicado por el BCE del día de cada operación. "
-            "El TOTAL P&L neto va a la casilla 1626 con clave 4 — Manual "
+            "MNQ=2, CL=1.000, GC=100, etc.), conversión a EUR al tipo de "
+            "cambio oficial publicado por el BCE del día de cada operación, "
+            "y las comisiones YA NETEADAS en la base de coste (guía IBKR). "
+            "La columna Comisiones es informativa: NO se resta otra vez. "
+            "El TOTAL P&L va a la casilla 1626 con clave 4 — Manual "
             "práctico AEAT cap 11 §14, imputado al ejercicio en que se "
             "liquida la posición o se extingue el contrato (cita literal). "
             "Cross-año automático: si el contrato se abrió en el año "
@@ -2294,8 +2540,8 @@ def _build_futuros(wb, ejercicio: int, fecha_gen: str,
     next_row += 2
 
     headers = ["Symbol", "Descripción", "Multiplier", "Cierres",
-               "Moneda", "Realized P/L (EUR)", "Comisiones (EUR)",
-               "P&L neto (EUR)"]
+               "Moneda", "Realized P/L (EUR)", "Comisiones (EUR, info.)",
+               "P&L (EUR)"]
     widths  = [12, 35, 12, 10, 10, 20, 18, 18]
     _put_table_header(ws, next_row, headers, widths)
     header_row = next_row
@@ -2315,7 +2561,7 @@ def _build_futuros(wb, ejercicio: int, fecha_gen: str,
 
     for d in por_contrato:
         ws.cell(row=next_row, column=1, value=d.get('symbol', ''))
-        ws.cell(row=next_row, column=2, value=d.get('descripcion', ''))
+        ws.cell(row=next_row, column=2, value=_safe_cell(d.get('descripcion', '')))
         mult = d.get('multiplier')
         ws.cell(row=next_row, column=3,
                 value=_to_float(mult) if mult is not None else '')
@@ -2326,9 +2572,10 @@ def _build_futuros(wb, ejercicio: int, fecha_gen: str,
         c_gas  = ws.cell(row=next_row, column=7,
                          value=_to_float(d.get('gastos_eur', 0)))
         col_f = get_column_letter(6)
-        col_g = get_column_letter(7)
+        # P&L = Realized P/L tal cual: las comisiones YA están neteadas
+        # dentro del Realized P/L de IBKR (col G es solo informativa).
         c_pl  = ws.cell(row=next_row, column=8,
-                        value=f"={col_f}{next_row}-{col_g}{next_row}")
+                        value=f"={col_f}{next_row}")
 
         for col in range(1, 9):
             c = ws.cell(row=next_row, column=col)
@@ -2601,7 +2848,7 @@ def _build_tasas_externas(wb, ejercicio: int, fecha_gen: str,
             ws.cell(row=next_row, column=1, value=d['fecha']).alignment = ALIGN_CENTER
             ws.cell(row=next_row, column=2, value=d['op_tipo']).alignment = ALIGN_CENTER
             ws.cell(row=next_row, column=3, value=d['isin'])
-            ws.cell(row=next_row, column=4, value=d['nombre'])
+            ws.cell(row=next_row, column=4, value=_safe_cell(d['nombre']))
             c5 = ws.cell(row=next_row, column=5, value=float(d['cantidad']))
             c5.number_format = NUM_FMT
             c5.alignment = ALIGN_RIGHT
@@ -2797,7 +3044,7 @@ def _build_intereses(wb, ejercicio: int, fecha_gen: str,
             c5.alignment = ALIGN_RIGHT
         ws.cell(row=next_row, column=6,
                 value=TIPO_LABEL.get(r['tipo'], r['tipo'])).alignment = ALIGN_CENTER
-        ws.cell(row=next_row, column=7, value=r.get('descripcion', ''))
+        ws.cell(row=next_row, column=7, value=_safe_cell(r.get('descripcion', '')))
         for col in range(1, 8):
             ws.cell(row=next_row, column=col).border = BORDER_ALL
             ws.cell(row=next_row, column=col).font = FONT_BODY
@@ -3009,7 +3256,7 @@ def _build_gastos_plataforma(wb, ejercicio: int, fecha_gen: str,
             Decimal('0.01'), ROUND_HALF_UP)
         total += importe
         ws.cell(row=next_row, column=1, value=str(g.get('fecha', ''))).alignment = ALIGN_CENTER
-        ws.cell(row=next_row, column=2, value=g.get('descripcion', ''))
+        ws.cell(row=next_row, column=2, value=_safe_cell(g.get('descripcion', '')))
         c3 = ws.cell(row=next_row, column=3, value=float(importe))
         c3.number_format = EUR_FMT
         c3.alignment = ALIGN_RIGHT
@@ -3121,27 +3368,46 @@ def aggregate_por_broker(
         recup_isin   = _to_dec(d.get('recuperable', 0))
         es_nacional  = bool(d.get('es_nacional'))
 
+        # Los `eventos` vienen YA consolidados por (fecha, broker) desde
+        # calcular_resumen_dividendos, con los campos `bruto`,
+        # `retencion_origen` y `retencion_es` por broker real (no `tipo`/
+        # `importe_eur`). Sumamos esos campos directamente por broker — es
+        # exacto, sin prorrateo. Antes el bucle filtraba por tipo='DIV' +
+        # importe_eur (claves que el evento consolidado no tiene) → nunca
+        # casaba → todo caía al fallback (100% al primer broker).
         brokers_bruto: dict[str, Decimal] = {}
+        tiene_eventos = False
         for ev in eventos:
-            if ev.get('tipo') == 'DIV' and ev.get('importe_eur') is not None:
-                b = ev.get('broker') or 'IBKR'
-                brokers_bruto[b] = brokers_bruto.get(b, Decimal('0')) + _to_dec(ev['importe_eur'])
-        if not brokers_bruto and bruto_isin:
+            b = ev.get('broker') or 'IBKR'
+            bruto_b = _to_dec(ev.get('bruto', 0))
+            if bruto_b == 0 and _to_dec(ev.get('retencion_origen', 0)) == 0 \
+                    and _to_dec(ev.get('retencion_es', 0)) == 0:
+                continue
+            tiene_eventos = True
+            a = _ensure(b)
+            a['div_bruto']   += bruto_b
+            a['div_ret_org'] += _to_dec(ev.get('retencion_origen', 0))
+            a['div_ret_nac'] += _to_dec(ev.get('retencion_es', 0))
+            brokers_bruto[b] = brokers_bruto.get(b, Decimal('0')) + bruto_b
+
+        if not tiene_eventos and bruto_isin:
+            # Fallback (resumen sin eventos): atribuir al primer broker.
             brokers_str = (d.get('brokers') or '').split(',')
             first = brokers_str[0].strip() if brokers_str else 'DeGiro'
+            a = _ensure(first)
+            a['div_bruto']   += bruto_isin
+            a['div_ret_org'] += ret_org_isin
+            a['div_ret_nac'] += ret_es_isin
             brokers_bruto[first] = bruto_isin
 
-        total_bruto = sum(brokers_bruto.values()) or Decimal('1')
-        for broker, bruto_b in brokers_bruto.items():
-            a = _ensure(broker)
-            a['div_bruto']   += bruto_b
-            share = bruto_b / total_bruto
-            a['div_ret_org'] += (ret_org_isin * share).quantize(Decimal('0.01'), ROUND_HALF_UP)
-            # Retención española (0591) → div_ret_nac SIEMPRE (emisor ES o
-            # extranjero con el 19% de TR Sucursal ES). CDI (0588) → solo extranjeros.
-            a['div_ret_nac'] += (ret_es_isin * share).quantize(Decimal('0.01'), ROUND_HALF_UP)
-            if not es_nacional:
-                a['div_cdi']    += (recup_isin * share).quantize(Decimal('0.01'), ROUND_HALF_UP)
+        # CDI recuperable (0588): se computa topado al CDI a nivel ISIN, así
+        # que se prorratea por la cuota de bruto de cada broker.
+        if not es_nacional and recup_isin and brokers_bruto:
+            total_bruto = sum(brokers_bruto.values()) or Decimal('1')
+            for broker, bruto_b in brokers_bruto.items():
+                a = _ensure(broker)
+                a['div_cdi'] += (recup_isin * bruto_b / total_bruto).quantize(
+                    Decimal('0.01'), ROUND_HALF_UP)
 
     for it in intereses or []:
         if it.get('tipo') == 'debit':
@@ -3246,8 +3512,12 @@ def _build_por_broker(wb, ejercicio: int, fecha_gen: str, *,
         c7  = ws.cell(row=next_row, column=7, value=float(totals['int_ret']))
         c8  = ws.cell(row=next_row, column=8,
                       value=float(totals['div_bruto'] + totals['int_bruto']))
+        # Total retenciones del broker = origen (0588) + española 19% (0591,
+        # div_ret_nac) + retención de intereses. Antes omitía div_ret_nac, que
+        # es justo la retención que el Modelo 198 precarga en el borrador.
         c9  = ws.cell(row=next_row, column=9,
-                      value=float(totals['div_ret_org'] + totals['int_ret']))
+                      value=float(totals['div_ret_org'] + totals['div_ret_nac']
+                                  + totals['int_ret']))
         c10 = ws.cell(row=next_row, column=10,
                       value=_BROKER_AEAT_INFO.get(broker, ("No",""))[0])
         for col in (2, 3, 4, 5, 6, 7, 8, 9):
@@ -3340,7 +3610,7 @@ def _build_resumen(wb, ejercicio: int, fecha_gen: str,
         c1 = ws.cell(row=next_row, column=1, value=casilla)
         if informativo:
             concepto = f"{concepto} · INFORMATIVO — decides tú si lo declaras"
-        c2 = ws.cell(row=next_row, column=2, value=concepto)
+        c2 = ws.cell(row=next_row, column=2, value=_safe_cell(concepto))
         if ref is None:
             c3 = ws.cell(row=next_row, column=3, value=0)
         else:

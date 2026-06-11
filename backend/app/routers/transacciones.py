@@ -147,7 +147,12 @@ def obtener_transaccion(tx_id: str, db: Session = Depends(get_db)) -> models.Tra
     summary="Marcar una transacción como descartada",
 )
 def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
-    """No elimina físicamente — marca `estado=descartada` para preservar auditoría."""
+    """No elimina físicamente — marca `estado=descartada` para preservar
+    auditoría, y reconstruye el FIFO de la posición (los lotes derivan de
+    las transacciones confirmadas: sin rebuild, la posición seguía mostrando
+    cantidad/coste de la transacción descartada en dashboard, fiscal y
+    optimizador — auditoría Cima 2026-06-11, C3; mantenimiento.py ya lo
+    hacía bien)."""
     tx = db.get(models.Transaccion, tx_id)
     if tx is None:
         raise HTTPException(
@@ -155,4 +160,8 @@ def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
             detail=f"Transacción {tx_id} no encontrada",
         )
     tx.estado = "descartada"
+    db.flush()
+    if tx.posicion_id:
+        from app.services import fifo
+        fifo.rebuild_for_posicion(db, tx.posicion_id)
     db.commit()

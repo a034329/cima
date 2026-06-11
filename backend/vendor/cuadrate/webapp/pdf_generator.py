@@ -13,62 +13,98 @@ from jinja2 import Environment, FileSystemLoader
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
-# Umbral de matches por ISIN para colapsar el detalle por operacion a un
-# agregado mensual. Por encima de este numero, WeasyPrint tarda decenas de
-# segundos en hacer layout de la tabla (~21 ms/fila × N) — para daytraders
-# con 1500+ matches por ISIN el PDF llegaba a 40+ s solo del render fiscal.
-# El detalle completo sigue disponible en la hoja G_P_por_valor del XLSX
-# maestro del ejercicio, asi que la perdida informativa es nula.
-_COLLAPSE_DETALLE_THRESHOLD = 30
+# Umbral de matches por ISIN para colapsar el detalle por operacion a la
+# vista "lista-para-RentaWeb" (max 2 registros por ISIN: A integrable + B
+# diferida 2M). Por debajo de 20, el detalle completo cabe sin saturar al
+# usuario; por encima, sumar mentalmente para trasladar a la casilla 0326
+# es inviable y la separacion A/B se vuelve la unica vista util.
+_COLLAPSE_DETALLE_THRESHOLD = 20
 
-_MESES_ES = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
-             7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
+# Fraccion minima de operaciones intradia (fecha_compra == fecha_venta) para
+# clasificar el ISIN como "daytrading". Por debajo es "swing intensivo".
+_DAYTRADING_INTRADAY_RATIO = Decimal("0.5")
 
 
-def _aggregate_matches_by_month(matches):
-    """Agrega matches por (anyo, mes) de fecha_venta y devuelve filas
-    listas para el template. Usado cuando un ISIN supera el umbral de
-    colapso para evitar layouts de miles de filas en WeasyPrint.
+def _classify_isin_pattern(matches):
+    """Clasifica el patron operativo del ISIN segun n_matches y % intradia.
 
-    Cada fila agregada incluye los totales de cantidad, coste, importe,
-    G/P integrable (con pérdida diferida aflorada restada) y contadores
-    de regla 2M / scrip que permiten al usuario decidir si tiene que
-    abrir el XLSX para revisar el detalle.
+    Returns:
+        dict con keys: pattern ("daytrading"|"swing"|"normal"),
+        n_intraday, ratio_intraday.
     """
-    buckets: dict[tuple[int, int], dict] = {}
-    for m in matches:
-        key = (m.fecha_venta.year, m.fecha_venta.month)
-        b = buckets.get(key)
-        if b is None:
-            b = {
-                "anyo":              key[0],
-                "mes":               key[1],
-                "label":             f"{_MESES_ES[key[1]]} {key[0]}",
-                "n_matches":         0,
-                "cantidad":          Decimal("0"),
-                "coste_adquisicion": Decimal("0"),
-                "importe_transmision": Decimal("0"),
-                "gastos_venta":      Decimal("0"),
-                "ganancia_perdida":  Decimal("0"),
-                "perdida_diferida_aflorada": Decimal("0"),
-                "n_regla_2m":        0,
-                "n_scrip":           0,
-            }
-            buckets[key] = b
-        b["n_matches"]              += 1
-        b["cantidad"]                += m.cantidad
-        b["coste_adquisicion"]       += (m.coste_adquisicion or Decimal("0"))
-        b["importe_transmision"]     += (m.importe_transmision or Decimal("0"))
-        b["gastos_venta"]            += (m.gastos_venta or Decimal("0"))
-        b["ganancia_perdida"]        += m.ganancia_perdida
-        pd_aflorada = getattr(m, "perdida_diferida_aflorada_eur", Decimal("0"))
-        b["perdida_diferida_aflorada"] += pd_aflorada
-        if getattr(m, "regla_2_meses", False):
-            b["n_regla_2m"] += 1
-        if getattr(m, "es_scrip", False):
-            b["n_scrip"] += 1
-    # Devolver ordenado cronologicamente.
-    return sorted(buckets.values(), key=lambda b: (b["anyo"], b["mes"]))
+    n = len(matches)
+    n_intraday = sum(1 for m in matches if m.fecha_compra == m.fecha_venta)
+    ratio = (Decimal(n_intraday) / Decimal(n)) if n else Decimal("0")
+    if n < _COLLAPSE_DETALLE_THRESHOLD:
+        pattern = "normal"
+    elif ratio >= _DAYTRADING_INTRADAY_RATIO:
+        pattern = "daytrading"
+    else:
+        pattern = "swing"
+    return {
+        "pattern":        pattern,
+        "n_intraday":     n_intraday,
+        "ratio_intraday": ratio,
+    }
+
+
+def _aggregate_for_rentaweb(matches):
+    """Agrega los matches de un ISIN en hasta 2 registros listos para
+    teclear directamente en RentaWeb (casillas 0326-0340 / 2224-2236 / etc.):
+
+      · Registro A — Integrable: ops sin regla 2M (G/P se imputa en el
+        ejercicio). Valor de adquisicion incluye PD aflorada (forma A
+        doctrinal: Art. 33.5.f LIRPF ultimo parrafo).
+      · Registro B — Diferida 2M: ops con `regla_2_meses=True`. Marca el
+        checkbox "No imputacion de perdidas por recompra".
+
+    Fechas: rango FIFO consumido (MIN fecha_compra → MAX fecha_venta) por
+    bloque. Convencion practica de los certificados pre-IRPF de gestores
+    (Renta4, Singular, Mediolanum) — el valor de adquisicion agregado es
+    invariante respecto a la fecha individual de cada lote (no hay coefs.
+    de antiguedad post-1994).
+
+    Invariante matematico: Σ G/P_integrable(matches) == reg_A.gp + reg_B.gp.
+    """
+    reg_A_matches = [m for m in matches if not m.regla_2_meses]
+    reg_B_matches = [m for m in matches if m.regla_2_meses]
+
+    def _build_reg(label, ms, marca_2m):
+        if not ms:
+            return None
+        coste_fifo  = sum((m.coste_adquisicion or Decimal("0")) for m in ms)
+        pd_aflorada = sum(getattr(m, "perdida_diferida_aflorada_eur",
+                                   Decimal("0")) for m in ms)
+        importe     = sum((m.importe_transmision or Decimal("0")) for m in ms)
+        gastos      = sum((m.gastos_venta or Decimal("0")) for m in ms)
+        # G/P bruta = importe − gastos − coste FIFO. G/P integrable resta
+        # ademas la PD aflorada (que se suma al coste — forma A doctrinal).
+        gp_bruta       = sum(m.ganancia_perdida for m in ms)
+        gp_integrable  = gp_bruta - pd_aflorada
+        cantidad       = sum(m.cantidad for m in ms)
+        fecha_min_adq  = min(m.fecha_compra for m in ms)
+        fecha_max_trans= max(m.fecha_venta  for m in ms)
+        return {
+            "label":              label,
+            "n_matches":          len(ms),
+            "marca_2m":           marca_2m,
+            "cantidad":           cantidad,
+            "coste_fifo":         coste_fifo,
+            "pd_aflorada":        pd_aflorada,
+            "coste_a_declarar":   coste_fifo + pd_aflorada,
+            "importe_transmision": importe,
+            "gastos_venta":       gastos,
+            "transmision_neta":   importe - gastos,
+            "ganancia_perdida":   gp_integrable,
+            "gp_bruta":           gp_bruta,
+            "fecha_adquisicion":  fecha_min_adq,
+            "fecha_transmision":  fecha_max_trans,
+        }
+
+    return [r for r in (
+        _build_reg("Reg A — Integrable",      reg_A_matches, False),
+        _build_reg("Reg B — Diferida 2M",     reg_B_matches, True),
+    ) if r is not None]
 
 # Añadir irpf/ al path para importar motor_fiscal
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "irpf"))
@@ -105,6 +141,7 @@ def generate_fiscal_pdf(
     complejos_investigaciones: dict | None = None,
     fx_pl: dict | None = None,
     is_demo: bool = False,
+    spinoffs_aplicados_previos: list | None = None,
 ) -> str:
     """Genera el PDF fiscal a partir de los resultados del motor FIFO.
 
@@ -167,13 +204,15 @@ def generate_fiscal_pdf(
         )
         # Tipo del grupo (todos los matches del mismo ISIN comparten tipo).
         instr_type = getattr(matches[0], 'instrument_type', 'STOCK')
-        # Colapso defensivo a agregado mensual cuando el grupo supera el
-        # umbral: WeasyPrint layout de la tabla escala lineal con el numero
-        # de filas (~21 ms/fila), y para daytraders con 1500+ matches por
-        # ISIN llegaba a 40+ segundos solo de render. El detalle completo
-        # vive en la hoja G_P_por_valor del XLSX (con coste editable);
-        # aqui se ofrece la vista mensual para auditoria visual rapida.
-        collapsed = len(matches) > _COLLAPSE_DETALLE_THRESHOLD
+        # Colapso a vista "lista-para-RentaWeb" cuando el grupo supera el
+        # umbral: hasta 2 registros por ISIN (A integrable + B diferida 2M)
+        # con fechas en rango FIFO (MIN compra → MAX venta) que es
+        # exactamente lo que el contribuyente debe teclear en RentaWeb.
+        # El detalle por operacion sigue disponible en la hoja G_P_por_valor
+        # del XLSX (con outline expandible y coste editable).
+        clasif = _classify_isin_pattern(matches)
+        pattern = clasif["pattern"]
+        collapsed = pattern in ("daytrading", "swing")
         group_entry = {
             "isin": isin,
             "nombre": matches[0].nombre,
@@ -185,11 +224,31 @@ def generate_fiscal_pdf(
             "total_transmision": total_transmision,
             "instrument_type": instr_type,
             "collapsed": collapsed,
+            "pattern": pattern,
+            "n_intraday": clasif["n_intraday"],
+            "ratio_intraday": clasif["ratio_intraday"],
             "n_matches": len(matches),
         }
         if collapsed:
-            group_entry["matches_mensual"] = _aggregate_matches_by_month(matches)
+            group_entry["rentaweb_aggregate"] = _aggregate_for_rentaweb(matches)
         matches_by_isin.append(group_entry)
+
+    # Estadisticas globales de ISINs con operativa intensiva (collapsed=True)
+    # para el banner de cabecera del informe. El usuario daytrader/swing
+    # necesita saber DE UN VISTAZO cuantos ISINs aparecen agrupados a max
+    # 2 filas/ISIN para traslacion directa a RentaWeb.
+    n_isins_daytrading = sum(1 for g in matches_by_isin if g.get("pattern") == "daytrading")
+    n_isins_swing      = sum(1 for g in matches_by_isin if g.get("pattern") == "swing")
+    n_isins_intensive  = n_isins_daytrading + n_isins_swing
+    n_matches_intensive = sum(g["n_matches"] for g in matches_by_isin
+                              if g.get("pattern") in ("daytrading", "swing"))
+    intensive_isins_stats = {
+        "n_daytrading":      n_isins_daytrading,
+        "n_swing":           n_isins_swing,
+        "n_total":           n_isins_intensive,
+        "n_matches_total":   n_matches_intensive,
+        "threshold":         _COLLAPSE_DETALLE_THRESHOLD,
+    }
 
     # Separar SIEMPRE por instrument_type para mostrar tablas distintas en
     # el PDF, independientemente del año. La instrucción de RentaWEB cambia
@@ -243,7 +302,7 @@ def generate_fiscal_pdf(
 
     # Split de matches_regla_2m por instrument_type — cada tipo se declara
     # en una casilla distinta (STOCK→0326-0340, ETF→2224-2236 Renta 2025+ o
-    # 0326-0340 Renta <2025, DERIVATIVE→1624-1654 clave 5, CRYPTO→1800-1814,
+    # 0326-0340 Renta <2025, DERIVATIVE→1624-1654 clave 4, CRYPTO→1800-1814,
     # BOND→0030-0033 sin checkbox). El template renderiza una sub-sección
     # por tipo presente con su mecánica RentaWEB específica.
     regla_2m_acciones    = [m for m in matches_regla_2m if getattr(m, 'instrument_type', 'STOCK') == 'STOCK']
@@ -332,9 +391,11 @@ def generate_fiscal_pdf(
     matches_bonds       = [m for m in year_matches if getattr(m, 'instrument_type', 'STOCK') == 'BOND']
     matches_socimi      = [m for m in year_matches if getattr(m, 'instrument_type', 'STOCK') == 'SOCIMI']
     # ETCs físicos: RCM Art. 25.2 LIRPF + DGT V0267-25 → casilla 0031.
-    # NO entran en la regla 2M (Art. 33.5.f LIRPF habla de pérdidas
-    # patrimoniales, no de RCM), por lo que tampoco se contabilizan
-    # como pérdidas no deducibles ni se les aplica la cascada PD.
+    # La regla del 33.5.f no les aplica (es de G/P patrimoniales), pero el
+    # último párrafo del Art. 25.2 contiene su equivalente para RCM: los
+    # rendimientos negativos con recompra de activos financieros homogéneos
+    # en ±2 meses se difieren. El motor los marca igual que a las acciones
+    # (anclaje Art. 25.2 en el detalle) y la cascada PD les aplica.
     matches_etcs        = [m for m in year_matches if getattr(m, 'instrument_type', 'STOCK') == 'ETC']
     n_unknown = sum(1 for m in year_matches if getattr(m, 'instrument_type_unknown', False))
 
@@ -360,14 +421,21 @@ def generate_fiscal_pdf(
 
     split_acciones    = _gp_split(matches_acciones)
     split_etfs        = _gp_split(matches_etfs)
+    # Pre-2025 los ETFs van CON acciones en 0326-0340 (no tenían bloque
+    # propio). Split dedicado STOCK+ETF para el sidecar de ejercicios
+    # anteriores: el `total_*` (year_matches_patrimonial = todo menos ETC)
+    # double-contaba SOCIMI/BOND/CRYPTO/DERIVATIVE, que tienen casilla propia
+    # en cualquier año.
+    split_acciones_pre2025 = _gp_split(matches_acciones + matches_etfs)
     split_derivatives = _gp_split(matches_derivatives)
     split_crypto      = _gp_split(matches_crypto)
     split_bonds       = _gp_split(matches_bonds)
     split_socimi      = _gp_split(matches_socimi)
-    # ETCs: split simplificado — no aplican regla 2M ni PD aflorada
-    # (Art. 33.5.f sólo afecta a G/P patrimoniales). Sólo ganancia/pérdida
-    # bruta del rendimiento por venta = importe transmisión - coste FIFO
-    # ajustado por comisiones (Art. 25.2.b + Art. 26.1.a LIRPF).
+    # ETCs: mismo split que el resto — `no_deducible_2m` recoge los RCM
+    # negativos diferidos por el Art. 25.2 último párrafo (recompra de
+    # homogéneos ±2M) y `pd_aflorada` su afloración. Rendimiento = importe
+    # transmisión - coste FIFO ajustado por comisiones (Art. 25.2.b +
+    # Art. 26.1.a LIRPF).
     split_etcs = _gp_split(matches_etcs)
 
     # Resumen agrupado de derivados estructurados (Factor, Turbo, Mini, KO,
@@ -652,6 +720,7 @@ def generate_fiscal_pdf(
     # XLSX maestro no se ha generado todavía o el sidecar no existe (CLI
     # antiguo), seguimos sin la tabla y el template oculta la sección.
     por_broker = None
+    staking_data = None
     try:
         import json as _json
         # output_path es informe_fiscal_2025.pdf → sidecar está en el mismo dir
@@ -664,6 +733,16 @@ def generate_fiscal_pdf(
             with open(_sidecar_path, encoding='utf-8') as _f:
                 _sidecar = _json.load(_f)
             por_broker = _sidecar.get("por_broker")
+            # Staking de criptomonedas (RCM 0027, DGT V1766-22) — el PDF lo
+            # omitía por completo: la cadena terminaba en stdout + hoja
+            # Staking del XLSX. Auditoría visual 2026-06-11.
+            _stk = _sidecar.get("casilla_0027_staking")
+            if _stk and Decimal(str(_stk.get("total", 0) or 0)) > 0:
+                staking_data = {
+                    "total":     Decimal(str(_stk["total"])),
+                    "n_eventos": int(_stk.get("n_eventos", 0) or 0),
+                    "activos":   _stk.get("activos") or [],
+                }
     except Exception as _e:
         print(f"[pdf_generator] No se pudo leer por_broker del sidecar: {_e}")
 
@@ -780,6 +859,7 @@ def generate_fiscal_pdf(
         "fx_data": fx_data,
         "tbills_data": tbills_data,
         "interest_data": interest_data,
+        "staking_data": staking_data,
         "total_intereses_0023": total_intereses_0023,  # legacy alias - usar interest_data["credit_total"]
         "plataforma_data": plataforma_data,
         # Split acciones/ETFs/derivados/cripto. Las tablas siempre se
@@ -823,10 +903,19 @@ def generate_fiscal_pdf(
         "corp_venta_mercado":  corp_data["venta_mercado"],
         "corp_spin_offs":      corp_data["spin_offs"],
         "corp_rights_exercised": corp_data["rights_exercised"],
+        # Spin-offs resueltos auto (catalogo Form 8937) que han afectado
+        # al inventario aunque la fecha del evento sea anterior al target.
+        # El motor ya aplico el doble ajuste — esta lista es informativa
+        # para auditoria del usuario.
+        "spinoffs_aplicados_previos": spinoffs_aplicados_previos or [],
         "semaforo_global":     _semaforo_global(),
         # Aviso de perfil daytrader (Art. 33.5.f LIRPF + intensidad de
         # trading). Solo se renderiza si perfil_daytrader.detected = True.
         "perfil_daytrader":    perfil_daytrader,
+        # Estadisticas de ISINs agrupados a vista RentaWeb (max 2 filas/ISIN
+        # cuando n_matches >= 20). Banner global en cabecera + tooltip por
+        # ISIN con clasificacion daytrading / swing.
+        "intensive_isins_stats": intensive_isins_stats,
     }
 
     html_content = template.render(**context)
@@ -875,12 +964,12 @@ def generate_fiscal_pdf(
         "multi_anio": multi_anio,
         # Casillas 0326-0340 — Acciones cotizadas (excluye derechos y ETFs en 2025+)
         "casilla_0326_0340": {
-            "ganancias":        _d(split_acciones['ganancias'] if etfs_bloque_separado else total_ganancias),
-            "perdidas":         _d(split_acciones['perdidas']  if etfs_bloque_separado else total_perdidas),
-            "no_deducible_2m":  _d(split_acciones['no_deducible_2m'] if etfs_bloque_separado else total_regla_2m),
-            "neto_deducible":   _d(split_acciones['neto_deducible']  if etfs_bloque_separado else total_gp_deducible),
-            "neto_bruto":       _d(split_acciones['bruto'] if etfs_bloque_separado else total_gp),
-            "n_matches":        split_acciones['n_matches'] if etfs_bloque_separado else len(year_matches),
+            "ganancias":        _d((split_acciones if etfs_bloque_separado else split_acciones_pre2025)['ganancias']),
+            "perdidas":         _d((split_acciones if etfs_bloque_separado else split_acciones_pre2025)['perdidas']),
+            "no_deducible_2m":  _d((split_acciones if etfs_bloque_separado else split_acciones_pre2025)['no_deducible_2m']),
+            "neto_deducible":   _d((split_acciones if etfs_bloque_separado else split_acciones_pre2025)['neto_deducible']),
+            "neto_bruto":       _d((split_acciones if etfs_bloque_separado else split_acciones_pre2025)['bruto']),
+            "n_matches":        (split_acciones if etfs_bloque_separado else split_acciones_pre2025)['n_matches'],
         },
         # Casillas 2224-2236 — ETFs / IIC sin retención (Art. 75.3.j RIRPF, Renta 2025+)
         "casilla_2224_2236": {
@@ -908,12 +997,23 @@ def generate_fiscal_pdf(
         } if split_crypto['n_matches'] > 0 else None,
         # Casilla 0031 — Transmisión / amortización de otros activos financieros
         # (bonos individuales). Los cupones cobrados durante la tenencia van
-        # a casilla 0027 (gestión aparte vía bond_data).
+        # a casilla 0027 (gestión aparte vía bond_data). no_deducible_2m =
+        # RCM negativos diferidos por recompra de homogéneos ±2M (Art. 25.2
+        # LIRPF último párrafo).
         "casilla_0031": {
             "neto_deducible":   _d(split_bonds['neto_deducible']),
             "neto_bruto":       _d(split_bonds['bruto']),
+            "no_deducible_2m":  _d(split_bonds['no_deducible_2m']),
             "n_matches":        split_bonds['n_matches'],
         } if split_bonds['n_matches'] > 0 else None,
+        # Casilla 0031 (ETCs físicos, DGT V0267-25) — misma casilla AEAT que
+        # bonos pero desglosada aparte, coherente con "0031-ETC" del XLSX.
+        "casilla_0031_etc": {
+            "neto_deducible":   _d(split_etcs['neto_deducible']),
+            "neto_bruto":       _d(split_etcs['bruto']),
+            "no_deducible_2m":  _d(split_etcs['no_deducible_2m']),
+            "n_matches":        split_etcs['n_matches'],
+        } if split_etcs['n_matches'] > 0 else None,
         # Casillas 0324/0325 — SOCIMI españolas (Ley 11/2009): apartado F2,
         # subapartado IIC/SOCIMI. Solo SOCIMI nacionales — los REITs/SIIC
         # extranjeros van como acciones normales en 0326-0340.
@@ -960,6 +1060,12 @@ def generate_fiscal_pdf(
             "tbills_total":     _d(tbills_data["total"]) if tbills_data else 0.0,
             "n_items":          len(tbills_data.get("lines", [])) if tbills_data else 0,
         } if tbills_data and tbills_data.get("total", 0) > 0 else None,
+        # Casilla 0027 (staking cripto) — RCM en especie DGT V1766-22.
+        # Espejo de la clave homónima del sidecar XLSX (coherencia de capas).
+        "casilla_0027_staking": {
+            "total":     _d(staking_data["total"]),
+            "n_eventos": staking_data.get("n_eventos", 0),
+        } if staking_data else None,
         # Casilla 0037 — Gastos de administración y depósito (Art. 26.1.a LIRPF)
         # Se introducen en el campo "Gastos de administración y depósito" del
         # popup individual de cualquier rendimiento del capital mobiliario;
@@ -1402,6 +1508,10 @@ def parse_corporativas_txt(filepath: str) -> dict:
                 cantidad = int(float(cantidad_str.split()[0].replace(",", ".")))
             except Exception:
                 cantidad = 0
+            resuelto_auto_raw = (_grab(block, "Resuelto auto") or "").strip().lower()
+            resuelto_auto = resuelto_auto_raw == "si"
+            fuente_auto   = (_grab(block, "Fuente") or "").strip() if resuelto_auto else ""
+            coste_aplicado_str = (_grab(block, "Coste aplicado") or "").strip()
             spin_offs.append({
                 "nombre":         nombre_nueva,
                 "isin":           isin_nueva_m.group(1) if isin_nueva_m else "",
@@ -1410,6 +1520,9 @@ def parse_corporativas_txt(filepath: str) -> dict:
                 "isin_matriz":    isin_matriz_m.group(1) if isin_matriz_m else "",
                 "fecha_efectiva": fecha_eff,
                 "cantidad":       cantidad,
+                "resuelto_auto":  resuelto_auto,
+                "fuente_auto":    fuente_auto,
+                "coste_aplicado": coste_aplicado_str,
             })
 
         elif re.search(r"\[RIGHTS_EXERCISED\]", block):

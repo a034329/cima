@@ -62,21 +62,34 @@ class HojaRuta:
 
 
 def analizar_deficit(db: Session, cartera_id: str) -> tuple[list[GapBloque], Decimal]:
-    """Déficit € por bloque = (objetivo − actual) × capital. DETERMINISTA."""
+    """Déficit € por bloque = (objetivo − actual) × capital EN ESTRATEGIA.
+    DETERMINISTA.
+
+    La base es el capital dentro de la estrategia (excluye Colchón y bloques
+    fuera de estrategia), igual que hace plan.hueco_asignacion. Con la base
+    total (auditoría Cima 2026-06-11, A7) los objetivos —que suman 100% sobre
+    la estrategia— generaban Σ déficits ≈ tamaño del colchón: pasos COMPRAR
+    sin financiación posible salvo vender el colchón (regla absoluta: jamás)."""
     from app.services.bloques import calcular_distribucion
     d = calcular_distribucion(db, cartera_id)
+    total_estrategia = sum(
+        (b.valor_eur for b in d.bloques if b.en_estrategia), Decimal("0")
+    )
     gaps: list[GapBloque] = []
     for b in d.bloques:
         if b.peso_objetivo is None or not b.en_estrategia:
             continue
-        deficit = (b.peso_objetivo - b.peso_actual) * d.total_eur
+        peso_actual = (
+            b.valor_eur / total_estrategia if total_estrategia > 0 else Decimal("0")
+        )
+        deficit = (b.peso_objetivo - peso_actual) * total_estrategia
         gaps.append(GapBloque(
             categoria_base=b.categoria_base, nombre=b.nombre,
-            peso_actual=float(b.peso_actual), peso_objetivo=float(b.peso_objetivo),
+            peso_actual=float(peso_actual), peso_objetivo=float(b.peso_objetivo),
             deficit_eur=float(deficit), n_posiciones=b.n_posiciones,
         ))
     gaps.sort(key=lambda g: g.deficit_eur, reverse=True)
-    return gaps, d.total_eur
+    return gaps, total_estrategia
 
 
 def _contexto(db: Session, cartera_id: str):  # type: ignore[no-untyped-def]

@@ -46,7 +46,7 @@ class ResumenFiscalOut(BaseModel):
     # RCM (base del ahorro)
     dividendos_bruto: Decimal = Field(decimal_places=2)   # casilla 0029
     dividendos_ret_es: Decimal = Field(decimal_places=2)
-    intereses_rcm: Decimal = Field(decimal_places=2)      # casilla 0023
+    intereses_rcm: Decimal = Field(decimal_places=2)      # casilla 0027
     letras_rcm: Decimal = Field(decimal_places=2)
     intereses_debit: Decimal = Field(decimal_places=2)    # informativo
     # Deducción de cuota

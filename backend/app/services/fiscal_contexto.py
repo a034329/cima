@@ -60,7 +60,12 @@ def calcular_contexto(
     opt = calcular_optimizador(db, cartera_id, ejercicio, precios=precios)
 
     base = _q(comp.base_ahorro_gp) + _q(comp.base_ahorro_rcm)
-    pendientes = sum((_q(p.pendiente_eur) for p in comp.perdidas_actualizadas), Decimal("0"))
+    # Solo años ANTERIORES: `perdidas_actualizadas` incluye también la pérdida
+    # nueva de este ejercicio (origen == ejercicio), que ya viene en
+    # `nuevo_saldo_negativo` — sumarla dos veces inflaba el buffer (auditoría
+    # Cima 2026-06-11, A6; mismo filtro "OJO" que el optimizador).
+    pendientes = sum((_q(p.pendiente_eur) for p in comp.perdidas_actualizadas
+                      if p.ejercicio_origen < ejercicio), Decimal("0"))
     # Caducan este ejercicio = pendientes cuyo último año compensable es el actual.
     caducan = sum((_q(p.pendiente_eur) for p in comp.perdidas_actualizadas
                    if p.expira == ejercicio), Decimal("0"))

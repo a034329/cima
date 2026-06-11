@@ -155,7 +155,7 @@ def _calcular_rcm_neto(
         select(models.Transaccion)
         .where(models.Transaccion.cartera_id == cartera_id)
         .where(models.Transaccion.estado == "confirmada")
-        .where(models.Transaccion.tipo.in_(["DIVIDEND", "INTEREST"]))
+        .where(models.Transaccion.tipo.in_(["DIVIDEND", "INTEREST", "STAKING_REWARD"]))
     ).scalars())
 
     rcm = Decimal("0")

@@ -7,8 +7,21 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import Mode, settings
 from app.db import models  # noqa: F401 — registra modelos en Base
 from app.db.base import Base
+
+
+@pytest.fixture(autouse=True)
+def _settings_aislados(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Aísla los tests de la configuración del entorno del desarrollador.
+
+    Settings carga `.env` (p.ej. CIMA_MODE=owner en la máquina de Angel) y
+    los tests asumían los defaults de SaaS → test_proponer_estrategia_mock
+    fallaba según QUIÉN ejecutara la suite (auditoría Cima 2026-06-11, T1).
+    Cada test arranca con los defaults de producto; el que necesite otro
+    modo lo monkeypatchea explícitamente."""
+    monkeypatch.setattr(settings, "mode", Mode.SAAS)
 
 
 @pytest.fixture()
