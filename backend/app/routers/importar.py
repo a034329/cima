@@ -385,43 +385,6 @@ async def importar_extracto(
                 tmp_cuenta_obj.flush()
                 tmp_cuenta_path = tmp_cuenta_obj.name
 
-        # ── Persistencia del CSV original (Roadmap 1.9) ─────────────────
-        # Cima guarda el extracto tal cual para poder re-pasárselo a
-        # `generar_irpf.main()` y entregar la declaración completa.
-        # Si no se informa el ejercicio, lo omitimos sin romper la importación
-        # (compatibilidad con el flujo previo).
-        if ejercicio is not None:
-            kind_principal = _KIND_PRINCIPAL.get(broker_tipo)
-            if kind_principal:
-                try:
-                    storage_extractos.guardar_extracto(
-                        db, cartera_id=cartera.id, ejercicio=ejercicio,
-                        kind=kind_principal,
-                        filename_original=fichero.filename or "extracto.csv",
-                        contenido=contenido,
-                    )
-                except (OSError, ValueError) as e:
-                    avisos_parser.append(
-                        f"[STORAGE] No se pudo guardar el CSV original "
-                        f"({kind_principal}/{ejercicio}): {e}. La importación "
-                        f"a BD sigue, pero el motor IRPF de Cuádrate no podrá "
-                        f"usar este extracto."
-                    )
-            if (broker_tipo == "degiro" and contenido_cuenta):
-                try:
-                    storage_extractos.guardar_extracto(
-                        db, cartera_id=cartera.id, ejercicio=ejercicio,
-                        kind="degiro_cuenta",
-                        filename_original=(fichero_cuenta.filename
-                                           if fichero_cuenta else "cuenta.csv"),
-                        contenido=contenido_cuenta,
-                    )
-                except (OSError, ValueError) as e:
-                    avisos_parser.append(
-                        f"[STORAGE] No se pudo guardar el CSV de cuenta "
-                        f"DEGIRO ({ejercicio}): {e}."
-                    )
-
         try:
             # parse_degiro_csv acepta cuenta_path + avisos; el resto de parsers
             # aceptan sólo (path, broker_id) — los llamamos sin kwargs extra.
@@ -455,6 +418,45 @@ async def importar_extracto(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Error parseando extracto de {broker_tipo}: {e}",
             ) from e
+
+        # ── Persistencia del CSV original (Roadmap 1.9) ─────────────────
+        # DESPUÉS de que el parseo tenga éxito (auditoría Cima 2026-06-11,
+        # J3): antes el fichero se sobreescribía en disco ANTES de parsear —
+        # si el parser fallaba, el rollback de BD dejaba la fila vigente
+        # (sha256 antiguo) apuntando a un contenido nuevo y generar_irpf_zip
+        # usaba en silencio el CSV "fallido". Ahora disco y BD solo cambian
+        # con un extracto que parsea, en la misma transacción que el import.
+        if ejercicio is not None:
+            kind_principal = _KIND_PRINCIPAL.get(broker_tipo)
+            if kind_principal:
+                try:
+                    storage_extractos.guardar_extracto(
+                        db, cartera_id=cartera.id, ejercicio=ejercicio,
+                        kind=kind_principal,
+                        filename_original=fichero.filename or "extracto.csv",
+                        contenido=contenido,
+                    )
+                except (OSError, ValueError) as e:
+                    avisos_parser.append(
+                        f"[STORAGE] No se pudo guardar el CSV original "
+                        f"({kind_principal}/{ejercicio}): {e}. La importación "
+                        f"a BD sigue, pero el motor IRPF de Cuádrate no podrá "
+                        f"usar este extracto."
+                    )
+            if (broker_tipo == "degiro" and contenido_cuenta):
+                try:
+                    storage_extractos.guardar_extracto(
+                        db, cartera_id=cartera.id, ejercicio=ejercicio,
+                        kind="degiro_cuenta",
+                        filename_original=(fichero_cuenta.filename
+                                           if fichero_cuenta else "cuenta.csv"),
+                        contenido=contenido_cuenta,
+                    )
+                except (OSError, ValueError) as e:
+                    avisos_parser.append(
+                        f"[STORAGE] No se pudo guardar el CSV de cuenta "
+                        f"DEGIRO ({ejercicio}): {e}."
+                    )
 
         resultado = reconciliar_extracto(db, cartera.id, broker_tipo, candidatas)
 
@@ -528,13 +530,30 @@ async def importar_extracto(
             try:
                 res_cands = cuadrate.parse_ibkr_resultados(tmp_main.name, broker.id)
                 if res_cands:
+                    # Statement que CRUZA año natural: las cifras realized del
+                    # resumen son agregadas (sin fechas por operación) y no se
+                    # pueden repartir entre ejercicios — avisar (J5 auditoría).
+                    c0 = res_cands[0]
+                    if (c0.periodo_inicio and c0.periodo_fin
+                            and c0.periodo_inicio.year != c0.periodo_fin.year):
+                        avisos_parser.append(
+                            f"[IBKR FOREX/TBILL] ⚠️ El statement cubre "
+                            f"{c0.periodo_inicio} → {c0.periodo_fin} (cruza año "
+                            f"natural): todo el realized se atribuye a "
+                            f"{c0.ejercicio}. Para cifras fiscales correctas, "
+                            f"exporta statements por año natural."
+                        )
                     r_res = upsert_resultados_ibkr(db, cartera.id, res_cands)
                     n_fx = sum(1 for c in res_cands if c.categoria == "FOREX")
                     n_tb = sum(1 for c in res_cands if c.categoria == "TBILL")
-                    avisos_parser.append(
+                    msg = (
                         f"[IBKR] Forex/T-Bills: {n_fx} divisas + {n_tb} letras "
-                        f"({r_res.insertadas} nuevas, {r_res.actualizadas} actualizadas)."
+                        f"({r_res.insertadas} nuevas, {r_res.actualizadas} actualizadas"
                     )
+                    if r_res.ignoradas:
+                        msg += (f", {r_res.ignoradas} ignoradas por cubrir un "
+                                f"periodo más corto que el ya registrado")
+                    avisos_parser.append(msg + ").")
             except Exception as e:
                 avisos_parser.append(f"[IBKR FOREX/TBILL] No se pudieron procesar: {e}")
             try:

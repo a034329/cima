@@ -310,6 +310,23 @@ def reconciliar_extracto(
         insertadas=0, deduplicadas=0, reconciliadas=0,
         conflictos=0, huerfanas_manuales=0,
     )
+    # Desambiguar external_id REPETIDOS dentro del mismo extracto (auditoría
+    # Cima 2026-06-11, A3): dos compras limit idénticas el mismo día (IBKR
+    # sin trade-id, sintético sin hora) o un rolling de opciones intradía
+    # con el mismo OrderID colapsaban al mismo external_id y la segunda
+    # operación LEGÍTIMA se "deduplicaba" (dinero desaparecido). Sufijo por
+    # orden de aparición (-2, -3…): determinista entre reimports del mismo
+    # extracto (el orden del CSV es estable) y compatible con BD existentes
+    # (la primera aparición conserva el id sin sufijo).
+    candidatas = list(candidatas)
+    _vistos: dict[str, int] = {}
+    for c in candidatas:
+        if not c.external_id:
+            continue
+        n = _vistos.get(c.external_id, 0) + 1
+        _vistos[c.external_id] = n
+        if n > 1:
+            c.external_id = f"{c.external_id}-{n}"
     # Recolectamos las posiciones tocadas para hacer UN rebuild FIFO al
     # final en vez de aplicar FIFO incrementalmente. Crítico cuando se
     # importa un broker después de otro y el orden cronológico no coincide

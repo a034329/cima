@@ -19,12 +19,13 @@ from app.db import models
 class UpsertResultado:
     insertadas: int
     actualizadas: int
+    ignoradas: int = 0   # candidatas de periodo MÁS CORTO que el ya registrado
 
 
 def upsert_resultados_ibkr(
     db: Session, cartera_id: str, candidatas: list[ResultadoCandidata]
 ) -> UpsertResultado:
-    ins = upd = 0
+    ins = upd = ign = 0
     for c in candidatas:
         existente = db.execute(
             select(models.ResultadoIbkr)
@@ -41,6 +42,22 @@ def upsert_resultados_ibkr(
             ))
             ins += 1
         else:
+            # NO degradar cobertura (auditoría Cima 2026-06-11, J5): si la
+            # fila existente cubre un periodo MÁS AMPLIO que la candidata
+            # (p.ej. statement anual ya importado y ahora llega uno parcial
+            # ene-jun del mismo año), sobrescribir machacaría el realized
+            # del año completo con el del semestre, en silencio.
+            cubre_menos = (
+                existente.periodo_inicio is not None
+                and existente.periodo_fin is not None
+                and c.periodo_inicio is not None
+                and c.periodo_fin is not None
+                and (c.periodo_inicio > existente.periodo_inicio
+                     or c.periodo_fin < existente.periodo_fin)
+            )
+            if cubre_menos:
+                ign += 1
+                continue
             existente.realized_eur = c.realized_eur
             existente.unrealized_eur = c.unrealized_eur
             existente.ejercicio = c.ejercicio
@@ -48,7 +65,7 @@ def upsert_resultados_ibkr(
             existente.periodo_fin = c.periodo_fin
             upd += 1
     db.commit()
-    return UpsertResultado(insertadas=ins, actualizadas=upd)
+    return UpsertResultado(insertadas=ins, actualizadas=upd, ignoradas=ign)
 
 
 def upsert_complejos(

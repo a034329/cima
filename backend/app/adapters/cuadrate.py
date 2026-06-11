@@ -209,18 +209,27 @@ def parse_tr_csv(csv_path: str | Path, broker_id: str) -> list[TxCandidata]:
     # ── Dividendos (DIVIDEND + retencion ES) ───────────────────────────────
     divs = g.parse_tr_dividendos(path)
     # Cuádrate emite DIV y RET como filas separadas. Reagrupamos por ISIN+fecha
-    # para producir UNA candidata por dividendo con su retención.
+    # para producir UNA candidata por dividendo con su retención. ACUMULANDO:
+    # `slot[tipo] = d` sobreescribía y un segundo dividendo del mismo ISIN y
+    # día (ordinario + extraordinario, reversal + rebill) se perdía sin rastro
+    # (auditoría Cima 2026-06-11, A4). Sumar netea también los reversals.
     div_index: dict[tuple, dict] = {}
     for d in divs:
         key = (d["isin"], _to_date(d["fecha"]))
-        slot = div_index.setdefault(key, {"DIV": None, "RET": None, "nombre": d.get("nombre")})
-        slot[d["tipo"]] = d
+        slot = div_index.setdefault(
+            key, {"DIV": Decimal("0"), "RET": Decimal("0"), "n_div": 0,
+                  "nombre": d.get("nombre"), "divisa": d.get("divisa", "EUR"),
+                  "bruto_original": d.get("bruto_original")})
+        if d["tipo"] == "DIV":
+            slot["DIV"] += _to_decimal(d["importe_eur"])
+            slot["n_div"] += 1
+        elif d["tipo"] == "RET":
+            slot["RET"] += _to_decimal(d["importe_eur"])
     for (isin, fecha), slot in div_index.items():
-        div = slot.get("DIV")
-        ret = slot.get("RET")
-        if not div:
+        if slot["n_div"] == 0:
             continue
-        importe = _to_decimal(div["importe_eur"])
+        ret_total = slot["RET"]
+        importe = slot["DIV"]
         candidatas.append(TxCandidata(
             fecha=fecha,
             tipo="DIVIDEND",
@@ -228,21 +237,23 @@ def parse_tr_csv(csv_path: str | Path, broker_id: str) -> list[TxCandidata]:
             nombre=slot.get("nombre"),
             cantidad=Decimal("0"),       # dividendos no llevan unidades
             precio_local=Decimal("0"),
-            divisa_local=div.get("divisa", "EUR"),
+            divisa_local=slot.get("divisa", "EUR"),
             importe_local=importe,
             fx_rate=Decimal("1"),
             importe_eur=importe,
             gastos_eur=Decimal("0"),
             tasas_externas_eur=Decimal("0"),
-            retencion_eur=_to_decimal(ret["importe_eur"]) if ret else Decimal("0"),
-            retencion_pais="ES",
+            retencion_eur=ret_total,
+            # Solo etiquetar 'ES' si hubo retención real (antes se fijaba
+            # siempre — etiquetado inconsistente, auditoría BAJO #12).
+            retencion_pais="ES" if ret_total > 0 else None,
             # TR no expone tx_id de dividendo en parser → id sintético
             # determinista para que reimportar el mismo CSV no duplique.
             external_id=_synthetic_external_id(
                 "tr-div", isin, fecha, "DIVIDEND", Decimal("0"), importe,
             ),
             broker_id=broker_id,
-            notas=div.get("bruto_original"),
+            notas=slot.get("bruto_original"),
         ))
 
     # ── Intereses cuenta remunerada ────────────────────────────────────────
@@ -628,31 +639,40 @@ def _consolidar_dividendos(
     `external_id` determinista (`{prefix}-{isin}-{fecha}-{centimos}`) para
     que reimportar deduplique.
     """
+    # ACUMULANDO por (isin, fecha): la versión anterior (`slot[tipo] = d`)
+    # sobreescribía — dos dividendos del mismo día (ordinario+extraordinario,
+    # reversal+rebill de IBKR) perdían el primero (auditoría A4).
     div_index: dict[tuple, dict] = {}
     for d in dividendos:
         key = (d["isin"], _to_date(d["fecha"]))
         slot = div_index.setdefault(
-            key, {"DIV": None, "RET": None, "nombre": d.get("nombre")}
+            key, {"DIV": Decimal("0"), "RET": Decimal("0"), "n_div": 0,
+                  "nombre": d.get("nombre"), "divisa": d.get("divisa", "EUR"),
+                  "pais": d.get("pais")}
         )
-        slot[d["tipo"]] = d
+        if d["tipo"] == "DIV":
+            slot["DIV"] += _to_decimal(d["importe_eur"])
+            slot["n_div"] += 1
+            if d.get("pais"):
+                slot["pais"] = slot["pais"] or d.get("pais")
+        elif d["tipo"] == "RET":
+            slot["RET"] += _to_decimal(d["importe_eur"])
 
     candidatas: list[TxCandidata] = []
     for (isin, fecha), slot in div_index.items():
-        div = slot.get("DIV")
-        ret = slot.get("RET")
-        if not div:
+        if slot["n_div"] == 0:
             continue   # retención huérfana sin dividendo → ignorar
         if not isin:
             continue   # sin ISIN no podemos crear posición
 
-        importe_bruto = _to_decimal(div["importe_eur"])
-        retencion = _to_decimal(ret["importe_eur"]) if ret else Decimal("0")
-        divisa_local = div.get("divisa", "EUR") or "EUR"
+        importe_bruto = slot["DIV"]
+        retencion = slot["RET"]
+        divisa_local = slot.get("divisa", "EUR") or "EUR"
 
         ext_id = f"{prefix}-{isin}-{fecha.isoformat()}-{int(importe_bruto * 100)}"
 
         # Retención del país emisor del valor (Cuádrate etiqueta `pais`).
-        retencion_pais = div.get("pais") or None
+        retencion_pais = slot.get("pais") or None
         if retencion == 0:
             retencion_pais = None
 

@@ -74,6 +74,10 @@ def parse_ibkr_aportaciones(
     Formato: Deposits & Withdrawals,Data,<CUR>,<fecha ISO>,<desc>,<amount>."""
     import csv as _csv
 
+    from app.adapters.cuadrate import _ensure_cuadrate_importable
+    _ensure_cuadrate_importable()
+    import generar_irpf as g  # type: ignore[import-not-found]
+
     out: list[AportacionCandidata] = []
     with open(str(csv_path), encoding="utf-8") as f:
         for row in _csv.reader(f):
@@ -92,8 +96,16 @@ def parse_ibkr_aportaciones(
                 continue
             if importe == 0:
                 continue
-            # IBKR statement viene en EUR base; si la moneda no es EUR se
-            # ignoraría la conversión aquí (raro para aportaciones). Asumimos EUR.
+            # Depósitos en divisa ≠ EUR: convertir al BCE de la fecha
+            # (auditoría Cima 2026-06-11, A11 — antes 10.000 USD se
+            # registraban como 10.000 EUR, inflando el capital aportado).
+            # Sin tipo de cambio disponible, NO registrar un importe
+            # erróneo: se omite la fila (mismo criterio que el vendor).
+            if cur != "EUR":
+                rate = g._ibkr_eur_per_unit(fecha_str, cur)
+                if rate is None:
+                    continue
+                importe = (importe * rate).quantize(Decimal("0.01"))
             ext_id = f"ibkr-dw-{fecha.isoformat()}-{int(importe * 100)}-{desc[:20]}"
             out.append(AportacionCandidata(
                 fecha=fecha, importe_eur=importe, descripcion=desc,
