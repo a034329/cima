@@ -54,3 +54,7 @@ test_data/
 # ── Misc ────────────────────────────────────────────────────────────
 *.log
 .DS_Store
+*.db.bak*
+precios_cache.json
+*.tsbuildinfo
+*.lock
