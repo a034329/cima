@@ -201,8 +201,19 @@ async def preview_extracto(
 ) -> dict:
     """Endpoint de depuración: ejecuta los parsers (transacciones + opciones) y
     devuelve un volcado de lo que extrae, sin reconciliar ni persistir nada.
-    Devuelve avisos y tracebacks completos para depurar sin acceso a logs."""
+    En modo OWNER devuelve tracebacks completos para depurar sin acceso a
+    logs; en SaaS solo el mensaje del error — el traceback filtra rutas
+    absolutas del servidor y estructura interna (auditoría Cima 2026-06-11,
+    J4)."""
     import traceback
+
+    from app.config import settings
+
+    def _detalle_error(e: Exception) -> str:
+        if settings.is_owner_mode:
+            return traceback.format_exc()
+        return f"{type(e).__name__}: {e}"
+
     avisos: list[str] = []
     cands_tx: list = []
     cands_opt: list = []
@@ -243,7 +254,7 @@ async def preview_extracto(
                 else:
                     cands_tx = parser(tmp.name, broker_id="preview")
             except Exception:
-                err_tx = traceback.format_exc()
+                err_tx = _detalle_error(e)
 
             try:
                 if broker_tipo == "degiro":
@@ -253,12 +264,12 @@ async def preview_extracto(
                     cands_opt = cuadrate.parse_ibkr_opciones(
                         tmp.name, broker_id="preview")
             except Exception:
-                err_opt = traceback.format_exc()
+                err_opt = _detalle_error(e)
 
             if tmp_cuenta is not None:
                 tmp_cuenta.close()
-    except Exception:
-        return {"error_global": traceback.format_exc()}
+    except Exception as e:
+        return {"error_global": _detalle_error(e)}
 
     return {
         "broker_tipo": broker_tipo,

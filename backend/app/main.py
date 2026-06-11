@@ -32,6 +32,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Crear tablas si no existen (idempotente). En cuanto el schema evolucione
     # con datos en producción, sustituir por Alembic migrations.
     init_db()
+    # Jobs IA en_curso huérfanos de un proceso anterior → error (J1 auditoría:
+    # sin esto el polling de la UI los mostraba en_curso para siempre).
+    try:
+        from app.db.base import SessionLocal
+        from app.services import jobs as _jobs
+        with SessionLocal() as _s:
+            _n = _jobs.limpiar_zombis(_s)
+        if _n:
+            print(f"[cima] {_n} job(s) IA huérfano(s) marcados como error tras el reinicio")
+    except Exception as _e:  # noqa: BLE001 — el arranque no debe caer por esto
+        print(f"[cima] aviso: no se pudieron limpiar jobs huérfanos: {_e}")
     print(
         f"[cima] arrancado en modo {settings.mode.value} · "
         f"env={settings.environment} · v{__version__} · db={settings.database_url}"

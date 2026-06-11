@@ -75,13 +75,27 @@ def listar(db: Session = Depends(get_db)) -> AportacionesResumen:
              summary="Registrar aportación/retirada manual")
 def crear(payload: AportacionIn, db: Session = Depends(get_db)) -> models.Aportacion:
     cartera = _cartera(db)
+    if payload.importe_eur == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El importe no puede ser 0.",
+        )
+    ext_id = f"manual-{payload.fecha.isoformat()}-{int(payload.importe_eur * 100)}"
+    # Dedup del doble submit (auditoría Cima 2026-06-11, J7): el external_id
+    # ya era determinista pero nadie lo comprobaba — dos clics seguidos creaban
+    # dos filas idénticas y corrompían el neto anual y la proyección IF.
+    existente = db.execute(
+        select(models.Aportacion)
+        .where(models.Aportacion.cartera_id == cartera.id)
+        .where(models.Aportacion.external_id == ext_id)
+    ).scalars().first()
+    if existente is not None:
+        return existente
     ap = models.Aportacion(
         cartera_id=cartera.id, broker_id=payload.broker_id, fecha=payload.fecha,
         importe_eur=payload.importe_eur, descripcion=payload.descripcion,
         origen="manual",
-        external_id=(
-            f"manual-{payload.fecha.isoformat()}-{int(payload.importe_eur * 100)}"
-        ),
+        external_id=ext_id,
     )
     db.add(ap)
     db.commit()

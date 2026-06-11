@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -149,9 +151,41 @@ def detectar_disparador_0b(clasificacion: str, resumen: str, riesgo_principal: s
     return False, ""
 
 
+# Coalescencia + memo de PASO 0 (auditoría Cima 2026-06-11, J6): el GET
+# /contexto dispara una llamada IA síncrona de minutos — un prefetch, un
+# refresh o un doble clic re-lanzaba OTRA generación completa (coste real;
+# cobrará créditos cuando el ledger se active). Lock por (cartera, isin):
+# las peticiones concurrentes esperan a la primera y reutilizan su resultado;
+# memo con TTL corto para los re-GET inmediatos.
+_CTX_TTL_S = 10 * 60
+_CTX_CACHE: dict[str, tuple[float, "AnalisisContexto"]] = {}
+_CTX_LOCKS: dict[str, threading.Lock] = {}
+_CTX_LOCKS_GUARD = threading.Lock()
+
+
+def _ctx_lock(key: str) -> threading.Lock:
+    with _CTX_LOCKS_GUARD:
+        return _CTX_LOCKS.setdefault(key, threading.Lock())
+
+
 def analizar_contexto(db: Session, cartera_id: str, isin: str) -> AnalisisContexto:
     """Busca contexto web de `isin` y lo clasifica coyuntural/estructural. Consume una
-    llamada IA con búsqueda (lenta); registra crédito."""
+    llamada IA con búsqueda (lenta); registra crédito. Las llamadas concurrentes
+    o inmediatamente repetidas para el mismo ISIN reutilizan el resultado
+    (ver _CTX_CACHE arriba)."""
+    from app.services.clasificador import construir_contexto
+
+    key = f"{cartera_id}:{isin}"
+    with _ctx_lock(key):
+        hit = _CTX_CACHE.get(key)
+        if hit is not None and (time.time() - hit[0]) < _CTX_TTL_S:
+            return hit[1]
+        resultado = _analizar_contexto_impl(db, cartera_id, isin)
+        _CTX_CACHE[key] = (time.time(), resultado)
+        return resultado
+
+
+def _analizar_contexto_impl(db: Session, cartera_id: str, isin: str) -> AnalisisContexto:
     from app.services.clasificador import construir_contexto
 
     ctx = construir_contexto(db, cartera_id, isin)   # nombre + sector (posición o seguimiento)

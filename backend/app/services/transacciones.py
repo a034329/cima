@@ -256,22 +256,28 @@ def crear_manual(
     )
     estado = "confirmada" if confirmar_directo else "pendiente_confirmar"
     tx = _insertar_tx(db, cartera_id, pos.id, candidata, origen="manual", estado=estado)
-    db.commit()
-    if confirmar_directo:
+    if not confirmar_directo:
+        db.commit()
+        return tx
+
+    # ATÓMICO (auditoría Cima 2026-06-11, J2): tx + rebuild + validación de
+    # inventario se commitean JUNTOS. Antes la tx confirmada se commiteaba
+    # primero y el rebuild después en un segundo commit: un crash o una
+    # excepción entre ambos dejaba una transacción confirmada SIN lotes
+    # (estado inconsistente que fifo.py reconoce como "no detectable").
+    from app.services.fifo import rebuild_for_posicion
+    from app.services.plan import aplicar_transaccion as aplicar_a_plan
+    try:
         # Aplica el FIFO sobre los lotes: BUY añade lote, SELL consume FIFO y
         # genera matches. Sin esto, la posición no refleja el cambio.
-        from app.services.fifo import rebuild_for_posicion
-        from app.services.plan import aplicar_transaccion as aplicar_a_plan
         rb = rebuild_for_posicion(db, pos.id)
         # Validación crítica: si el rebuild generó un aviso de inventario
         # insuficiente para ESTA tx (vender más de lo disponible), revertir
-        # la tx y devolver 4xx al cliente. Antes el rebuild silenciaba el
-        # aviso y devolvía 200 → caso real Angel: vendió 17 acciones de ACS
-        # con 16 disponibles, frontend mostró "venta aplicada", BD nunca se
-        # modificó. Esto cierra el bug en origen.
+        # TODO (la tx incluida) y devolver 4xx al cliente. Caso real Angel:
+        # vendió 17 acciones de ACS con 16 disponibles, el frontend mostró
+        # "venta aplicada" y la BD nunca se modificó.
         if candidata.tipo == "SELL" and any("sin inventario" in a for a in rb.avisos):
-            db.delete(tx)
-            db.commit()
+            db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -281,8 +287,13 @@ def crear_manual(
                 ),
             )
         db.commit()
-        # Avanza/cierra los pasos del plan activos para este ISIN.
-        aplicar_a_plan(db, cartera_id, pos.isin)
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    # Avanza/cierra los pasos del plan activos para este ISIN.
+    aplicar_a_plan(db, cartera_id, pos.isin)
     return tx
 
 
