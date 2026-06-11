@@ -68,6 +68,7 @@ def init_db() -> None:
     # ── Micro-migraciones (solo SQLite/dev) ────────────────────────────
     # (tabla, columna, definición SQL). Se aplican si la columna falta.
     _migraciones = [
+        ("estimaciones", "crecimiento_div_pct", "NUMERIC(8,4)"),
         ("opciones", "subyacente_isin", "VARCHAR(12)"),
         ("brokers", "saldo_reportado_eur", "NUMERIC(18,4)"),
         ("brokers", "saldo_fecha", "DATE"),

@@ -93,8 +93,10 @@ def evaluar_friccion(
     if es_compounder:
         r1.append("Es un Compounder: vender corta la composición y reentrar suele "
                   "salir peor (anti-churn).")
-    r1.append("Regla −14%: una caída del −10/−14% sin recesión es históricamente una "
-              "oportunidad de carga, no una señal de venta.")
+    r1.append("Regla −14%: SI lo que te empuja a vender es una caída sistémica "
+              "del −10/−14% sin recesión a la vista, históricamente es una "
+              "oportunidad de carga, no una señal de venta — comprueba el "
+              "régimen macro antes de decidir.")
     rebate1 = " ".join(r1)
 
     # ── Rebate 2: tú / fiscal ──

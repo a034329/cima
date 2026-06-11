@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # ── Modo de ejecución ───────────────────────────────────────────────
     mode: Mode = Field(default=Mode.SAAS, description="Modo SaaS o Owner")
 
+    # ── Fiscalidad del dividendo (métrica CAGR4+Div neta) ───────────────
+    # Tramo marginal de la base del ahorro aplicable a los dividendos del
+    # usuario (suelo del tipo efectivo). 0.19 = primer tramo (hasta 6.000 €);
+    # subir a 0.21/0.23 si la base del ahorro del usuario lo supera.
+    tipo_ahorro_dividendo: float = 0.19
+
     # ── Servidor ────────────────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8000

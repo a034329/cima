@@ -223,7 +223,7 @@ def calcular_dashboard(db: Session, cartera_id: str) -> DashboardResultado:
     # ponderado de Estimaciones); si no hay (estimaciones sin curar), 7% por
     # defecto. Acotada a [0, 25%] para que estimaciones basura no la disparen.
     from app.services.estimaciones import agregado_cartera
-    agg = agregado_cartera(db, cartera_id)
+    agg = agregado_cartera(db, cartera_id, solo_estrategia=True)
     cagr_anual = agg.cagr4_div_ponderado_pct
     retorno_if = _RETORNO_IF
     if cagr_anual is not None and cagr_anual > 0:

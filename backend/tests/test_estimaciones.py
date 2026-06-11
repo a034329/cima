@@ -46,8 +46,16 @@ def test_cagr4_y_yield(db: Session, cartera, monkeypatch) -> None:
     assert abs(c.cagr4_pct - Decimal("0.1892")) < Decimal("0.001")
     # yield = 3/100 = 0.03
     assert abs(c.div_yield_pct - Decimal("0.03")) < Decimal("0.0001")
-    # CAGR4+Div ≈ 0.2192
-    assert abs(c.cagr4_div_pct - Decimal("0.2192")) < Decimal("0.001")
+    # BRUTO plano (reconciliación Excel): CAGR4 + yield ≈ 0.2192
+    assert abs(c.cagr4_div_bruto_pct - Decimal("0.2192")) < Decimal("0.001")
+    # MAESTRA = neto + crecimiento (decisión Angel 2026-06-11):
+    #   US → tipo efectivo 19% (estatutaria 15% == tope CDI, sin exceso)
+    #   g_div derivado del crecimiento implícito 5→10 en 4 años (18.92%, en
+    #   banda) → factor medio de (1+g)^t t=1..4 ≈ 1.5713
+    #   Div_horizonte ≈ 0.03 × 0.81 × 1.5713 ≈ 0.0382 → total ≈ 0.2274
+    assert abs(c.tipo_efectivo_div_pct - Decimal("0.19")) < Decimal("0.0001")
+    assert abs(c.cagr4_div_pct - Decimal("0.2274")) < Decimal("0.001")
+    assert c.cagr4_div_pct != c.cagr4_div_bruto_pct
     # crecimiento = (10/5)^(1/4)-1 ≈ 0.1892
     assert abs(c.crecimiento_pct - Decimal("0.1892")) < Decimal("0.001")
 
@@ -223,7 +231,10 @@ def test_agregado_por_bloque_pondera_y_reporta_cobertura(db: Session, cartera, m
 
 
 def test_etf_usa_cagr_historico_mas_yield(db: Session, cartera, monkeypatch) -> None:
-    """Un ETF (sin BPA) toma su CAGR del histórico de precio + el yield actual."""
+    """Un ETF (sin BPA) toma su CAGR del histórico de precio + el yield NETO
+    (la maestra es neta desde la decisión 2026-06-11; el bruto queda en
+    cagr4_div_bruto_pct). ETF irlandés: sin retención en origen → tipo
+    efectivo = suelo 19%."""
     _pos(db, cartera, "IE_ETF", "MSCI World ETF", 10, 1000, 100)   # sin Estimacion
     db.commit()
     import app.services.precios as precios
@@ -239,7 +250,9 @@ def test_etf_usa_cagr_historico_mas_yield(db: Session, cartera, monkeypatch) -> 
     c = [x for x in svc.calcular_estimaciones(db, cartera.id) if x.isin == "IE_ETF"][0]
     assert c.cagr4_pct == Decimal("0.08")          # CAGR de precio histórico
     assert c.div_yield_pct == Decimal("0.02")      # 2 € / 100 €
-    assert c.cagr4_div_pct == Decimal("0.10")      # total retorno
+    assert c.cagr4_div_bruto_pct == Decimal("0.10")   # bruto plano (Excel)
+    # Maestra neta: 0.08 + 0.02 × (1 − 0.19) = 0.0962 (g_div ETF = 0)
+    assert c.cagr4_div_pct == Decimal("0.0962")
     assert "histórico" in (c.notas or "")
 
 

@@ -33,7 +33,12 @@ class EstimacionOut(BaseModel):
     crecimiento_pct: Decimal | None
     cagr4_pct: Decimal | None
     div_yield_pct: Decimal | None
-    cagr4_div_pct: Decimal | None
+    cagr4_div_pct: Decimal | None          # MAESTRA: neto + crecimiento 4Y
+    cagr4_div_bruto_pct: Decimal | None = None   # plano/bruto (reconciliación Excel)
+    div_yield_neto_pct: Decimal | None = None
+    div_horizonte_pct: Decimal | None = None
+    tipo_efectivo_div_pct: Decimal | None = None
+    crecimiento_div_pct: Decimal | None = None   # g_div aplicado (campo o derivado)
     notas: str | None
     # Consenso de analistas (referencia, NO editable):
     eps_forward: Decimal | None
@@ -63,6 +68,7 @@ class EstimacionIn(BaseModel):
     multiplo_objetivo: Decimal | None = None
     metrica_base_4y: Decimal | None = None
     dividendo_share: Decimal | None = None
+    crecimiento_div_pct: Decimal | None = None   # g_div editable (fracción)
     notas: str | None = None
 
 
@@ -82,6 +88,11 @@ def _to_out(c) -> EstimacionOut:  # type: ignore[no-untyped-def]
         dividendo_share=_q(c.dividendo_share, "0.000001"),
         precio_objetivo=_q(c.precio_objetivo, "0.0001"),
         crecimiento_pct=_q(c.crecimiento_pct, "0.0001"),
+        cagr4_div_bruto_pct=_q(c.cagr4_div_bruto_pct, "0.0001"),
+        div_yield_neto_pct=_q(c.div_yield_neto_pct, "0.0001"),
+        div_horizonte_pct=_q(c.div_horizonte_pct, "0.0001"),
+        tipo_efectivo_div_pct=_q(c.tipo_efectivo_div_pct, "0.0001"),
+        crecimiento_div_pct=_q(c.crecimiento_div_aplicado_pct, "0.0001"),
         cagr4_pct=_q(c.cagr4_pct, "0.0001"), div_yield_pct=_q(c.div_yield_pct, "0.0001"),
         cagr4_div_pct=_q(c.cagr4_div_pct, "0.0001"), notas=c.notas,
         eps_forward=_q(c.eps_forward, "0.0001"),

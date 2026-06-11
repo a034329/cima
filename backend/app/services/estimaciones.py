@@ -46,8 +46,16 @@ class EstimacionCalc:
     crecimiento_pct: Decimal | None      # CAGR implícito eps_actual → metrica_base_4y
     cagr4_pct: Decimal | None
     div_yield_pct: Decimal | None
+    # MÉTRICA MAESTRA (decisión Angel 2026-06-11): CAGR4 + Div NETO del
+    # horizonte = cagr4 + yield × (1 − tipo_efectivo) × factor_crecimiento_4Y.
     cagr4_div_pct: Decimal | None
     notas: str | None
+    # Variante bruta y plana (la del Excel analisis.xlsx) — solo reconciliación.
+    cagr4_div_bruto_pct: Decimal | None = None
+    div_yield_neto_pct: Decimal | None = None        # yield × (1 − tipo_efectivo)
+    div_horizonte_pct: Decimal | None = None         # neto × factor crecimiento 4Y
+    tipo_efectivo_div_pct: Decimal | None = None     # 0.19 + exceso CDI del país
+    crecimiento_div_aplicado_pct: Decimal | None = None  # g_div usado (campo o derivado)
     # Consenso de analistas (referencia, NO editable):
     eps_forward: Decimal | None = None
     eps_consenso_4y: Decimal | None = None
@@ -87,8 +95,31 @@ def _calc_item(
     precio_obj = (mult * base) if (mult is not None and base is not None) else None
     cagr4 = _cagr(precio_obj, precio, 4) if (precio_obj is not None and precio) else None
     yld = (div / precio) if (div is not None and precio and precio > 0) else None
-    cagr4_div = (cagr4 + yld) if (cagr4 is not None and yld is not None) else cagr4
     crec = _cagr(base, eps, 4) if (base is not None and eps is not None) else None
+
+    # Componente Div NETA del horizonte (decisión Angel 2026-06-11):
+    #   neto = yield × (1 − tipo_efectivo); tipo_efectivo = suelo del ahorro
+    #   (19% config.) + exceso de retención de origen sobre el tope CDI.
+    #   horizonte = neto × media[(1+g_div)^t, t=1..4] — el yield medio que se
+    #   cobrará de verdad en los 4 años, no el plano de hoy.
+    # g_div: campo editable; si falta, se deriva del crecimiento implícito de
+    # la métrica capado a [−5%, +20%] (sin métrica → 0, plano conservador).
+    from app.services.dividendo_neto import (
+        factor_horizonte_div, pais_de_isin, tipo_efectivo_dividendo,
+    )
+    g_div = (Decimal(str(e.crecimiento_div_pct))
+             if e is not None and e.crecimiento_div_pct is not None else None)
+    if g_div is None:
+        if crec is not None:
+            g_div = max(Decimal("-0.05"), min(Decimal("0.20"), crec))
+        else:
+            g_div = Decimal("0")
+    tipo_efectivo = tipo_efectivo_dividendo(pais_de_isin(isin, nombre))
+    yld_neto = (yld * (Decimal("1") - tipo_efectivo)) if yld is not None else None
+    div_horizonte = (yld_neto * factor_horizonte_div(g_div)) if yld_neto is not None else None
+
+    cagr4_div_bruto = (cagr4 + yld) if (cagr4 is not None and yld is not None) else cagr4
+    cagr4_div = (cagr4 + div_horizonte) if (cagr4 is not None and div_horizonte is not None) else cagr4
 
     c: dict = {}
     if e and e.consenso_json:
@@ -113,7 +144,10 @@ def _calc_item(
         precio_actual=precio, eps_actual=eps, multiplo_objetivo=mult,
         metrica_base_4y=base, dividendo_share=div, precio_objetivo=precio_obj,
         crecimiento_pct=crec, cagr4_pct=cagr4, div_yield_pct=yld,
-        cagr4_div_pct=cagr4_div, notas=(e.notas if e else None),
+        cagr4_div_pct=cagr4_div, cagr4_div_bruto_pct=cagr4_div_bruto,
+        div_yield_neto_pct=yld_neto, div_horizonte_pct=div_horizonte,
+        tipo_efectivo_div_pct=tipo_efectivo, crecimiento_div_aplicado_pct=g_div,
+        notas=(e.notas if e else None),
         eps_forward=_d(c.get("eps_forward")),
         eps_consenso_4y=_d(c.get("eps_consenso_4y")),
         eps_consenso_high=_d(c.get("eps_high")),
@@ -229,7 +263,17 @@ def _enriquecer_etfs_historico(db: Session, cartera_id: str,
                 yld = Decimal(str(div)) / c.precio_actual
         c.cagr4_pct = cagr_precio
         c.div_yield_pct = yld
-        c.cagr4_div_pct = cagr_precio + (yld or Decimal("0"))
+        from app.services.dividendo_neto import (
+            pais_de_isin, tipo_efectivo_dividendo,
+        )
+        tipo_ef = tipo_efectivo_dividendo(pais_de_isin(c.isin, c.nombre))
+        yld_b = yld or Decimal("0")
+        c.cagr4_div_bruto_pct = cagr_precio + yld_b
+        c.div_yield_neto_pct = yld_b * (Decimal("1") - tipo_ef)
+        c.div_horizonte_pct = c.div_yield_neto_pct      # ETFs: g_div = 0 (plano)
+        c.tipo_efectivo_div_pct = tipo_ef
+        c.crecimiento_div_aplicado_pct = Decimal("0")
+        c.cagr4_div_pct = cagr_precio + c.div_horizonte_pct
         c.notas = ((c.notas + " · ") if c.notas else "") + "CAGR histórico (precio) + yield"
 
 
@@ -383,13 +427,20 @@ def _crecimiento_eps(eps_hist: list | None, forward_eps: float | None) -> float:
     `_BANDA_CAGR_EPS`. Incluir el forward como último punto captura algo del
     optimismo/pesimismo del próximo año sin extrapolar un solo año. Si no hay
     serie utilizable (≥2 puntos positivos) → 0% (proyección plana, conservadora)."""
-    serie = [float(x) for x in (eps_hist or []) if x is not None and float(x) > 0]
+    # Conservar el ÍNDICE temporal de cada punto: filtrar los BPA ≤ 0 sin
+    # conservar la distancia en años inflaba el CAGR en cíclicas con años en
+    # pérdidas ([5, −1, 6] salía 20% anual en vez de ~9,5% a 2 años) —
+    # auditoría Cima 2026-06-11, D3.
+    puntos = [(i, float(x)) for i, x in enumerate(eps_hist or [])
+              if x is not None and float(x) > 0]
     if forward_eps is not None and float(forward_eps) > 0:
-        serie = serie + [float(forward_eps)]
-    if len(serie) < 2:
+        puntos.append((len(eps_hist or []), float(forward_eps)))
+    if len(puntos) < 2:
         return 0.0
-    n = len(serie) - 1
-    g = (serie[-1] / serie[0]) ** (1 / n) - 1
+    n = puntos[-1][0] - puntos[0][0]
+    if n <= 0:
+        return 0.0
+    g = (puntos[-1][1] / puntos[0][1]) ** (1 / n) - 1
     lo, hi = _BANDA_CAGR_EPS
     return max(lo, min(hi, g))
 
@@ -410,7 +461,13 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
     confirmado = bool(prev.get("tipo_confirmado"))
     # Los fondos/ETF no se valoran por PER (su retorno = CAGR histórico, ver
     # `_enriquecer_etfs_historico`): nunca sembrar múltiplo/EPS sobre ellos.
-    es_fondo_flag = bool(prev.get("es_fondo"))
+    # La marca se INICIALIZA aquí por detección (auditoría Cima 2026-06-11,
+    # A8: antes solo se re-persistía si ya era True y ningún código la
+    # escribía la primera vez — la guarda era código muerto y un ETF con
+    # trailingEps en yfinance se sembraba como PER).
+    es_fondo_flag = bool(prev.get("es_fondo")) or _es_fondo(
+        e.isin, f.get("nombre") or f.get("name") or f.get("shortName") or ""
+    )
 
     # Familia de métrica contable: el feed no distingue P/BV/P/FRE/PER dentro de
     # ella, así que frenamos el sembrado-como-PER en vez de plantar EPS donde va
@@ -504,12 +561,26 @@ class AgregadoEstimaciones:
     cobertura: Decimal     # fracción del valor de cartera con estimación válida
 
 
-def agregado_cartera(db: Session, cartera_id: str) -> AgregadoEstimaciones:
-    """Yield estimado y CAGR4+Div ponderados por valor de mercado (EUR)."""
+def agregado_cartera(
+    db: Session, cartera_id: str, solo_estrategia: bool = False,
+) -> AgregadoEstimaciones:
+    """Yield estimado y CAGR4+Div ponderados por valor de mercado (EUR).
+
+    Con `solo_estrategia=True` excluye las posiciones de bloques fuera de
+    estrategia (colchón): la proyección IF aplica el retorno a `capital_if`
+    (que las excluye) — mezclar bases sesgaba `anios_if` (auditoría D5)."""
     from app.services.precios import obtener_precios_eur
 
     precios_eur, _ = obtener_precios_eur(db, cartera_id)
     calcs = {c.isin: c for c in calcular_estimaciones(db, cartera_id)}
+
+    bloques_fuera: set[str] = set()
+    if solo_estrategia:
+        bloques_fuera = {
+            b.id for b in db.execute(
+                select(models.Bloque).where(models.Bloque.cartera_id == cartera_id)
+            ).scalars() if not b.en_estrategia
+        }
 
     total_valor = Decimal("0")
     valor_yield = Decimal("0")
@@ -519,6 +590,8 @@ def agregado_cartera(db: Session, cartera_id: str) -> AgregadoEstimaciones:
     for pos in db.execute(
         select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
     ).scalars():
+        if solo_estrategia and pos.bloque_id in bloques_fuera:
+            continue
         est = estado_posicion(db, pos.id)
         cant = est["cantidad"]
         if cant <= 0:

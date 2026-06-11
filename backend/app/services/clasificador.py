@@ -81,6 +81,23 @@ def _es_etf_tematico(nombre: str | None) -> bool:
     return any(p in n for p in _PALABRAS_TEMATICAS)
 
 
+# Familia de ETFs "de colchón" (min-vol, covered call, premium income): la
+# compuerta NO debe forzarlos a Índice/Núcleo con confianza 0.95 — pueden ser
+# vehículos del colchón (Bloque F) o de rentas según el contexto del usuario
+# (caso real: JEPQ es high-yield para Angel, no colchón). Se delegan a la IA
+# con los few-shots (auditoría Cima 2026-06-11, D1).
+_PALABRAS_COLCHON_ETF = (
+    "min vol", "minimum volatility", "min volatility", "low vol",
+    "low volatility", "covered call", "buywrite", "buy-write",
+    "premium income", "equity premium",
+)
+
+
+def _es_etf_familia_colchon(nombre: str | None) -> bool:
+    n = (nombre or "").lower()
+    return any(p in n for p in _PALABRAS_COLCHON_ETF)
+
+
 def pregate(ctx: ContextoEmpresa, cripto_disponible: bool = False) -> str | None:
     """Compuertas DURAS y deterministas (las computables hoy). Devuelve la
     categoria_base si una regla aplica con certeza, o None para delegar el juicio
@@ -89,7 +106,11 @@ def pregate(ctx: ContextoEmpresa, cripto_disponible: bool = False) -> str | None
     if ctx.tipo_activo == "CRYPTO":
         return "cripto" if cripto_disponible else "satelite"
     if ctx.tipo_activo == "ETF":
-        return "satelite" if _es_etf_tematico(ctx.nombre) else "indice"
+        if _es_etf_tematico(ctx.nombre):
+            return "satelite"
+        if _es_etf_familia_colchon(ctx.nombre):
+            return None   # min-vol/covered-call: juicio cualitativo (IA + overrides)
+        return "indice"
     if ctx.tipo_activo == "STOCK" and (ctx.yield_pct or 0.0) > 0.06:
         return "aggressive"
     return None

@@ -1048,13 +1048,14 @@ def _build_degiro_ejercicio_subyacente_map(cuenta_path: str | Path) -> dict[str,
 
 
 def _es_isin_opcion(isin: str, nombre: str) -> bool:
-    """Heurística: ISIN de opción DEGIRO (NLEX*, ES0A*, DE000F*, FREX*...) o
-    nombre con patrón C/P + strike + vencimiento."""
+    """Heurística por el patrón del NOMBRE (C/P + strike + vencimiento).
+
+    NOTA (auditoría Cima 2026-06-11, D8): se eliminó un chequeo de prefijos
+    de ISIN que era código muerto (su `if` solo ejecutaba `pass`) y además
+    peligroso de activar: `DE000[A-Z]` matchea ISINs de acciones alemanas
+    normales (DE000A1EWWW0 = adidas) y `GB00B...` casi cualquier acción UK.
+    El patrón del nombre es el único discriminador fiable disponible."""
     import re as _re
-    if _re.match(r"^(NLEX|FREX|ES0A|DE000[A-Z]|GB00B[A-Z0-9]*)", isin or ""):
-        # Aproximación: los subyacentes de acciones no usan estos prefijos de
-        # warrant/opción. Reforzamos con el patrón de nombre.
-        pass
     return bool(_re.search(r"\s[CP]\s?\d+[.,]?\d*\s+\d{2}[A-Z]{3}\d{2}", nombre or ""))
 
 

@@ -694,6 +694,11 @@ class Estimacion(Base):
     multiplo_objetivo: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     metrica_base_4y: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     dividendo_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    # Crecimiento estimado del dividendo a 4 años (fracción, p.ej. 0.10 = 10%).
+    # Editable; si es NULL se deriva del crecimiento implícito de la métrica
+    # base capado a [−5%, +20%] (ETFs sin estimación → 0). Alimenta la
+    # componente Div del horizonte en CAGR4+Div neto (decisión Angel 2026-06-11).
+    crecimiento_div_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
     notas: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Consenso de analistas (referencia NO editable) cacheado como JSON:
     #   eps_forward, eps_consenso_4y, eps_high, eps_low, num_analistas_eps,

@@ -359,7 +359,11 @@ def opciones_abiertas(db: Session, cartera_id: str) -> list[OpcionAbierta]:
         gp_est = None
         gp_pct = None
         if intrinseco_nativo is not None:
-            fx = _fx_eur(divisa_sub or "EUR", fx_cache) or Decimal("1")
+            # Sin FX disponible NO se asume paridad (auditoría D7: un
+            # subyacente USD con caché fría salía como EUR ±8-10% sin aviso).
+            fx = _fx_eur(divisa_sub or "EUR", fx_cache)
+            if fx is None:
+                return {}
             intrinseco_eur = intrinseco_nativo * _MULTIPLICADOR * Decimal(contratos) * fx
             # Corta: recompras al intrínseco → prima − intrínseco. Larga: vendes
             # al intrínseco → prima_neta (negativa) + intrínseco.
