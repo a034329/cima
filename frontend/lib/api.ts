@@ -10,6 +10,7 @@ import type {
   InteresesResumen,
   FugasResumen,
   SaludDatos,
+  InformeMensual,
   SaludDividendo,
   OpcionesResumen,
   PosicionesResumen,
@@ -802,4 +803,8 @@ export async function restaurarTransaccion(txId: string): Promise<TransaccionOut
 
 export async function fetchSaludDividendo(): Promise<SaludDividendo[]> {
   return fetchJson<SaludDividendo[]>('/api/estimaciones/salud-dividendo');
+}
+
+export async function fetchInformeMensual(anio: number, mes: number): Promise<InformeMensual> {
+  return fetchJson<InformeMensual>(`/api/informe-mensual/${anio}/${mes}`);
 }

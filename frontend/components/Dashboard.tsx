@@ -123,7 +123,9 @@ export function Dashboard() {
         </section>
       )}
       {/* ── ¿Cómo voy? ── */}
-      <Grupo titulo="¿Cómo voy?">
+      <Grupo titulo="¿Cómo voy?"
+        href={`/informe/${new Date().getFullYear()}/${new Date().getMonth() + 1}`}
+        cta="cierre de mes →">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KPI label="Invertido" value={fmtEUR(d.capital_mercado_eur)} sub="acciones, ETF y opciones · sin liquidez" />
           <KPI

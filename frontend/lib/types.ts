@@ -1245,3 +1245,39 @@ export interface SaludDividendo {
   fcf_cobertura: number | null;
   payout: number | null;
 }
+
+// ── Informe mensual (V3) ────────────────────────────────────────────────────
+
+export interface MovimientoDestacado {
+  fecha: string;
+  tipo: string;
+  nombre: string;
+  importe_eur: string;
+}
+
+export interface VentaRealizadaMes {
+  nombre: string;
+  isin: string;
+  gp_eur: string;
+}
+
+export interface InformeMensual {
+  anio: number;
+  mes: number;
+  compras_eur: string;
+  n_compras: number;
+  ventas_eur: string;
+  n_ventas: number;
+  gastos_eur: string;
+  aportaciones_eur: string;
+  dividendos_bruto_eur: string;
+  dividendos_retencion_eur: string;
+  dividendos_neto_eur: string;
+  intereses_eur: string;
+  gp_realizada_eur: string;
+  capital_estrategia_eur: string | null;
+  progreso_if_pct: string | null;
+  anios_if: string | null;
+  destacados: MovimientoDestacado[];
+  ventas_detalle: VentaRealizadaMes[];
+}
