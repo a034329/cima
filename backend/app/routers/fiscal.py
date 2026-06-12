@@ -366,3 +366,67 @@ def get_fiscal(
 
     r = calcular_fiscal(db, cartera.id, ejercicio)
     return _serializar(r)
+
+
+# ── Fugas fiscales: retención de origen no recuperable vía 0588 ────────────
+
+class FugaPosicionOut(BaseModel):
+    isin: str
+    nombre: str
+    pais: str
+    exceso_pct: Decimal = Field(decimal_places=4)
+    div_anual_estimado_eur: Decimal | None = None
+    fuga_anual_estimada_eur: Decimal | None = None
+    exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
+
+
+class FugaPaisOut(BaseModel):
+    pais: str
+    exceso_pct: Decimal = Field(decimal_places=4)
+    fuga_anual_estimada_eur: Decimal = Field(decimal_places=2)
+    exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
+    mecanismo: str
+    posiciones: list[FugaPosicionOut]
+
+
+class FugasOut(BaseModel):
+    ejercicio: int
+    total_fuga_anual_estimada_eur: Decimal = Field(decimal_places=2)
+    total_exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
+    por_pais: list[FugaPaisOut]
+
+
+@router.get("/fugas", response_model=FugasOut,
+            summary="Fugas fiscales: retención de origen NO recuperable vía 0588")
+def get_fugas(db: Session = Depends(get_db)) -> FugasOut:
+    """Cuantifica el dinero que se queda en el fisco extranjero por encima
+    del tope del CDI (solo recuperable reclamando al país de origen):
+    exceso REAL del ejercicio sobre dividendos ya cobrados + PROYECCIÓN
+    anual sobre el yield estimado de cada posición."""
+    from app.services.fugas_fiscales import calcular_fugas
+
+    cartera = db.execute(select(models.Cartera)).scalars().first()
+    if cartera is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hay cartera. Llama primero a POST /api/bootstrap",
+        )
+    r = calcular_fugas(db, cartera.id)
+    return FugasOut(
+        ejercicio=r.ejercicio,
+        total_fuga_anual_estimada_eur=r.total_fuga_anual_estimada_eur,
+        total_exceso_real_ytd_eur=r.total_exceso_real_ytd_eur,
+        por_pais=[FugaPaisOut(
+            pais=p.pais, exceso_pct=p.exceso_pct,
+            fuga_anual_estimada_eur=p.fuga_anual_estimada_eur,
+            exceso_real_ytd_eur=p.exceso_real_ytd_eur,
+            mecanismo=p.mecanismo,
+            posiciones=[FugaPosicionOut(
+                isin=x.isin, nombre=x.nombre, pais=x.pais,
+                exceso_pct=x.exceso_pct,
+                div_anual_estimado_eur=x.div_anual_estimado_eur,
+                fuga_anual_estimada_eur=x.fuga_anual_estimada_eur,
+                exceso_real_ytd_eur=x.exceso_real_ytd_eur,
+            ) for x in p.posiciones],
+        ) for p in r.por_pais],
+    )

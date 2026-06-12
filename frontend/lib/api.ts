@@ -8,6 +8,7 @@ import type {
   ForexResumen,
   ImportResultado,
   InteresesResumen,
+  FugasResumen,
   OpcionesResumen,
   PosicionesResumen,
   ResumenFiscal,
@@ -779,4 +780,8 @@ export function fmtNum(n: string | number, opts: Intl.NumberFormatOptions = {}):
     maximumFractionDigits: 4,
     ...opts,
   }).format(v);
+}
+
+export async function fetchFugas(): Promise<FugasResumen> {
+  return fetchJson<FugasResumen>('/api/fiscal/fugas');
 }

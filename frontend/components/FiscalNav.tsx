@@ -17,6 +17,7 @@ const SECCIONES: { seg: string; label: string }[] = [
   { seg: 'letras', label: 'Letras' },
   { seg: 'complejos', label: 'Complejos' },
   { seg: 'optimizar', label: 'Optimizar' },
+  { seg: 'fugas', label: 'Fugas CDI' },
 ];
 
 /**
