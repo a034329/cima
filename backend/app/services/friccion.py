@@ -112,6 +112,11 @@ def evaluar_friccion(
         r2.append(f"Realizar la plusvalía cuesta {coste:.0f} € en impuestos; el destino "
                   f"tendría que rendir más de {umbral * 100:.1f}% anual a 4 años para "
                   "que la rotación compense.")
+        # V2: el coste en la unidad que importa — años de IF.
+        delta = ri.delta_anios_if if ri else None
+        if delta is not None and delta > 0:
+            r2.append(f"Ese coste fiscal retrasa tu Independencia Financiera "
+                      f"~{delta} años con la proyección actual.")
     rebate2 = " ".join(r2) or ("Comprueba que esta venta encaja con tu estrategia antes "
                                "de ejecutarla.")
 

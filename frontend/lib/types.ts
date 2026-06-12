@@ -1064,6 +1064,7 @@ export interface RotacionItem {
   umbral_2y_pct: string | null;
   umbral_3y_pct: string | null;
   umbral_4y_pct: string | null;
+  delta_anios_if: string | null;   // años de IF que retrasa (+) el coste fiscal
 }
 
 export interface RotacionFiscal {

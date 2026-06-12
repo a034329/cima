@@ -296,6 +296,7 @@ class RotacionItemOut(BaseModel):
     umbral_2y_pct: Decimal | None = None
     umbral_3y_pct: Decimal | None = None
     umbral_4y_pct: Decimal | None = None
+    delta_anios_if: Decimal | None = None   # años de IF que retrasa el coste fiscal (V2)
 
 
 class RotacionOut(BaseModel):
@@ -328,6 +329,7 @@ def get_rotacion(ejercicio: int, db: Session = Depends(get_db)) -> RotacionOut:
                 umbral_2y_pct=_q4n(it.umbral_2y_pct),
                 umbral_3y_pct=_q4n(it.umbral_3y_pct),
                 umbral_4y_pct=_q4n(it.umbral_4y_pct),
+                delta_anios_if=it.delta_anios_if,
             )
             for it in r.items
         ],

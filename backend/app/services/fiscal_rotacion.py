@@ -100,6 +100,9 @@ class RotacionItem:
     umbral_2y_pct: Decimal | None
     umbral_3y_pct: Decimal | None
     umbral_4y_pct: Decimal | None
+    # Años de IF que retrasa (+) o adelanta (−) pagar el efecto fiscal HOY,
+    # con la misma proyección del dashboard. None si no converge (V2).
+    delta_anios_if: Decimal | None = None
 
 
 @dataclass
@@ -149,6 +152,14 @@ def calcular_rotacion(
 
     est = {e.isin: e for e in calcular_estimaciones(db, cartera_id)}
 
+    # Parámetros de la proyección IF, una vez para todo el bucle (V2: el coste
+    # fiscal de cada rotación se traduce a años de retraso de la IF).
+    from app.services.impacto_if import delta_anios_if, parametros_proyeccion_if
+    try:
+        params_if = parametros_proyeccion_if(db, cartera_id)
+    except Exception:
+        params_if = None
+
     items: list[RotacionItem] = []
     sin_est: list[str] = []
     for lat in opt.latentes:
@@ -197,6 +208,11 @@ def calcular_rotacion(
             ),
             umbral_1y_pct=umbrales[0], umbral_2y_pct=umbrales[1],
             umbral_3y_pct=umbrales[2], umbral_4y_pct=umbrales[3],
+            delta_anios_if=(
+                delta_anios_if(db, cartera_id, -efecto, params=params_if)
+                if params_if is not None and efecto != 0 else
+                (Decimal("0.0") if params_if is not None else None)
+            ),
         ))
 
     # Orden: mayor ancla fiscal primero (umbral 4Y desc), los sin umbral al final.

@@ -110,6 +110,7 @@ function Contenido({ d }: { d: RotacionFiscal }) {
               <th className="pr-2 text-right">Umbral 2A</th>
               <th className="pr-2 text-right">Umbral 3A</th>
               <th className="pr-2 text-right">Umbral 4A</th>
+              <th className="pr-2 text-right" title="Años que retrasa la IF pagar hoy el coste fiscal, con la proyección del dashboard">Δ años IF</th>
             </tr>
           </thead>
           <tbody className="font-mono">
@@ -158,6 +159,11 @@ function Fila({ it }: { it: RotacionItem }) {
       <td className="pr-2 text-right">{cell(it.umbral_2y_pct)}</td>
       <td className="pr-2 text-right">{cell(it.umbral_3y_pct)}</td>
       <td className="pr-2 text-right font-medium">{cell(it.umbral_4y_pct)}</td>
+      <td className="pr-2 text-right text-[rgb(var(--muted))]">
+        {it.delta_anios_if == null ? '—'
+          : parseFloat(it.delta_anios_if) === 0 ? '0'
+            : `${parseFloat(it.delta_anios_if) > 0 ? '+' : ''}${it.delta_anios_if} a`}
+      </td>
     </tr>
   );
 }
