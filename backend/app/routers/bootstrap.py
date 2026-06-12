@@ -49,7 +49,11 @@ def bootstrap(
     ).scalar_one_or_none()
     creado = False
     if user is None:
-        user = models.User(email=payload.email, modo="owner")
+        # El modo del usuario refleja el modo de despliegue (S1 auditoría:
+        # "owner" hardcodeado persistía usuarios owner en BD aunque el
+        # backend corriera como SaaS — mordería al llegar multi-usuario).
+        from app.config import settings
+        user = models.User(email=payload.email, modo=settings.mode.value)
         db.add(user)
         db.flush()
         creado = True

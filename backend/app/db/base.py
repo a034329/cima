@@ -22,6 +22,10 @@ from app.config import settings
 _connect_args: dict[str, object] = {}
 if settings.database_url.startswith("sqlite"):
     _connect_args["check_same_thread"] = False
+    # busy_timeout: los jobs IA escriben desde hilos propios; sin timeout un
+    # commit concurrente con una request lanzaba "database is locked"
+    # (auditoría Cima 2026-06-11, J9). 30s de espera antes de rendirse.
+    _connect_args["timeout"] = 30
 
 engine = create_engine(
     settings.database_url,
@@ -29,6 +33,18 @@ engine = create_engine(
     # echo=settings.debug,   # imprime todas las queries — útil para depurar
     future=True,
 )
+
+if settings.database_url.startswith("sqlite"):
+    # WAL: lectores no bloquean al escritor (y viceversa) — imprescindible
+    # con los hilos de jobs IA escribiendo mientras la UI lee (J9).
+    from sqlalchemy import event as _event
+
+    @_event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=30000")
+        cur.close()
 
 SessionLocal = sessionmaker(
     bind=engine,

@@ -16,6 +16,13 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.services.opciones import OpcionCandidata
+
+import threading as _threading
+
+# Protege la mutación del global g.EJERCICIO del vendor (J8 auditoría: dos
+# importaciones concurrentes — o un job en hilo — pisándose el global
+# producían filtrados por año cruzados).
+_EJERCICIO_LOCK = _threading.Lock()
 from app.services.transacciones import TxCandidata
 
 
@@ -607,9 +614,14 @@ def parse_degiro_cuenta_csv(
 
     # Iterar EJERCICIO para capturar dividendos de cualquier año del fichero.
     all_dividendos: list[dict] = []
+    _EJERCICIO_LOCK.acquire()
     original_ej = g.EJERCICIO
     try:
-        for year in range(2010, 2030):
+        # Rango dinámico (J8 auditoría: el 2030 hardcodeado descartaría en
+        # silencio dividendos futuros — bomba de relojería). +2 cubre filas
+        # del año siguiente presentes en el extracto.
+        from datetime import date as _date
+        for year in range(2010, _date.today().year + 2):
             g.EJERCICIO = str(year)
             try:
                 resultados, _ejercidas, _gastos = g.parse_degiro_cuenta(path)
@@ -620,6 +632,7 @@ def parse_degiro_cuenta_csv(
             all_dividendos.extend(resultados)
     finally:
         g.EJERCICIO = original_ej
+        _EJERCICIO_LOCK.release()
 
     return _consolidar_dividendos(
         all_dividendos, broker_id, prefix="dg-cuenta-div", notas="DEGIRO cuenta",

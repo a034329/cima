@@ -61,8 +61,12 @@ export default function EstimacionesPage() {
   };
 
   const guardar = async (isin: string, campos: Record<string, unknown>) => {
-    await editarEstimacion(isin, campos);
-    await cargar();
+    try {
+      await editarEstimacion(isin, campos);
+      await cargar();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));  // F4: sin catch fallaba en silencio
+    }
   };
 
   return (

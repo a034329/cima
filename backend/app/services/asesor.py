@@ -286,12 +286,19 @@ def _contexto(db: Session, cartera_id: str) -> str:
     return "\n".join(L)
 
 
-def historial(db: Session, cartera_id: str) -> list[models.MensajeAsesor]:
-    return list(db.execute(
-        select(models.MensajeAsesor)
-        .where(models.MensajeAsesor.cartera_id == cartera_id)
-        .order_by(models.MensajeAsesor.created_at)
-    ).scalars())
+def historial(db: Session, cartera_id: str,
+              limit: int | None = 200) -> list[models.MensajeAsesor]:
+    """Últimos `limit` mensajes en orden cronológico. El historial crece sin
+    cota (auditoría Cima 2026-06-11: el GET devolvía TODO); limit=None para
+    los usos internos que de verdad necesiten el histórico completo."""
+    q = (select(models.MensajeAsesor)
+         .where(models.MensajeAsesor.cartera_id == cartera_id)
+         .order_by(models.MensajeAsesor.created_at.desc()))
+    if limit is not None:
+        q = q.limit(limit)
+    filas = list(db.execute(q).scalars())
+    filas.reverse()
+    return filas
 
 
 def responder(

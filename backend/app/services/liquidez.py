@@ -66,11 +66,13 @@ class LiquidezResultado:
 
 
 def calcular_liquidez(db: Session, cartera_id: str) -> LiquidezResultado:
-    brokers = {
-        b.id: b for b in db.execute(
-            select(models.Broker)
-        ).scalars()
-    }
+    # Brokers del USUARIO de la cartera (D6 auditoría: el select sin filtro
+    # mezclaría brokers de otros usuarios en cuanto haya más de uno).
+    cartera = db.get(models.Cartera, cartera_id)
+    brokers_q = select(models.Broker)
+    if cartera is not None:
+        brokers_q = brokers_q.where(models.Broker.user_id == cartera.user_id)
+    brokers = {b.id: b for b in db.execute(brokers_q).scalars()}
 
     calc: dict[str | None, Decimal] = {}
 
@@ -95,6 +97,13 @@ def calcular_liquidez(db: Session, cartera_id: str) -> LiquidezResultado:
         select(models.Aportacion).where(models.Aportacion.cartera_id == cartera_id)
     ).scalars():
         add(a.broker_id, Decimal(str(a.importe_eur)))
+
+    # Brokers CON saldo reportado pero SIN movimientos importados: deben
+    # aparecer igualmente — su dry powder real no sumaba al total disponible
+    # (auditoría Cima 2026-06-11, D6).
+    for bid, b in brokers.items():
+        if bid not in calc and b.saldo_reportado_eur is not None:
+            calc[bid] = Decimal("0")
 
     por_broker: list[LiquidezBroker] = []
     total_calc = Decimal("0")

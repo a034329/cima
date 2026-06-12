@@ -59,10 +59,13 @@ def _cartera(db: Session) -> models.Cartera:
 def listar(db: Session = Depends(get_db)) -> AportacionesResumen:
     cartera = _cartera(db)
     por_anio = aportaciones_por_anio(db, cartera.id)
+    # Cota al listado (los totales se calculan aparte sobre TODO el
+    # histórico): sin límite el payload crecía sin tope (auditoría).
     movimientos = list(db.execute(
         select(models.Aportacion)
         .where(models.Aportacion.cartera_id == cartera.id)
         .order_by(models.Aportacion.fecha.desc())
+        .limit(500)
     ).scalars())
     return AportacionesResumen(
         total_neto=sum(por_anio.values(), Decimal("0")),
@@ -106,6 +109,8 @@ def crear(payload: AportacionIn, db: Session = Depends(get_db)) -> models.Aporta
                summary="Eliminar una aportación")
 def eliminar(aportacion_id: str, db: Session = Depends(get_db)) -> None:
     ap = db.get(models.Aportacion, aportacion_id)
+    if ap is not None and ap.cartera_id != _cartera(db).id:
+        ap = None   # S2: scoping a la cartera activa
     if ap is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No existe")
     db.delete(ap)

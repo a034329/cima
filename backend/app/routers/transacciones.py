@@ -133,6 +133,10 @@ def listar_transacciones(
 )
 def obtener_transaccion(tx_id: str, db: Session = Depends(get_db)) -> models.Transaccion:
     tx = db.get(models.Transaccion, tx_id)
+    # Scoping a la cartera activa (S2 auditoría: db.get por id global era un
+    # IDOR directo en cuanto haya dos usuarios).
+    if tx is not None and tx.cartera_id != _resolver_cartera_por_defecto(db).id:
+        tx = None
     if tx is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -154,6 +158,8 @@ def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
     optimizador — auditoría Cima 2026-06-11, C3; mantenimiento.py ya lo
     hacía bien)."""
     tx = db.get(models.Transaccion, tx_id)
+    if tx is not None and tx.cartera_id != _resolver_cartera_por_defecto(db).id:
+        tx = None   # S2: sin scoping era un IDOR en multi-usuario
     if tx is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

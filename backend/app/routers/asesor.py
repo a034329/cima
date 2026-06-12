@@ -56,8 +56,8 @@ def _out(m: models.MensajeAsesor) -> MensajeOut:
 
 
 @router.get("", response_model=list[MensajeOut], summary="Historial del chat con el asesor")
-def get_historial(db: Session = Depends(get_db)) -> list[MensajeOut]:
-    return [_out(m) for m in svc.historial(db, _cartera(db).id)]
+def get_historial(limit: int = 200, db: Session = Depends(get_db)) -> list[MensajeOut]:
+    return [_out(m) for m in svc.historial(db, _cartera(db).id, limit=min(limit, 1000))]
 
 
 @router.post("", response_model=RespuestaOut, summary="Enviar un mensaje al asesor y obtener su respuesta")

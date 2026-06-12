@@ -140,7 +140,8 @@ def _serializar(r) -> FiscalResumenOut:  # type: ignore[no-untyped-def]
     response_model=FiscalResumenOut,
     summary="Cálculo fiscal acumulado (todos los años en BD)",
 )
-def get_fiscal_acumulado(db: Session = Depends(get_db)) -> FiscalResumenOut:
+def get_fiscal_acumulado(limit_matches: int = 1000,
+                         db: Session = Depends(get_db)) -> FiscalResumenOut:
     """Vista histórica: todos los matches FIFO de cualquier año + todos los
     dividendos del histórico. La compensación se devuelve referida al año
     siguiente al último match (informativo, no es la cifra que va a RentaWEB).
@@ -155,7 +156,13 @@ def get_fiscal_acumulado(db: Session = Depends(get_db)) -> FiscalResumenOut:
             detail="No hay cartera. Llama primero a POST /api/bootstrap",
         )
     r = calcular_fiscal(db, cartera.id, None)
-    return _serializar(r)
+    out = _serializar(r)
+    # Cota de payload: un daytrader acumula miles de matches históricos —
+    # el endpoint servía TODOS (auditoría). n_matches conserva el total real;
+    # se devuelven los `limit_matches` más recientes.
+    if limit_matches and len(out.matches) > limit_matches:
+        out.matches = sorted(out.matches, key=lambda m: m.fecha_venta)[-limit_matches:]
+    return out
 
 
 # ── Optimizador fiscal de cierre de año (tax-loss harvesting) ──────────────

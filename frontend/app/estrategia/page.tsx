@@ -226,10 +226,10 @@ export default function EstrategiaPage() {
             )}
             {b.id !== 'sin_clasificar' && (
               <button
-                onClick={async () => {
+                onClick={conError(async () => {
                   await editarBloque(b.id, { en_estrategia: !b.en_estrategia });
                   await cargar();
-                }}
+                })}
                 className="text-[10px] px-1.5 py-0.5 rounded border border-[rgb(var(--border))] text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))]"
                 title={b.en_estrategia
                   ? 'Cuenta para el objetivo de IF. Clic para sacarlo.'
@@ -330,23 +330,23 @@ export default function EstrategiaPage() {
         {b.id !== 'sin_clasificar' && (
           <ObjetivoEditor
             bloque={b}
-            onGuardar={async (objetivo) => {
+            onGuardar={conError(async (objetivo: number | null) => {
               await editarBloque(b.id, { peso_objetivo: objetivo });
               await cargar();
-            }}
+            })}
           />
         )}
         {b.categoria_base === 'colchon' && (
           <ColchonEditor
             bloque={b}
             liquidezDisponible={dist?.liquidez_disponible_eur ?? '0'}
-            onGuardar={async (efectivo, rendimiento) => {
+            onGuardar={conError(async (efectivo: number | null, rendimiento: number | null) => {
               await editarBloque(b.id, {
                 liquidez_asignada_eur: efectivo,
                 rendimiento_pct: rendimiento,
               });
               await cargar();
-            }}
+            })}
           />
         )}
       </div>

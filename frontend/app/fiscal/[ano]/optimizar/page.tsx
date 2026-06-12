@@ -68,12 +68,18 @@ export default function OptimizarPage({ params }: { params: { ano: string } }) {
         </p>
       )}
 
-      {data && <Contenido d={data} onPrecio={async (isin, p) => { await fijarPrecioManual(isin, p); await cargar(); }} />}
+      {data && <Contenido d={data} onPrecio={async (isin, p) => {
+        try { await fijarPrecioManual(isin, p); await cargar(); }
+        catch (e) { setError(e instanceof Error ? e.message : String(e)); }  // F4
+      }} />}
 
       {data && (
         <PerdidasPendientes
           perdidas={perdidas}
-          onGuardar={async (anio, importe) => { await setPerdidaPendiente(anio, importe); await cargar(); }}
+          onGuardar={async (anio, importe) => {
+            try { await setPerdidaPendiente(anio, importe); await cargar(); }
+            catch (e) { setError(e instanceof Error ? e.message : String(e)); }  // F4
+          }}
         />
       )}
     </div>
