@@ -552,7 +552,7 @@ def generate_fiscal_pdf(
     no_soportadas_resumen = []
     _CASILLA_HINT = {
         'Cryptocurrency':       ('1800-1806', 'F2 — Monedas virtuales (apartado propio Renta 2025+)'),
-        'Bonds':                ('0027 / 0030 / depende', 'B — RCM (cupones / Letras / etc.)'),
+        'Bonds':                ('0027 / 0031 / depende', 'B — RCM (cupones / T-Bills / etc.)'),
         'Futures':              ('1624-1654 clave 4',     'F2 — Otros elementos patrimoniales'),
         'Warrants':             ('1624-1654 clave 4',     'F2 — Otros elementos patrimoniales'),
         'CFDs':                 ('1624-1654 clave 4',     'F2 — Otros elementos patrimoniales'),
@@ -1055,7 +1055,10 @@ def generate_fiscal_pdf(
             # "Retenciones" del popup individual de 0027, 100% acreditable.
             "retencion_es":     _d(interest_ret_es_total),
         } if interest_data and interest_data.get("credit_total", 0) > 0 else None,
-        # Casilla 0030 — Letras del Tesoro (transmisión/amortización)
+        # Casilla 0031 — otros activos financieros (T-Bills extranjeras;
+        # la 0030 es solo Letras del Tesoro españolas — corrección 2026-06-12).
+        # La clave se llama casilla_0030 por compatibilidad con el template/
+        # sidecar históricos; el NÚMERO mostrado sale del template (0031).
         "casilla_0030": {
             "tbills_total":     _d(tbills_data["total"]) if tbills_data else 0.0,
             "n_items":          len(tbills_data.get("lines", [])) if tbills_data else 0,

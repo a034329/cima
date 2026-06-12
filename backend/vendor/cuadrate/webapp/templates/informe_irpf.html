@@ -395,7 +395,7 @@
     {% if matches_by_isin_crypto|length > 0 %}<li><a href="#sec-crypto">Criptomonedas</a> <span class="casilla">1800-1806</span></li>{% endif %}
     {% if dividendos %}<li><a href="#sec-divs">Dividendos y deducción CDI</a> <span class="casilla">0029 · 0588</span></li>{% endif %}
     {% if interest_data %}<li><a href="#sec-interest-ibkr">Intereses IBKR (Credit / Debit / Bond)</a> <span class="casilla">0027 (IBKR)</span></li>{% endif %}
-    {% if tbills_data %}<li><a href="#sec-tbills">Intereses Treasury Bills</a> <span class="casilla">0030 (IBKR)</span></li>{% endif %}
+    {% if tbills_data %}<li><a href="#sec-tbills">Intereses Treasury Bills</a> <span class="casilla">0031 (IBKR)</span></li>{% endif %}
     {% if staking_data %}<li><a href="#sec-staking">Staking de criptomonedas</a> <span class="casilla">0027</span></li>{% endif %}
     {% if plataforma_data and plataforma_data.total > 0 %}<li><a href="#sec-plataforma">Gastos del broker (administración y depósito)</a> <span class="casilla">0037</span></li>{% endif %}
     {% if compensacion %}<li><a href="#sec-compensacion">Compensación de pérdidas (Art. 49 LIRPF)</a> <span class="casilla">1186+</span></li>{% endif %}
@@ -719,12 +719,12 @@
     {% endif %}
     {% if tbills_data and tbills_data.total > 0 %}
     <tr>
-      <td><span class="casilla">0030</span></td>
-      <td>Letras del Tesoro — transmisión/amortización</td>
+      <td><span class="casilla">0031</span></td>
+      <td>T-Bills — otros activos financieros (transmisión/amortización)</td>
       <td class="text-right gain"><strong>{{ format_eur(tbills_data.total) }}</strong></td>
     </tr>
     {% else %}
-    <tr><td><span class="casilla">0030</span></td><td>Letras del Tesoro</td><td class="text-right text-muted">—</td></tr>
+    <tr><td><span class="casilla">0031</span></td><td>T-Bills / otros activos financieros</td><td class="text-right text-muted">—</td></tr>
     {% endif %}
     {% if staking_data %}
     <tr>
@@ -2686,7 +2686,7 @@
 
 <!-- ══ 6.6. TREASURY BILLS (intereses, IBKR) ═══════════════════════════════ -->
 {% if tbills_data %}
-<h2 id="sec-tbills">Intereses Treasury Bills <span class="casilla">0030 · RCM Letras del Tesoro</span>
+<h2 id="sec-tbills">Intereses Treasury Bills <span class="casilla">0031 · RCM otros activos financieros</span>
   <span class="traffic-light tl-rojo">🔴 declarable obligatorio</span>
 </h2>
 
@@ -2704,7 +2704,7 @@
     </tr>
     {% endfor %}
     <tr style="background:#f0f9ff">
-      <td><strong>TOTAL — casilla 0030</strong></td>
+      <td><strong>TOTAL — casilla 0031</strong></td>
       <td class="text-right gain"><strong>{{ format_eur(tbills_data.total) }}</strong></td>
     </tr>
   </tbody>

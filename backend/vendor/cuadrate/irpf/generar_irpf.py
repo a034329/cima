@@ -270,6 +270,7 @@ def _load_casillas_ejercicio(ejercicio: str) -> dict:
                     "deduccion_cdi_internacional": {"casilla": "0588"},
                     "intereses_rcm": {"casilla": "0027"},
                     "letras_tesoro_rcm": {"casilla": "0030"},
+                    "otros_activos_rcm": {"casilla": "0031"},
                     "acciones_cotizadas_gp": {
                         "rango_detalle": "326-338",
                         "casilla_suma_ganancias": "339",
@@ -305,8 +306,12 @@ def _load_casillas_ejercicio(ejercicio: str) -> dict:
         "intereses":         (cas.get("intereses_rcm", {}).get("casilla")
                               or cas.get("intereses_cuentas_remuneradas", {}).get("casilla")
                               or "0027"),
-        # Letras del Tesoro / T-Bills (transmisión o amortización): 0030.
-        "letras_tesoro":     cas.get("letras_tesoro_rcm", {}).get("casilla", "0030"),
+        # T-Bills EXTRANJERAS (transmisión o amortización): 0031 'otros
+        # activos financieros'. La 0030 es SOLO Letras del Tesoro españolas
+        # (tesoro.es; corrección doctrinal 2026-06-12 — la cuota es idéntica,
+        # ambas suman al mismo RCM del ahorro, pero la clasificación correcta
+        # de deuda pública no española es 0031).
+        "letras_tesoro":     cas.get("otros_activos_rcm", {}).get("casilla", "0031"),
         "acciones_detalle":  cas.get("acciones_cotizadas_gp", {}).get("rango_detalle", "326-338"),
         "acciones_ganancias": cas.get("acciones_cotizadas_gp", {}).get("casilla_suma_ganancias", "339"),
         "acciones_perdidas": cas.get("acciones_cotizadas_gp", {}).get("casilla_suma_perdidas", "340"),
@@ -6987,7 +6992,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         tbills_lines = [
             "",
             "=" * 65,
-            "  INTERESES — Treasury Bills IBKR (RCM, casilla 0030)",
+            "  INTERESES — Treasury Bills IBKR (RCM, casilla 0031)",
             "=" * 65,
             "  Detectados desde la sección 'Realized & Unrealized Performance",
             "  Summary' del Activity Statement IBKR. Tributan como rendimientos",
@@ -7000,7 +7005,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         tbills_lines += [
             "",
             f"  TOTAL intereses T-Bills: {fmt_es(total_tbills)} EUR",
-            f"  → Declarar en casilla 0030 (transmisión/amortización de Letras del Tesoro).",
+            f"  → Declarar en casilla 0031 (otros activos financieros — la 0030 es solo Letras del Tesoro españolas).",
             "  → Verificar Withholding Tax IBKR para retenciones aplicables → 0588.",
             "  → Detalle ampliado en informe_fx_YYYY.txt.",
         ]
@@ -7107,7 +7112,7 @@ def write_informe_dividendos(resumen, filepath, registros=None, derechos_scrip=N
         "  · Retención española (19%) → casilla 0591 junto a cada pagador",
         "  · Deducción doble imposición CDI → casilla 0588 (solo dividendos extranjeros)",
         "  · Intereses TR cuenta remunerada → casilla 0027 + retención en su popup (0591)",
-        "  · Intereses T-Bills IBKR → casilla 0030 (ver sección INTERESES T-Bills)",
+        "  · Intereses T-Bills IBKR → casilla 0031 (ver sección INTERESES T-Bills)",
         "  · Intereses IBKR Credit/Bond → casilla 0027 (ver sección INTERESES IBKR)",
         "  · Staking de criptomonedas → casilla 0027 (ver sección STAKING)",
         "  · Scrip dividend / venta derechos TIPO B → casilla 0029 (ver sección anterior)",
@@ -8309,7 +8314,7 @@ def write_informe_fx(fx_pl_data, filepath):
         lines.append(f"  TOTAL T-Bills: {fmt_es(total_tbill)} EUR")
         lines.append("")
         lines.append(f"  → Estos importes son RCM (Art. 25.2 LIRPF, base del ahorro).")
-        lines.append(f"  → Casilla RentaWEB: {C('letras_tesoro')} (transmisión/amortización de Letras del Tesoro).")
+        lines.append(f"  → Casilla RentaWEB: {C('letras_tesoro')} (otros activos financieros — deuda pública extranjera al descuento).")
         lines.append(f"    Alternativa doctrinal para T-Bills extranjeros: 0031 (otros activos")
         lines.append(f"    financieros) — cuota IDÉNTICA en base del ahorro; el manual AEAT no")
         lines.append(f"    distingue deuda pública extranjera de forma expresa.")
@@ -10567,7 +10572,7 @@ def main():
         print(f"     → P&L de opciones por contrato (casillas 1624-1654 RentaWEB)")
     if ibkr_fx_pl['fx'] or ibkr_fx_pl['tbills']:
         print(f"  📄 {os.path.basename(INFORME_FX_FILE)}")
-        print(f"     → G/P de divisa IBKR (Art. 33 LIRPF) e intereses T-Bills (casilla 0030)")
+        print(f"     → G/P de divisa IBKR (Art. 33 LIRPF) e intereses T-Bills (casilla 0031)")
     print()
     print("  CÓMO DECLARAR EN RentaWEB:")
     print("  ─────────────────────────────────────────────────────")

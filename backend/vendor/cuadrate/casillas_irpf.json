@@ -7,7 +7,6 @@
     "fuentes": "URLs y documentos usados para verificar las casillas del ejercicio."
   },
   "_ejercicio_activo_por_defecto": "2025",
-
   "_doctrina_renta_web_global": [
     "RentaWEB no acepta importación masiva de operaciones desde DeGiro/IBKR (esos brokers no informan a la AEAT). Las operaciones se introducen una a una en 'Mi cartera de valores' o directamente en el formulario.",
     "El popup de 'Alta capital mobiliario' (apartado B) es UN ÚNICO formulario que sirve para dividendos, intereses, T-Bills y cualquier rendimiento del capital mobiliario base del ahorro. Tres campos clave: 'Ingresos íntegros', 'Retenciones' (solo IRPF español Art. 99 LIRPF), 'Gastos de administración y depósito'.",
@@ -16,7 +15,6 @@
     "Los gastos de administración y depósito (Art. 26.1.a LIRPF) se introducen en el campo correspondiente del popup; RentaWEB los totaliza en 0037 y los resta del rendimiento bruto sin permitir saldo negativo.",
     "Los sumatorios de retenciones del capital mobiliario son CALCULADOS automáticamente por RentaWEB a partir de las entradas individuales del popup. El contribuyente nunca tiene que rellenar manualmente la casilla del sumario."
   ],
-
   "2025": {
     "campana": "2026",
     "verificado_el": "2026-05-06",
@@ -44,7 +42,7 @@
       "letras_tesoro_rcm": {
         "casilla": "0030",
         "apartado": "B. Rendimientos del capital mobiliario (base del ahorro)",
-        "concepto": "Rendimientos procedentes de la transmisión o amortización de Letras del Tesoro (cupón cero — el rendimiento es la diferencia entre precio compra y nominal/precio venta).",
+        "concepto": "Rendimientos procedentes de la transmisión o amortización de Letras del Tesoro (cupón cero — diferencia entre precio compra y nominal/precio venta). SOLO deuda pública ESPAÑOLA emitida por el Tesoro: las T-Bills extranjeras van a 0031 (otros activos financieros) — corrección doctrinal 2026-06-12, fuentes tesoro.es y pauta general divulgadores (Bankinter): 'lo que no sea Letras del Tesoro → 31'.",
         "base_legal": "Art. 25.2 LIRPF",
         "rentaweb_flujo": "Alta capital mobiliario → campo 'Ingresos íntegros' (suma de los rendimientos por amortización de T-Bills del año)."
       },
@@ -168,23 +166,64 @@
         "concepto": "Pérdidas patrimoniales y RCM negativos de ejercicios anteriores pendientes de compensar (máximo 4 años). Hacienda NO los aplica automáticamente — el contribuyente debe introducirlos manualmente. Por cada ejercicio origen se rellenan tres campos: pendiente al inicio, aplicado en esta declaración, pendiente a futuros.",
         "base_legal": "Art. 49 LIRPF",
         "casillas_gp_ahorro_por_ejercicio": {
-          "2021": {"pendiente_inicio": "1259", "aplicado": "1260", "futuros": null, "nota": "Expira en 2025 — último año compensable."},
-          "2022": {"pendiente_inicio": "1261", "aplicado": "1262", "futuros": "1263"},
-          "2023": {"pendiente_inicio": "1264", "aplicado": "1265", "futuros": "1266"},
-          "2024": {"pendiente_inicio": "1267", "aplicado": "1268", "futuros": "1269"},
+          "2021": {
+            "pendiente_inicio": "1259",
+            "aplicado": "1260",
+            "futuros": null,
+            "nota": "Expira en 2025 — último año compensable."
+          },
+          "2022": {
+            "pendiente_inicio": "1261",
+            "aplicado": "1262",
+            "futuros": "1263"
+          },
+          "2023": {
+            "pendiente_inicio": "1264",
+            "aplicado": "1265",
+            "futuros": "1266"
+          },
+          "2024": {
+            "pendiente_inicio": "1267",
+            "aplicado": "1268",
+            "futuros": "1269"
+          },
           "_saldo_total_contribuyente": "1258",
           "_saldo_nuevo_2025_a_futuros": "(en bloque superior, junto al titular)"
         },
         "casillas_rcm_ahorro_por_ejercicio": {
-          "2021": {"pendiente_inicio": "1272", "aplicado": "1273", "futuros": null, "nota": "Expira en 2025."},
-          "2022": {"pendiente_inicio": "1274", "aplicado": "1275", "futuros": "1276"},
-          "2023": {"pendiente_inicio": "1277", "aplicado": "1278", "futuros": "1279"},
-          "2024": {"pendiente_inicio": "1280", "aplicado": "1281", "futuros": "1282"},
+          "2021": {
+            "pendiente_inicio": "1272",
+            "aplicado": "1273",
+            "futuros": null,
+            "nota": "Expira en 2025."
+          },
+          "2022": {
+            "pendiente_inicio": "1274",
+            "aplicado": "1275",
+            "futuros": "1276"
+          },
+          "2023": {
+            "pendiente_inicio": "1277",
+            "aplicado": "1278",
+            "futuros": "1279"
+          },
+          "2024": {
+            "pendiente_inicio": "1280",
+            "aplicado": "1281",
+            "futuros": "1282"
+          },
           "_saldo_total_contribuyente": "1271",
           "_saldo_nuevo_2025_a_futuros": "1283"
         },
         "fuente_verificacion": "Capturas literales RentaWEB 2025 — webapp/static/assets/RentaWebGuide/CompensacionPerdidasPAtrimoniales.png y CompensacionMobiliarios.png · Anexo I-II Modelo 100 Renta 2025 publicado por Hacienda (26-ene-2026).",
         "rentaweb_flujo": "Apartado F → bloque 'Saldos negativos de ganancias y pérdidas patrimoniales pendientes de compensar en los ejercicios siguientes' → subbloque 'Saldo neto negativo... base imponible del AHORRO' (el bloque superior 'base imponible general' es para pérdidas patrimoniales no derivadas de transmisión y no aplica a inversores con ventas de acciones)."
+      },
+      "otros_activos_rcm": {
+        "casilla": "0031",
+        "apartado": "B. Rendimientos del capital mobiliario (base del ahorro)",
+        "concepto": "Rendimientos procedentes de la transmisión, amortización o reembolso de OTROS activos financieros: T-Bills extranjeras (deuda pública no española al descuento), bonos cupón cero extranjeros, ETCs físicos (V0267-25).",
+        "base_legal": "Art. 25.2 LIRPF",
+        "rentaweb_flujo": "Alta capital mobiliario → campo 'Ingresos íntegros' (suma de los rendimientos por amortización/transmisión del año)."
       }
     },
     "fuentes": [
