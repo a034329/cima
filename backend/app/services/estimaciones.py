@@ -445,6 +445,28 @@ def _crecimiento_eps(eps_hist: list | None, forward_eps: float | None) -> float:
     return max(lo, min(hi, g))
 
 
+# Banda del g_div sembrado desde DPS real: igual que la del derivado en
+# `_calc_item` ([−5%, +20%]) — un recorte puntual o un dividendo inaugural
+# no deben proyectarse 4 años tal cual.
+_BANDA_G_DIV = (-0.05, 0.20)
+
+
+def _crecimiento_dps(dps_hist: list | None) -> float | None:
+    """CAGR del dividendo por acción anual real (oldest→newest, años completos),
+    acotado a `_BANDA_G_DIV`. Pide ≥3 años con pago > 0 para no extrapolar un
+    solo salto; None si no hay serie utilizable (el caller deriva o deja 0)."""
+    puntos = [(i, float(x)) for i, x in enumerate(dps_hist or [])
+              if x is not None and float(x) > 0]
+    if len(puntos) < 3:
+        return None
+    n = puntos[-1][0] - puntos[0][0]
+    if n <= 0:
+        return None
+    g = (puntos[-1][1] / puntos[0][1]) ** (1 / n) - 1
+    lo, hi = _BANDA_G_DIV
+    return max(lo, min(hi, g))
+
+
 def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
     """Rellena (solo campos VACÍOS) una fila Estimacion desde consenso + fundamentales.
     Compartido por cartera y seguimiento. El consenso de EPS solo siembra
@@ -515,6 +537,15 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
 
     if e.dividendo_share is None and div is not None:
         e.dividendo_share = Decimal(str(div)).quantize(Decimal("0.000001"))
+
+    # g_div asistido: CAGR del DPS anual REAL (años completos) si el usuario
+    # no lo ha fijado. Mejor base que el crecimiento implícito de la métrica
+    # (capta política de dividendo, no de beneficios). Misma banda [−5%,+20%]
+    # que el derivado; fondos fuera (su g_div es 0 por diseño).
+    if e.crecimiento_div_pct is None and not es_fondo_flag:
+        g_dps = _crecimiento_dps(f.get("dps_hist"))
+        if g_dps is not None:
+            e.crecimiento_div_pct = Decimal(str(g_dps)).quantize(Decimal("0.0001"))
 
     # Persistir referencias: consenso fresco + industria + marcas de estado.
     payload: dict = dict(c or {})

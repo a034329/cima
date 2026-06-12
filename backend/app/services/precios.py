@@ -12,6 +12,7 @@ Best-effort: ISIN que no resuelven (cripto, mercados raros) → `no_resueltos`.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
 import time
@@ -414,6 +415,23 @@ def _fetch_fundamentales(sim: str) -> dict | None:
                     break
         except Exception:
             pass
+        # Dividendo por acción ANUAL real (suma de pagos por año natural,
+        # oldest→newest, solo años completos): base del g_div asistido. El
+        # escalado GBp no afecta al CAGR (ratio), pero se aplica por coherencia.
+        dps_hist: list[float] = []
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                divs = tk.dividends
+            if divs is not None and len(divs) > 0:
+                por_anio: dict[int, float] = {}
+                for fecha, v in divs.items():
+                    por_anio[fecha.year] = por_anio.get(fecha.year, 0.0) + float(v)
+                anio_en_curso = _dt.date.today().year   # incompleto → fuera
+                dps_hist = [float(_x(por_anio[a]))
+                            for a in sorted(por_anio) if a < anio_en_curso][-6:]
+        except Exception:
+            pass
         return {
             "eps": _x(info.get("trailingEps")),
             "forward_eps": _x(info.get("forwardEps")),
@@ -429,6 +447,7 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             # ROE como proxy de calidad: ROIC no está en .info; returnOnEquity sí
             # (fracción, p.ej. 0.37 = 37%). Apalancado, pero útil para el corte.
             "roe": info.get("returnOnEquity"),
+            "dps_hist": dps_hist,    # DPS anual real (oldest→newest, años completos)
         }
     except Exception:
         return None
