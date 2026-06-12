@@ -2,7 +2,7 @@
 
 El dinero que el país de origen retiene POR ENCIMA del tope del CDI no se
 recupera en la declaración española — solo reclamándolo al fisco extranjero
-(formulario 85 suizo, BZSt alemán…). La mayoría de inversores ni sabe que
+(formulario 90 suizo, BZSt alemán…). La mayoría de inversores ni sabe que
 lo pierde. Este servicio lo cuantifica POR PAÍS Y AÑO sobre la ventana de
 reclamación de cada país (2-5 años según jurisdicción): el exceso de un solo
 año puede parecer poco, pero el acumulado reclamable suele justificar el
@@ -46,7 +46,7 @@ _C2 = Decimal("0.01")
 # Cómo se reclama el exceso en cada país (verificado en Cuádrate contra las
 # guías oficiales al montar la tabla CDI del blog — 2026-05/06).
 MECANISMO_RECUPERACION: dict[str, str] = {
-    "CH": "Formulario 85 al ESTV suizo (plazo típico 6-18 meses).",
+    "CH": "Formulario 90 al ESTV suizo, vía su ePortal (plazo típico 6-18 meses).",
     "DE": "Solicitud de devolución al BZSt (Bundeszentralamt für Steuern), 4-12 meses.",
     "FR": "Formularios 5000-FR + 5001-FR vía banco/agente fiscal, 6-12 meses.",
     "BE": "Formulario 276 Div al SPF Finances (trámite anual).",

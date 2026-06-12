@@ -74,7 +74,7 @@ def test_exceso_real_ch(db, cartera, broker_degiro, pos_ch, monkeypatch) -> None
     r = ff.calcular_fugas(db, cartera.id)
     p = r.por_pais[0]
     assert p.pais == "CH"
-    assert "85" in p.mecanismo  # formulario 85 ESTV
+    assert "90" in p.mecanismo  # formulario 90 ESTV (residentes ES; el 85 era errata)
     assert p.reclamable_pendiente_eur == Decimal("20.00")
     assert r.total_reclamable_pendiente_eur == Decimal("20.00")
     assert p.posiciones[0].exceso_real_total_eur == Decimal("20.00")
