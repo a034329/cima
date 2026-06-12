@@ -150,6 +150,25 @@ export default function EstimacionesPage() {
   );
 }
 
+// Desglose multilínea de la métrica maestra (tooltip nativo): de dónde sale
+// el CAGR4+Div NETO — revalorización + yield neto de impuestos no acreditables
+// proyectado con el crecimiento del dividendo a 4 años.
+function desgloseCagr(e: EstimacionItem): string | null {
+  if (e.cagr4_div_pct == null) return null;
+  const p = (v: string | null, dp = 2) => (v == null ? '—' : fmtPct(v, dp));
+  const lineas = [
+    `CAGR4 (revalorización): ${p(e.cagr4_pct)}`,
+    `Yield actual (bruto): ${p(e.div_yield_pct)}`,
+    `− impuestos no acreditables (${p(e.tipo_efectivo_div_pct, 1)}): yield neto ${p(e.div_yield_neto_pct)}`,
+    `× crecimiento div. 4A (g=${p(e.crecimiento_div_pct, 1)}): div. horizonte ${p(e.div_horizonte_pct)}`,
+    `= CAGR4+Div neto: ${p(e.cagr4_div_pct)}`,
+  ];
+  if (e.cagr4_div_bruto_pct != null) {
+    lineas.push(`(bruto plano, reconciliación Excel: ${p(e.cagr4_div_bruto_pct)})`);
+  }
+  return lineas.join('\n');
+}
+
 function Fila({ e, onGuardar }: {
   e: EstimacionItem;
   onGuardar: (isin: string, campos: Record<string, unknown>) => Promise<void>;
@@ -185,7 +204,14 @@ function Fila({ e, onGuardar }: {
       <td className="px-2 text-right text-[rgb(var(--muted))]">{pct(e.crecimiento_pct)}</td>
       <td className={`px-2 text-right ${colorPct(e.cagr4_pct)}`}>{pct(e.cagr4_pct)}</td>
       <td className="px-2 text-right text-[rgb(var(--muted))]">{pct(e.div_yield_pct, 2)}</td>
-      <td className={`px-2 text-right font-semibold ${colorPct(e.cagr4_div_pct)}`}>{pct(e.cagr4_div_pct)}</td>
+      <td
+        className={`px-2 text-right font-semibold ${colorPct(e.cagr4_div_pct)}`}
+        title={desgloseCagr(e) ?? undefined}
+      >
+        <span className={desgloseCagr(e) ? 'cursor-help underline decoration-dotted decoration-[rgb(var(--muted))] underline-offset-2' : ''}>
+          {pct(e.cagr4_div_pct)}
+        </span>
+      </td>
       <td className="px-2 whitespace-nowrap font-sans">
         <Link href={`/estrategia/analisis?isin=${encodeURIComponent(e.isin)}`}
           className="text-[11px] text-brand-600 dark:text-brand-400 hover:underline">

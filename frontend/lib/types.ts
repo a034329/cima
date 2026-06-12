@@ -58,6 +58,12 @@ export interface EstimacionItem {
   cagr4_pct: string | null;
   div_yield_pct: string | null;
   cagr4_div_pct: string | null;
+  // Desglose de la métrica neta (explicabilidad del CAGR4+Div):
+  cagr4_div_bruto_pct: string | null;
+  div_yield_neto_pct: string | null;
+  div_horizonte_pct: string | null;
+  tipo_efectivo_div_pct: string | null;
+  crecimiento_div_pct: string | null;   // g_div aplicado (campo o derivado)
   notas: string | null;
   // Consenso de analistas (referencia, no editable):
   eps_forward: string | null;
