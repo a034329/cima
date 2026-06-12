@@ -2,6 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Fraunces, Inter, IBM_Plex_Mono } from 'next/font/google';
 import { ChatWidget } from '@/components/ChatWidget';
+import { CmdKButton } from '@/components/CmdKButton';
+import { CommandPalette } from '@/components/CommandPalette';
 import { MobileNav } from '@/components/MobileNav';
 import { SaludDatosBadge } from '@/components/SaludDatosBadge';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -80,6 +82,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               >
                 ⚙
               </Link>
+              <CmdKButton />
               <ThemeToggle />
               <MobileNav items={NAV_MOVIL} />
             </div>
@@ -108,6 +111,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </footer>
         <ChatWidget />
+        <CommandPalette />
       </body>
     </html>
   );
