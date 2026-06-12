@@ -126,3 +126,48 @@ def test_proyeccion_anual_ch(db, cartera, broker_degiro, pos_ch,
     x = p.posiciones[0]
     assert x.div_anual_estimado_eur == Decimal("30.00")
     assert x.fuga_anual_estimada_eur == Decimal("6.00")
+
+
+def test_endpoint_fugas_no_choca_con_ruta_dinamica(monkeypatch) -> None:
+    """Regresión: /fiscal/fugas se registró DESPUÉS de /fiscal/{ejercicio} y
+    FastAPI intentaba parsear "fugas" como año → 422. El endpoint debe
+    resolver a la ruta estática (no 422)."""
+    from collections.abc import Generator  # noqa: F401
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import get_db
+    from app.db.base import Base
+    from app.main import app
+
+    engine = create_engine("sqlite:///:memory:",
+                           connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override():
+        s = SessionLocal()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    app.dependency_overrides[get_db] = override
+    try:
+        with TestClient(app) as client:
+            r = client.get("/api/fiscal/fugas")
+            assert r.status_code == 404          # sin cartera, pero NO 422
+            with SessionLocal() as s:
+                user = models.User(email="f@cima.local", modo="owner")
+                s.add(user); s.flush()
+                s.add(models.Cartera(user_id=user.id, nombre="Test"))
+                s.commit()
+            r = client.get("/api/fiscal/fugas")
+            assert r.status_code == 200
+            assert r.json()["por_pais"] == []
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()

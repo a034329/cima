@@ -337,39 +337,6 @@ def get_rotacion(ejercicio: int, db: Session = Depends(get_db)) -> RotacionOut:
     )
 
 
-@router.get(
-    "/{ejercicio}",
-    response_model=FiscalResumenOut,
-    summary="Cálculo fiscal del ejercicio (FIFO + regla 2M + compensación)",
-)
-def get_fiscal(
-    ejercicio: int,
-    db: Session = Depends(get_db),
-) -> FiscalResumenOut:
-    """Devuelve el cálculo fiscal completo para un ejercicio: matches FIFO,
-    G/P bruto y deducible, pérdidas diferidas latentes y compensación final.
-
-    El motor se invoca en cada llamada — no se persiste. Si el rendimiento
-    se degrada con carteras grandes, cachear por (cartera_id, ejercicio,
-    hash_tx) con TTL.
-    """
-    if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
-        )
-
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-
-    r = calcular_fiscal(db, cartera.id, ejercicio)
-    return _serializar(r)
-
-
 # ── Fugas fiscales: retención de origen no recuperable vía 0588 ────────────
 
 class FugaPosicionOut(BaseModel):
@@ -432,3 +399,38 @@ def get_fugas(db: Session = Depends(get_db)) -> FugasOut:
             ) for x in p.posiciones],
         ) for p in r.por_pais],
     )
+
+
+@router.get(
+    "/{ejercicio}",
+    response_model=FiscalResumenOut,
+    summary="Cálculo fiscal del ejercicio (FIFO + regla 2M + compensación)",
+)
+def get_fiscal(
+    ejercicio: int,
+    db: Session = Depends(get_db),
+) -> FiscalResumenOut:
+    """Devuelve el cálculo fiscal completo para un ejercicio: matches FIFO,
+    G/P bruto y deducible, pérdidas diferidas latentes y compensación final.
+
+    El motor se invoca en cada llamada — no se persiste. Si el rendimiento
+    se degrada con carteras grandes, cachear por (cartera_id, ejercicio,
+    hash_tx) con TTL.
+    """
+    if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
+        )
+
+    cartera = db.execute(select(models.Cartera)).scalars().first()
+    if cartera is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hay cartera. Llama primero a POST /api/bootstrap",
+        )
+
+    r = calcular_fiscal(db, cartera.id, ejercicio)
+    return _serializar(r)
+
+
