@@ -171,3 +171,33 @@ def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
         from app.services import fifo
         fifo.rebuild_for_posicion(db, tx.posicion_id)
     db.commit()
+
+@router.post(
+    "/{tx_id}/restaurar",
+    response_model=TransaccionOut,
+    summary="Restaurar una transacción descartada (papelera)",
+)
+def restaurar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> models.Transaccion:
+    """Contrapartida del descarte: estado → confirmada + rebuild del FIFO.
+    Solo aplica a descartadas (no resucita pendientes ni toca confirmadas)."""
+    tx = db.get(models.Transaccion, tx_id)
+    if tx is not None and tx.cartera_id != _resolver_cartera_por_defecto(db).id:
+        tx = None   # mismo scoping anti-IDOR que el resto del router
+    if tx is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transacción {tx_id} no encontrada",
+        )
+    if tx.estado != "descartada":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Solo se restauran descartadas (estado actual: {tx.estado})",
+        )
+    tx.estado = "confirmada"
+    db.flush()
+    if tx.posicion_id:
+        from app.services import fifo
+        fifo.rebuild_for_posicion(db, tx.posicion_id)
+    db.commit()
+    db.refresh(tx)
+    return tx

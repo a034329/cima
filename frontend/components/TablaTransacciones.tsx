@@ -1,5 +1,6 @@
 import type { TransaccionOut } from '@/lib/types';
 import { fmtEUR, fmtNum } from '@/lib/api';
+import { RestaurarTransaccionBtn } from '@/components/RestaurarTransaccionBtn';
 
 interface Props {
   transacciones: TransaccionOut[];
@@ -67,6 +68,7 @@ export function TablaTransacciones({ transacciones }: Props) {
               <th className="px-3 py-2 font-medium text-right">Ret. €</th>
               <th className="px-3 py-2 font-medium">Estado</th>
               <th className="px-3 py-2 font-medium">Origen</th>
+              <th className="px-3 py-2 font-medium"></th>
             </tr>
           </thead>
           <tbody>
@@ -112,6 +114,9 @@ export function TablaTransacciones({ transacciones }: Props) {
                 </td>
                 <td className="px-3 py-2 text-xs text-[rgb(var(--muted))] font-mono">
                   {t.origen}
+                </td>
+                <td className="px-3 py-2">
+                  {t.estado === 'descartada' && <RestaurarTransaccionBtn txId={t.id} />}
                 </td>
               </tr>
             ))}

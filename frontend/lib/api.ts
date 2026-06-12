@@ -790,3 +790,10 @@ export async function fetchFugas(): Promise<FugasResumen> {
 export async function fetchSaludDatos(): Promise<SaludDatos> {
   return fetchJson<SaludDatos>('/api/salud-datos');
 }
+
+export async function restaurarTransaccion(txId: string): Promise<TransaccionOut> {
+  return fetchJson<TransaccionOut>(
+    `/api/transacciones/${encodeURIComponent(txId)}/restaurar`,
+    { method: 'POST' },
+  );
+}

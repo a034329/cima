@@ -57,3 +57,44 @@ def test_salud_datos_basico(client_y_db) -> None:
     }
     assert body["ultimo_import_ts"] is None
     assert body["ultima_transaccion"] is None
+
+
+# ── Papelera: restaurar descartadas (U9) ─────────────────────────────────────
+
+from datetime import date
+from decimal import Decimal
+
+
+def test_restaurar_descartada(client_y_db) -> None:
+    client, SessionLocal = client_y_db
+    with SessionLocal() as s:
+        user = models.User(email="t2@cima.local", modo="owner")
+        s.add(user); s.flush()
+        cart = models.Cartera(user_id=user.id, nombre="Test")
+        s.add(cart); s.flush()
+        broker = models.Broker(user_id=user.id, broker_tipo="degiro", alias="D")
+        s.add(broker); s.flush()
+        pos = models.Posicion(cartera_id=cart.id, isin="US0378331005",
+                              nombre="Apple", divisa_local="USD")
+        s.add(pos); s.flush()
+        tx = models.Transaccion(
+            cartera_id=cart.id, broker_id=broker.id, posicion_id=pos.id,
+            fecha=date(2026, 1, 2), tipo="BUY", cantidad=Decimal("10"),
+            precio_local=Decimal("100"), divisa_local="USD",
+            importe_local=Decimal("1000"), fx_rate=Decimal("1"),
+            importe_eur=Decimal("1000"), gastos_eur=Decimal("0"),
+            tasas_externas_eur=Decimal("0"), estado="descartada",
+            origen="extracto",
+        )
+        s.add(tx); s.commit()
+        tx_id, pos_id = tx.id, pos.id
+
+    r = client.post(f"/api/transacciones/{tx_id}/restaurar")
+    assert r.status_code == 200
+    assert r.json()["estado"] == "confirmada"
+    with SessionLocal() as s:
+        from app.services.fifo import estado_posicion
+        assert estado_posicion(s, pos_id)["cantidad"] == Decimal("10")
+
+    # Restaurar dos veces → 409 (ya confirmada)
+    assert client.post(f"/api/transacciones/{tx_id}/restaurar").status_code == 409
