@@ -602,6 +602,10 @@ class PlanPaso(Base):
     )
     prioridad: Mapped[str] = mapped_column(String(20), nullable=False, default="MEDIA")
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDIENTE")
+    # Precio gatillo (EUR) de la alerta plan↔precio (V4): COMPRAR/REFORZAR
+    # avisa cuando el precio cae a/bajo el gatillo; VENDER/RECORTAR cuando
+    # sube a/sobre él. None = sin vigilancia de precio para este paso.
+    precio_alerta_eur: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     fecha_objetivo: Mapped[date | None] = mapped_column(Date, nullable=True)
     notas: Mapped[str | None] = mapped_column(Text, nullable=True)
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

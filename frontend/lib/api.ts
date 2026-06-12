@@ -676,6 +676,7 @@ export async function actualizarPaso(
     capital_objetivo_eur: string | null;
     fecha_objetivo: string | null;
     notas: string | null;
+    precio_alerta_eur: string | null;
   }>,
 ): Promise<import('./types').PasoPlan> {
   return fetchJson(`/api/plan/${id}`, {

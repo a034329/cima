@@ -73,6 +73,26 @@ export function Dashboard() {
         </Link>
       )}
 
+      {(vig?.alertas_plan?.length ?? 0) > 0 && (
+        <section className="rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-900/15 p-4 space-y-2">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+            El precio habilita tu plan
+          </h3>
+          <ul className="text-sm space-y-1">
+            {vig!.alertas_plan!.map((a) => (
+              <li key={a.paso_id} className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-medium">{a.nombre}</span>
+                <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40">{a.decision}</span>
+                <span className="text-[rgb(var(--muted))]">
+                  gatillo {fmtEUR(a.precio_alerta_eur, { maximumFractionDigits: 2 })} · ahora {fmtEUR(a.precio_actual_eur, { maximumFractionDigits: 2 })}
+                </span>
+                {a.razon && <span className="text-xs text-[rgb(var(--muted))]">— {a.razon}</span>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {vig && (vig.alertas.length > 0 || (vig.alertas_intradia?.length ?? 0) > 0) && (
         <section className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/15 p-4 space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">

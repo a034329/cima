@@ -40,6 +40,7 @@ class PasoOut(BaseModel):
     razon: str | None = None
     fecha_objetivo: date | None = None
     notas: str | None = None
+    precio_alerta_eur: Decimal | None = None   # gatillo de alerta plan↔precio (V4)
     orden: int
 
 
@@ -90,6 +91,7 @@ class CrearPasoIn(BaseModel):
     capital_objetivo_eur: Decimal | None = None
     fecha_objetivo: date | None = None
     notas: str | None = None
+    precio_alerta_eur: Decimal | None = None
     # Si el ISIN aún no está en cartera ni en watchlist y la decisión es de
     # compra/hold, el servicio lo añade automáticamente al watchlist (doctrina
     # watchlist-first). `nombre`/`ticker` se usan para enriquecer esa entrada
@@ -122,6 +124,7 @@ class EditarPasoIn(BaseModel):
     capital_objetivo_eur: Decimal | None = None
     fecha_objetivo: date | None = None
     notas: str | None = None
+    precio_alerta_eur: Decimal | None = None
 
 
 def _cartera(db: Session) -> models.Cartera:
@@ -138,7 +141,8 @@ def _to_paso_out(p: models.PlanPaso) -> PasoOut:
     return PasoOut(
         id=p.id, isin=p.isin, decision=p.decision, prioridad=p.prioridad,
         estado=p.estado, capital_objetivo_eur=_q2(p.capital_objetivo_eur),
-        razon=p.razon, fecha_objetivo=p.fecha_objetivo, notas=p.notas, orden=p.orden,
+        razon=p.razon, fecha_objetivo=p.fecha_objetivo, notas=p.notas,
+        precio_alerta_eur=_q2(p.precio_alerta_eur), orden=p.orden,
     )
 
 
@@ -225,6 +229,7 @@ def crear(payload: CrearPasoIn, db: Session = Depends(get_db)) -> PasoOut:
         db, cid, payload.isin, payload.decision, payload.prioridad,
         razon=payload.razon, capital_objetivo_eur=payload.capital_objetivo_eur,
         fecha_objetivo=payload.fecha_objetivo, notas=payload.notas,
+        precio_alerta_eur=payload.precio_alerta_eur,
         nombre=payload.nombre, ticker=payload.ticker,
     )
     # Si el paso se creó tras rebatir una fricción, registrar el override.

@@ -29,9 +29,20 @@ class AlertaOut(BaseModel):
     modo: str = "baseline"          # baseline | intradia
 
 
+class AlertaPlanOut(BaseModel):
+    isin: str
+    nombre: str
+    decision: str
+    precio_alerta_eur: Decimal = Field(decimal_places=2)
+    precio_actual_eur: Decimal = Field(decimal_places=2)
+    paso_id: str
+    razon: str | None = None
+
+
 class VigilanciaOut(BaseModel):
     alertas: list[AlertaOut]                # baseline (compatibilidad)
     alertas_intradia: list[AlertaOut] = []  # vs cierre de ayer
+    alertas_plan: list[AlertaPlanOut] = []  # pasos del plan habilitados por precio (V4)
     desde: str | None = None
 
 
@@ -58,9 +69,16 @@ def get_vigilancia(db: Session = Depends(get_db)) -> VigilanciaOut:
     cid = _cartera(db).id
     alertas, desde = svc.evaluar(db, cid)
     intradia = svc.evaluar_intradia(db, cid)
+    plan = svc.evaluar_plan_precio(db, cid)
     return VigilanciaOut(
         alertas=[_alerta_out(a) for a in alertas],
         alertas_intradia=[_alerta_out(a) for a in intradia],
+        alertas_plan=[AlertaPlanOut(
+            isin=a.isin, nombre=a.nombre, decision=a.decision,
+            precio_alerta_eur=_q2(a.precio_alerta_eur),
+            precio_actual_eur=_q2(a.precio_actual_eur),
+            paso_id=a.paso_id, razon=a.razon,
+        ) for a in plan],
         desde=desde,
     )
 

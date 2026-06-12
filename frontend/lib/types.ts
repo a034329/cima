@@ -152,9 +152,20 @@ export interface AlertaVigilancia {
   modo?: 'baseline' | 'intradia';
 }
 
+export interface AlertaPlanPrecio {
+  isin: string;
+  nombre: string;
+  decision: string;
+  precio_alerta_eur: string;
+  precio_actual_eur: string;
+  paso_id: string;
+  razon: string | null;
+}
+
 export interface Vigilancia {
   alertas: AlertaVigilancia[];                     // vs último "visto" (baseline)
   alertas_intradia?: AlertaVigilancia[];           // vs cierre de ayer (intra-día)
+  alertas_plan?: AlertaPlanPrecio[];               // pasos habilitados por precio (V4)
   desde: string | null;
 }
 
@@ -808,6 +819,7 @@ export interface PasoPlan {
   razon: string | null;
   fecha_objetivo: string | null;
   notas: string | null;
+  precio_alerta_eur: string | null;   // gatillo de alerta plan↔precio (V4)
   orden: number;
 }
 
@@ -884,6 +896,7 @@ export interface PasoPlanIn {
   capital_objetivo_eur?: string | null;
   fecha_objetivo?: string | null;
   notas?: string | null;
+  precio_alerta_eur?: string | null;
   // Datos para auto-añadir al watchlist si el ISIN no está en cartera ni en
   // seguimiento y la decisión es de compra/hold (watchlist-first).
   nombre?: string | null;

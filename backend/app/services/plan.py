@@ -212,6 +212,7 @@ def crear_paso(
     db: Session, cartera_id: str, isin: str, decision: str, prioridad: str,
     *, razon: str | None = None, capital_objetivo_eur: Decimal | None = None,
     fecha_objetivo: date | None = None, notas: str | None = None,
+    precio_alerta_eur: Decimal | None = None,
     reemplazar: bool = True,
     nombre: str | None = None, ticker: str | None = None,
 ) -> models.PlanPaso:
@@ -276,6 +277,7 @@ def crear_paso(
         cartera_id=cartera_id, isin=isin, decision=decision, prioridad=prioridad,
         razon=razon, capital_objetivo_eur=capital_objetivo_eur,
         fecha_objetivo=fecha_objetivo, notas=notas, estado="PENDIENTE",
+        precio_alerta_eur=precio_alerta_eur,
         orden=siguiente,
     )
     db.add(paso)
@@ -293,7 +295,8 @@ def actualizar_paso(
         campos.get("decision"), campos.get("prioridad"), campos.get("estado"),  # type: ignore[arg-type]
     )
     for k in ("decision", "prioridad", "estado", "razon",
-              "capital_objetivo_eur", "fecha_objetivo", "notas"):
+              "capital_objetivo_eur", "fecha_objetivo", "notas",
+              "precio_alerta_eur"):
         if k in campos:
             setattr(paso, k, campos[k])
     db.commit()

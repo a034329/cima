@@ -117,3 +117,54 @@ def marcar_visto(db: Session, cartera_id: str) -> None:
             snap.precio_eur = px
             snap.ts = ahora
     db.commit()
+
+# ── Alertas plan↔precio (V4) ────────────────────────────────────────────────
+
+@dataclass
+class AlertaPlan:
+    isin: str
+    nombre: str
+    decision: str                # COMPRAR / REFORZAR / VENDER / RECORTAR
+    precio_alerta_eur: Decimal
+    precio_actual_eur: Decimal
+    paso_id: str
+    razon: str | None = None
+
+
+_GATILLO_BAJA = {"COMPRAR", "REFORZAR"}     # dispara si px ≤ gatillo
+_GATILLO_SUBE = {"VENDER", "RECORTAR", "VENTA LIMIT"}   # dispara si px ≥ gatillo
+
+
+def evaluar_plan_precio(db: Session, cartera_id: str) -> list[AlertaPlan]:
+    """Cruza los pasos ACTIVOS del plan que tienen precio gatillo con los
+    precios actuales: el plan dice QUÉ hacer; esto avisa de CUÁNDO el precio
+    lo habilita. Sin persistencia — la alerta vive mientras la condición se
+    cumpla y el paso siga activo."""
+    pasos = list(db.execute(
+        select(models.PlanPaso)
+        .where(models.PlanPaso.cartera_id == cartera_id)
+        .where(models.PlanPaso.estado.in_(("PENDIENTE", "EN_CURSO")))
+        .where(models.PlanPaso.precio_alerta_eur.is_not(None))
+    ).scalars())
+    if not pasos:
+        return []
+    precios = _precios_actuales(db, cartera_id)
+    nombres = {p.isin: p.nombre for p in db.execute(
+        select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)).scalars()}
+    alertas: list[AlertaPlan] = []
+    for paso in pasos:
+        px = precios.get(paso.isin)
+        if px is None or px <= 0:
+            continue
+        gatillo = Decimal(str(paso.precio_alerta_eur))
+        dispara = (
+            (paso.decision in _GATILLO_BAJA and px <= gatillo)
+            or (paso.decision in _GATILLO_SUBE and px >= gatillo)
+        )
+        if dispara:
+            alertas.append(AlertaPlan(
+                isin=paso.isin, nombre=nombres.get(paso.isin, paso.isin),
+                decision=paso.decision, precio_alerta_eur=gatillo,
+                precio_actual_eur=px, paso_id=paso.id, razon=paso.razon,
+            ))
+    return alertas

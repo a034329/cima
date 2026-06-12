@@ -251,6 +251,7 @@ type GuardarPayload = {
   capital_objetivo_eur: string | null;
   razon: string | null;
   fecha_objetivo?: string | null;            // deadline (ISO YYYY-MM-DD)
+  precio_alerta_eur?: string | null;         // gatillo de alerta plan↔precio (V4)
   friccion_severidad?: string | null;
   friccion_motivo?: string | null;
 };
@@ -271,6 +272,7 @@ function NuevoPaso({
   const [decision, setDecision] = useState<DecisionPlan>('COMPRAR');
   const [prioridad, setPrioridad] = useState<PrioridadPlan>('MEDIA');
   const [capital, setCapital] = useState('');
+  const [precioAlerta, setPrecioAlerta] = useState('');
   const [razon, setRazon] = useState('');
   const [fechaObjetivo, setFechaObjetivo] = useState('');
   const [friccion, setFriccion] = useState<FriccionResultado | null>(null);
@@ -299,6 +301,7 @@ function NuevoPaso({
     capital_objetivo_eur: capital.trim() ? capital.trim() : null,
     razon: razon.trim() ? razon.trim() : null,
     fecha_objetivo: fechaObjetivo.trim() || null,
+    precio_alerta_eur: precioAlerta.trim() ? precioAlerta.trim() : null,
   });
 
   const onGuardarClick = async () => {
@@ -354,6 +357,14 @@ function NuevoPaso({
           onChange={(e) => setFechaObjetivo(e.target.value)}
           title="Deadline (cuándo debería estar todo hecho). Opcional."
           className="px-2 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))]"
+        />
+        <input
+          value={precioAlerta}
+          onChange={(e) => setPrecioAlerta(e.target.value)}
+          placeholder="Precio gatillo € (opc.)"
+          inputMode="decimal"
+          title="Vigilancia avisará cuando el precio habilite este paso: compras al caer a/bajo el gatillo, ventas al subir a/sobre él"
+          className="px-3 py-1.5 text-sm rounded border border-[rgb(var(--border))] bg-[rgb(var(--bg))] w-40"
         />
         <input
           value={razon}
