@@ -18,6 +18,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import models
 from app.services.fifo import estado_posicion
 
@@ -83,6 +84,7 @@ def _cagr(final: Decimal, inicial: Decimal, anios: int) -> Decimal | None:
 def _calc_item(
     isin: str, nombre: str, e: models.Estimacion | None,
     precio: Decimal | None, divisa: str | None,
+    observadas: dict[str, Decimal] | None = None,
 ) -> EstimacionCalc:
     """Calcula una estimación (precio objetivo, CAGR4, yield…) a partir de la fila
     Estimacion + precio nativo. Compartido por cartera y seguimiento/watchlist."""
@@ -105,7 +107,7 @@ def _calc_item(
     # g_div: campo editable; si falta, se deriva del crecimiento implícito de
     # la métrica capado a [−5%, +20%] (sin métrica → 0, plano conservador).
     from app.services.dividendo_neto import (
-        factor_horizonte_div, pais_de_isin, tipo_efectivo_dividendo,
+        exceso_observado_pct, factor_horizonte_div, pais_de_isin,
     )
     g_div = (Decimal(str(e.crecimiento_div_pct))
              if e is not None and e.crecimiento_div_pct is not None else None)
@@ -114,7 +116,13 @@ def _calc_item(
             g_div = max(Decimal("-0.05"), min(Decimal("0.20"), crec))
         else:
             g_div = Decimal("0")
-    tipo_efectivo = tipo_efectivo_dividendo(pais_de_isin(isin, nombre))
+    # Tipo efectivo CALIBRADO: suelo del ahorro + exceso sobre el tope CDI con
+    # la retención OBSERVADA en los propios dividendos del usuario (el broker
+    # manda: DeGiro retiene 25% en FR aunque la estatutaria de TR sea 12,8%).
+    # Sin historial → estatutaria del vendor, como antes.
+    pais = pais_de_isin(isin, nombre)
+    tipo_efectivo = (Decimal(str(settings.tipo_ahorro_dividendo))
+                     + exceso_observado_pct(pais, isin, observadas))
     yld_neto = (yld * (Decimal("1") - tipo_efectivo)) if yld is not None else None
     div_horizonte = (yld_neto * factor_horizonte_div(g_div)) if yld_neto is not None else None
 
@@ -198,10 +206,12 @@ def _multiplo_consenso_hist(c: dict | None) -> tuple[float | None, str | None]:
 
 
 def calcular_estimaciones(db: Session, cartera_id: str) -> list[EstimacionCalc]:
+    from app.services.dividendo_neto import tasa_origen_observada
     from app.services.precios import precios_nativos
 
     natives = precios_nativos(db, cartera_id)
     filas = _filas_estimacion(db, cartera_id)
+    observadas = tasa_origen_observada(db, cartera_id)
     out: list[EstimacionCalc] = []
     for pos in db.execute(
         select(models.Posicion).where(models.Posicion.cartera_id == cartera_id)
@@ -210,8 +220,9 @@ def calcular_estimaciones(db: Session, cartera_id: str) -> list[EstimacionCalc]:
             continue
         precio, divisa = natives.get(pos.isin, (None, None))
         out.append(_calc_item(pos.isin, pos.nombre or pos.isin,
-                              filas.get(pos.isin), precio, divisa))
-    _enriquecer_etfs_historico(db, cartera_id, out)
+                              filas.get(pos.isin), precio, divisa,
+                              observadas=observadas))
+    _enriquecer_etfs_historico(db, cartera_id, out, observadas=observadas)
     out.sort(key=lambda x: x.nombre.lower())
     return out
 
@@ -231,8 +242,9 @@ def _es_fondo(isin: str | None, nombre: str | None) -> bool:
     return any(k in n for k in _FONDO_KW)
 
 
-def _enriquecer_etfs_historico(db: Session, cartera_id: str,
-                               calcs: list[EstimacionCalc]) -> None:
+def _enriquecer_etfs_historico(db: Session, cartera_id: str,  # noqa: PLR0912
+                               calcs: list[EstimacionCalc],
+                               observadas: dict[str, Decimal] | None = None) -> None:
     """ETF/índice no tienen BPA → el modelo no les da CAGR. Como proxy de retorno
     total usamos el CAGR de PRECIO histórico (máx. ~20a) + el yield actual. Muta
     los calcs en sitio. Best-effort: si falla la red, los deja como estaban."""
@@ -263,10 +275,10 @@ def _enriquecer_etfs_historico(db: Session, cartera_id: str,
                 yld = Decimal(str(div)) / c.precio_actual
         c.cagr4_pct = cagr_precio
         c.div_yield_pct = yld
-        from app.services.dividendo_neto import (
-            pais_de_isin, tipo_efectivo_dividendo,
-        )
-        tipo_ef = tipo_efectivo_dividendo(pais_de_isin(c.isin, c.nombre))
+        from app.services.dividendo_neto import exceso_observado_pct, pais_de_isin
+        tipo_ef = (Decimal(str(settings.tipo_ahorro_dividendo))
+                   + exceso_observado_pct(pais_de_isin(c.isin, c.nombre),
+                                          c.isin, observadas))
         yld_b = yld or Decimal("0")
         c.cagr4_div_bruto_pct = cagr_precio + yld_b
         c.div_yield_neto_pct = yld_b * (Decimal("1") - tipo_ef)
@@ -293,6 +305,8 @@ def calcular_estimaciones_seguimiento(db: Session, cartera_id: str) -> list[Esti
     )
 
     filas = _filas_estimacion(db, cartera_id)
+    from app.services.dividendo_neto import tasa_origen_observada
+    observadas = tasa_origen_observada(db, cartera_id)
     seguimientos = list(db.execute(
         select(models.Seguimiento).where(models.Seguimiento.cartera_id == cartera_id)
     ).scalars())
@@ -331,7 +345,8 @@ def calcular_estimaciones_seguimiento(db: Session, cartera_id: str) -> list[Esti
                         actualizar_ticker = True
         precio, divisa = (pv[0], pv[1]) if pv else (None, s.divisa)
         out.append(_calc_item(s.isin, s.nombre or s.ticker,
-                              filas.get(s.isin), precio, divisa))
+                              filas.get(s.isin), precio, divisa,
+                              observadas=observadas))
     if actualizar_ticker:
         db.commit()
     out.sort(key=lambda x: x.nombre.lower())

@@ -11,8 +11,9 @@ trámite.
   - EXCESO REAL por (país, ejercicio): sobre los dividendos cobrados,
     max(0, retención_origen − bruto × tope_CDI), para todos los ejercicios
     aún dentro del plazo de reclamación del país.
-  - PROYECCIÓN anual: yield estimado × valor de la posición × exceso del
-    país (estatutaria − tope CDI), para anticipar la fuga del año en curso.
+  - PROYECCIÓN anual: yield estimado × valor de la posición × exceso sobre
+    el tope CDI con la retención OBSERVADA en los propios dividendos
+    (respaldo: estatutaria del vendor), para anticipar la fuga del año.
   - RECLAMADO: el usuario marca (país, ejercicio) como ya reclamado
     (tabla `reclamaciones_cdi`) y el panel muestra solo lo pendiente.
 
@@ -33,7 +34,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.services.dividendo_neto import exceso_no_recuperable_pct, pais_de_isin
+from app.services.dividendo_neto import (
+    exceso_no_recuperable_pct, exceso_observado_pct, pais_de_isin,
+    tasa_origen_observada,
+)
 from app.services.fifo import estado_posicion
 
 _CERO = Decimal("0")
@@ -174,6 +178,10 @@ def calcular_fugas(db: Session, cartera_id: str) -> FugasResultado:
     calcs = {c.isin: c for c in calcular_estimaciones(db, cartera_id)}
     real = _exceso_real(db, cartera_id, desde)
     reclamados = _reclamados(db, cartera_id)
+    # Tasas de origen OBSERVADAS en los propios dividendos: la proyección usa
+    # lo que el broker retiene de verdad (DeGiro: FR 25%), no la estatutaria
+    # (12,8% persona física, que es lo que aplica TR). Sin historial → vendor.
+    observadas = tasa_origen_observada(db, cartera_id)
 
     # Exceso real total por ISIN (para el detalle por posición)
     real_por_isin: dict[str, Decimal] = {}
@@ -185,7 +193,8 @@ def calcular_fugas(db: Session, cartera_id: str) -> FugasResultado:
     def _pais_entry(pais: str) -> FugaPais:
         plazo, verificado = plazo_reclamacion(pais)
         return por_pais.setdefault(pais, FugaPais(
-            pais=pais, exceso_pct=exceso_no_recuperable_pct(pais),
+            pais=pais,
+            exceso_pct=exceso_observado_pct(pais, None, observadas),
             fuga_anual_estimada_eur=_CERO,
             reclamable_pendiente_eur=_CERO, reclamado_eur=_CERO,
             fuera_plazo_eur=_CERO,
@@ -204,7 +213,7 @@ def calcular_fugas(db: Session, cartera_id: str) -> FugasResultado:
         real_isin = real_por_isin.get(pos.isin, _CERO)
         pais = (pais_de_isin(pos.isin, pos.nombre) or "").upper()
         isin_a_pais[pos.isin] = pais
-        exceso = exceso_no_recuperable_pct(pais)
+        exceso = exceso_observado_pct(pais, pos.isin, observadas)
         if (cant <= 0 and real_isin <= 0) or (exceso <= 0 and real_isin <= 0):
             continue
 

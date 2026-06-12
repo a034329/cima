@@ -86,3 +86,80 @@ def pais_de_isin(isin: str | None, nombre: str | None = None) -> str | None:
     _ensure_cuadrate_importable()
     import generar_irpf as g  # type: ignore[import-not-found]
     return g._pais_de_isin(isin, nombre or "")
+
+
+def tasa_origen_observada(db, cartera_id: str, ventana_anios: int = 3) -> dict[str, Decimal]:  # type: ignore[no-untyped-def]
+    """Tasa de retención de ORIGEN realmente aplicada por el broker, observada
+    en los dividendos cobrados (ret/bruto ponderado por importe, últimos N
+    años). Claves: ISIN y `"pais:XX"` (agregado del país como respaldo).
+
+    Motivo (caso Francia, 2026-06-12): la estatutaria del vendor para FR es
+    12,8% (tipo de persona física, lo que aplica TR) pero DeGiro/IBKR retienen
+    el 25% general. La tabla legal dice cuánto PUEDES reclamar; lo observado
+    dice cuánto te quitan de verdad — y eso es lo que debe usar el modelo.
+    Se excluye la retención española (crédito 0591, no es de origen)."""
+    from datetime import date
+
+    from sqlalchemy import select
+
+    from app.db import models
+
+    desde = date.today().year - ventana_anios
+    bruto_isin: dict[str, Decimal] = {}
+    ret_isin: dict[str, Decimal] = {}
+    pais_isin: dict[str, str] = {}
+    txs = db.execute(
+        select(models.Transaccion)
+        .where(models.Transaccion.cartera_id == cartera_id)
+        .where(models.Transaccion.estado == "confirmada")
+        .where(models.Transaccion.tipo == "DIVIDEND")
+    ).scalars()
+    for t in txs:
+        if t.fecha.year < desde or t.retencion_pais == "ES":
+            continue
+        isin = t.posicion.isin if t.posicion else None
+        bruto = Decimal(str(t.importe_eur or 0))
+        if not isin or bruto <= 0:
+            continue
+        bruto_isin[isin] = bruto_isin.get(isin, _CERO) + bruto
+        ret_isin[isin] = ret_isin.get(isin, _CERO) + Decimal(str(t.retencion_eur or 0))
+        pais_isin.setdefault(isin, (pais_de_isin(isin, t.posicion.nombre) or "").upper())
+
+    seis = Decimal("0.000001")   # los Out de la API validan max 6 decimales
+    out: dict[str, Decimal] = {}
+    bruto_pais: dict[str, Decimal] = {}
+    ret_pais: dict[str, Decimal] = {}
+    for isin, bruto in bruto_isin.items():
+        out[isin] = (ret_isin[isin] / bruto).quantize(seis)
+        pais = pais_isin.get(isin)
+        if pais:
+            bruto_pais[pais] = bruto_pais.get(pais, _CERO) + bruto
+            ret_pais[pais] = ret_pais.get(pais, _CERO) + ret_isin[isin]
+    for pais, bruto in bruto_pais.items():
+        out[f"pais:{pais}"] = (ret_pais[pais] / bruto).quantize(seis)
+    return out
+
+
+def exceso_observado_pct(
+    pais: str | None, isin: str | None,
+    observadas: dict[str, Decimal] | None,
+) -> Decimal:
+    """Exceso sobre el tope CDI con la tasa OBSERVADA del propio usuario
+    (ISIN → país → estatutaria como respaldo). Es la versión calibrada de
+    `exceso_no_recuperable_pct`: misma semántica, mejor dato."""
+    if not pais:
+        return _CERO
+    topes, _ = _tablas_vendor()
+    tope = topes.get(pais.upper())
+    if tope is None:
+        return exceso_no_recuperable_pct(pais)
+    tasa = None
+    if observadas:
+        if isin and isin in observadas:
+            tasa = observadas[isin]
+        elif f"pais:{pais.upper()}" in observadas:
+            tasa = observadas[f"pais:{pais.upper()}"]
+    if tasa is None:
+        return exceso_no_recuperable_pct(pais)
+    exceso = (tasa - Decimal(str(tope))).quantize(Decimal("0.000001"))
+    return exceso if exceso > 0 else _CERO
