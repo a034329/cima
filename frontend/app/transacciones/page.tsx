@@ -27,13 +27,19 @@ export default async function TransaccionesPage({
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Transacciones</h2>
           <p className="text-sm text-[rgb(var(--muted))]">
             {counts.todas} {counts.todas === 1 ? 'operación' : 'operaciones'} en este filtro
           </p>
         </div>
+        <Link
+          href={`/informe/${new Date().getFullYear()}/${new Date().getMonth() + 1}`}
+          className="text-xs text-brand-600 dark:text-brand-300 hover:underline"
+        >
+          cierre de mes →
+        </Link>
       </div>
 
       {/* Filtros */}
