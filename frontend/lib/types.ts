@@ -1199,6 +1199,14 @@ export interface ComplejosResumen {
 
 // ── Fugas fiscales (exceso CDI no recuperable) ──────────────────────────────
 
+export interface FugaAnio {
+  ejercicio: number;
+  exceso_eur: string;
+  dentro_plazo: boolean;
+  limite: string | null;
+  reclamado: boolean;
+}
+
 export interface FugaPosicion {
   isin: string;
   nombre: string;
@@ -1206,22 +1214,28 @@ export interface FugaPosicion {
   exceso_pct: string;                       // fracción (0.20 = 20 puntos)
   div_anual_estimado_eur: string | null;
   fuga_anual_estimada_eur: string | null;
-  exceso_real_ytd_eur: string;
+  exceso_real_total_eur: string;
 }
 
 export interface FugaPais {
   pais: string;
   exceso_pct: string;
   fuga_anual_estimada_eur: string;
-  exceso_real_ytd_eur: string;
+  reclamable_pendiente_eur: string;
+  reclamado_eur: string;
+  fuera_plazo_eur: string;
+  plazo_anios: number;
+  plazo_verificado: boolean;
   mecanismo: string;
+  anios: FugaAnio[];
   posiciones: FugaPosicion[];
 }
 
 export interface FugasResumen {
   ejercicio: number;
+  ventana_anios: number;
   total_fuga_anual_estimada_eur: string;
-  total_exceso_real_ytd_eur: string;
+  total_reclamable_pendiente_eur: string;
   por_pais: FugaPais[];
 }
 

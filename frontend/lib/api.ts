@@ -790,6 +790,19 @@ export async function fetchFugas(): Promise<FugasResumen> {
   return fetchJson<FugasResumen>('/api/fiscal/fugas');
 }
 
+export async function marcarFugaReclamada(
+  pais: string, ejercicio: number, reclamado: boolean,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/fiscal/fugas/reclamado`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pais, ejercicio, reclamado }),
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`Error ${res.status} al marcar la reclamación`);
+  }
+}
+
 export async function fetchSaludDatos(): Promise<SaludDatos> {
   return fetchJson<SaludDatos>('/api/salud-datos');
 }

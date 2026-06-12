@@ -339,6 +339,14 @@ def get_rotacion(ejercicio: int, db: Session = Depends(get_db)) -> RotacionOut:
 
 # ── Fugas fiscales: retención de origen no recuperable vía 0588 ────────────
 
+class FugaAnioOut(BaseModel):
+    ejercicio: int
+    exceso_eur: Decimal = Field(decimal_places=2)
+    dentro_plazo: bool
+    limite: date | None = None
+    reclamado: bool
+
+
 class FugaPosicionOut(BaseModel):
     isin: str
     nombre: str
@@ -346,32 +354,45 @@ class FugaPosicionOut(BaseModel):
     exceso_pct: Decimal = Field(decimal_places=6)   # DE = 0.11375 (5 decimales)
     div_anual_estimado_eur: Decimal | None = None
     fuga_anual_estimada_eur: Decimal | None = None
-    exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
+    exceso_real_total_eur: Decimal = Field(decimal_places=2)
 
 
 class FugaPaisOut(BaseModel):
     pais: str
     exceso_pct: Decimal = Field(decimal_places=6)   # DE = 0.11375 (5 decimales)
     fuga_anual_estimada_eur: Decimal = Field(decimal_places=2)
-    exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
+    reclamable_pendiente_eur: Decimal = Field(decimal_places=2)
+    reclamado_eur: Decimal = Field(decimal_places=2)
+    fuera_plazo_eur: Decimal = Field(decimal_places=2)
+    plazo_anios: int
+    plazo_verificado: bool
     mecanismo: str
+    anios: list[FugaAnioOut]
     posiciones: list[FugaPosicionOut]
 
 
 class FugasOut(BaseModel):
     ejercicio: int
+    ventana_anios: int
     total_fuga_anual_estimada_eur: Decimal = Field(decimal_places=2)
-    total_exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
+    total_reclamable_pendiente_eur: Decimal = Field(decimal_places=2)
     por_pais: list[FugaPaisOut]
 
 
+class ReclamadoIn(BaseModel):
+    pais: str
+    ejercicio: int
+    reclamado: bool
+    notas: str | None = None
+
+
 @router.get("/fugas", response_model=FugasOut,
-            summary="Fugas fiscales: retención de origen NO recuperable vía 0588")
+            summary="Fugas fiscales: exceso CDI reclamable por país y año (ventana de plazos)")
 def get_fugas(db: Session = Depends(get_db)) -> FugasOut:
-    """Cuantifica el dinero que se queda en el fisco extranjero por encima
-    del tope del CDI (solo recuperable reclamando al país de origen):
-    exceso REAL del ejercicio sobre dividendos ya cobrados + PROYECCIÓN
-    anual sobre el yield estimado de cada posición."""
+    """Exceso de retención de origen sobre el tope CDI, por país y AÑO, dentro
+    de la ventana de reclamación de cada país (CH 3 / DE 4 / FR 2 / IT 4 /
+    BE-DK 5 años). Incluye la proyección anual y lo ya marcado como
+    reclamado por el usuario."""
     from app.services.fugas_fiscales import calcular_fugas
 
     cartera = db.execute(select(models.Cartera)).scalars().first()
@@ -383,22 +404,47 @@ def get_fugas(db: Session = Depends(get_db)) -> FugasOut:
     r = calcular_fugas(db, cartera.id)
     return FugasOut(
         ejercicio=r.ejercicio,
+        ventana_anios=r.ventana_anios,
         total_fuga_anual_estimada_eur=r.total_fuga_anual_estimada_eur,
-        total_exceso_real_ytd_eur=r.total_exceso_real_ytd_eur,
+        total_reclamable_pendiente_eur=r.total_reclamable_pendiente_eur,
         por_pais=[FugaPaisOut(
             pais=p.pais, exceso_pct=p.exceso_pct,
             fuga_anual_estimada_eur=p.fuga_anual_estimada_eur,
-            exceso_real_ytd_eur=p.exceso_real_ytd_eur,
+            reclamable_pendiente_eur=p.reclamable_pendiente_eur,
+            reclamado_eur=p.reclamado_eur,
+            fuera_plazo_eur=p.fuera_plazo_eur,
+            plazo_anios=p.plazo_anios, plazo_verificado=p.plazo_verificado,
             mecanismo=p.mecanismo,
+            anios=[FugaAnioOut(
+                ejercicio=a.ejercicio, exceso_eur=a.exceso_eur,
+                dentro_plazo=a.dentro_plazo, limite=a.limite,
+                reclamado=a.reclamado,
+            ) for a in p.anios],
             posiciones=[FugaPosicionOut(
                 isin=x.isin, nombre=x.nombre, pais=x.pais,
                 exceso_pct=x.exceso_pct,
                 div_anual_estimado_eur=x.div_anual_estimado_eur,
                 fuga_anual_estimada_eur=x.fuga_anual_estimada_eur,
-                exceso_real_ytd_eur=x.exceso_real_ytd_eur,
+                exceso_real_total_eur=x.exceso_real_total_eur,
             ) for x in p.posiciones],
         ) for p in r.por_pais],
     )
+
+
+@router.post("/fugas/reclamado", status_code=status.HTTP_204_NO_CONTENT,
+             summary="Marcar/desmarcar un (país, ejercicio) como ya reclamado")
+def post_fugas_reclamado(payload: ReclamadoIn,
+                         db: Session = Depends(get_db)) -> None:
+    from app.services.fugas_fiscales import marcar_reclamado
+
+    cartera = db.execute(select(models.Cartera)).scalars().first()
+    if cartera is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hay cartera. Llama primero a POST /api/bootstrap",
+        )
+    marcar_reclamado(db, cartera.id, payload.pais, payload.ejercicio,
+                     payload.reclamado, payload.notas)
 
 
 @router.get(

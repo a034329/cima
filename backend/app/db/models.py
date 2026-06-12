@@ -940,6 +940,31 @@ class PropuestaRegimen(Base):
     )
 
 
+class ReclamacionCDI(Base):
+    """Marca de 'ya reclamado' del exceso de retención de origen de un
+    (país, ejercicio) en el panel de fugas fiscales. Las reclamaciones al
+    fisco extranjero se presentan por año natural, así que esa es la
+    granularidad: marcar un año entero de un país como gestionado."""
+
+    __tablename__ = "reclamaciones_cdi"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    cartera_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("carteras.id", ondelete="CASCADE"), nullable=False
+    )
+    pais: Mapped[str] = mapped_column(String(2), nullable=False)
+    ejercicio: Mapped[int] = mapped_column(Integer, nullable=False)
+    notas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("cartera_id", "pais", "ejercicio",
+                         name="uq_reclamacion_cdi"),
+    )
+
+
 class SnapshotPrecio(Base):
     """Precio base por posición = la última vez que el usuario dio por 'visto' la
     vigilancia. La alerta es el cambio del precio actual frente a este baseline."""

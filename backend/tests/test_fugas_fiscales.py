@@ -72,10 +72,14 @@ def test_exceso_real_ch(db, cartera, broker_degiro, pos_ch, monkeypatch) -> None
                 pais="CH"))
     db.commit()
     r = ff.calcular_fugas(db, cartera.id)
-    assert r.total_exceso_real_ytd_eur == Decimal("20.00")
-    assert r.por_pais[0].pais == "CH"
-    assert "85" in r.por_pais[0].mecanismo  # formulario 85 ESTV
-    assert r.por_pais[0].posiciones[0].exceso_real_ytd_eur == Decimal("20.00")
+    p = r.por_pais[0]
+    assert p.pais == "CH"
+    assert "85" in p.mecanismo  # formulario 85 ESTV
+    assert p.reclamable_pendiente_eur == Decimal("20.00")
+    assert r.total_reclamable_pendiente_eur == Decimal("20.00")
+    assert p.posiciones[0].exceso_real_total_eur == Decimal("20.00")
+    a = p.anios[0]
+    assert a.ejercicio == date.today().year and a.dentro_plazo and not a.reclamado
 
 
 def test_retencion_es_no_es_fuga(db, cartera, broker_degiro, pos_ch,
@@ -88,7 +92,7 @@ def test_retencion_es_no_es_fuga(db, cartera, broker_degiro, pos_ch,
     db.commit()
     r = ff.calcular_fugas(db, cartera.id)
     assert r.por_pais == []
-    assert r.total_exceso_real_ytd_eur == Decimal("0.00")
+    assert r.total_reclamable_pendiente_eur == Decimal("0.00")
 
 
 def test_us_dentro_de_tope_sin_fuga(db, cartera, broker_degiro, pos_us,
@@ -181,9 +185,59 @@ def test_out_admite_excesos_con_5_decimales() -> None:
     x = FugaPosicionOut(isin="DE0007164600", nombre="SAP", pais="DE",
                         exceso_pct=Decimal("0.11375"),
                         div_anual_estimado_eur=None, fuga_anual_estimada_eur=None,
-                        exceso_real_ytd_eur=Decimal("0.00"))
+                        exceso_real_total_eur=Decimal("0.00"))
     p = FugaPaisOut(pais="DE", exceso_pct=Decimal("0.11375"),
                     fuga_anual_estimada_eur=Decimal("0.00"),
-                    exceso_real_ytd_eur=Decimal("0.00"),
-                    mecanismo="BZSt", posiciones=[x])
+                    reclamable_pendiente_eur=Decimal("0.00"),
+                    reclamado_eur=Decimal("0.00"),
+                    fuera_plazo_eur=Decimal("0.00"),
+                    plazo_anios=4, plazo_verificado=True,
+                    mecanismo="BZSt", anios=[], posiciones=[x])
     assert p.exceso_pct == Decimal("0.11375")
+
+
+def test_ventana_multianio_y_plazos(db, cartera, broker_degiro, pos_ch,
+                                    monkeypatch) -> None:
+    """CH (plazo 3 años): dividendos de varios años — los de hace ≤3 años son
+    reclamables; el de hace 4 está prescrito (fuera_plazo)."""
+    _sin_proyeccion(monkeypatch)
+    hoy = date.today().year
+    for anios_atras, ret in ((0, 35), (2, 35), (3, 35), (4, 35)):
+        db.add(_div(cartera=cartera, broker=broker_degiro, posicion=pos_ch,
+                    fecha=date(hoy - anios_atras, 4, 1), bruto=100,
+                    retencion=ret, pais="CH"))
+    db.commit()
+    r = ff.calcular_fugas(db, cartera.id)
+    p = r.por_pais[0]
+    assert p.plazo_anios == 3 and p.plazo_verificado
+    # 4 años de exceso de 20 €; el de hace 4 años (límite 31-dic hace 1) prescrito
+    assert p.reclamable_pendiente_eur == Decimal("60.00")
+    assert p.fuera_plazo_eur == Decimal("20.00")
+    por_anio = {a.ejercicio: a for a in p.anios}
+    assert not por_anio[hoy - 4].dentro_plazo
+    assert por_anio[hoy - 3].dentro_plazo   # límite 31-dic de este año
+    assert por_anio[hoy - 3].limite == date(hoy, 12, 31)
+
+
+def test_marcar_reclamado_descuenta(db, cartera, broker_degiro, pos_ch,
+                                    monkeypatch) -> None:
+    _sin_proyeccion(monkeypatch)
+    hoy = date.today().year
+    db.add_all([
+        _div(cartera=cartera, broker=broker_degiro, posicion=pos_ch,
+             fecha=date(hoy, 4, 1), bruto=100, retencion=35, pais="CH"),
+        _div(cartera=cartera, broker=broker_degiro, posicion=pos_ch,
+             fecha=date(hoy - 1, 4, 1), bruto=100, retencion=35, pais="CH"),
+    ])
+    db.commit()
+    ff.marcar_reclamado(db, cartera.id, "CH", hoy - 1, True)
+    r = ff.calcular_fugas(db, cartera.id)
+    p = r.por_pais[0]
+    assert p.reclamable_pendiente_eur == Decimal("20.00")   # solo el año en curso
+    assert p.reclamado_eur == Decimal("20.00")
+    assert {a.ejercicio: a.reclamado for a in p.anios} == {hoy: False, hoy - 1: True}
+    # Desmarcar es idempotente y lo devuelve a pendiente
+    ff.marcar_reclamado(db, cartera.id, "CH", hoy - 1, False)
+    ff.marcar_reclamado(db, cartera.id, "CH", hoy - 1, False)
+    r = ff.calcular_fugas(db, cartera.id)
+    assert r.por_pais[0].reclamable_pendiente_eur == Decimal("40.00")
