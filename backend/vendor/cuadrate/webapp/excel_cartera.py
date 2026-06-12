@@ -733,8 +733,10 @@ def generate_cartera_xlsx(
     if opciones_totales is not None and "pl_neto" in opciones_totales:
         opt_pl = opciones_totales.get("pl_neto")
 
-    # T-Bills (Letras del Tesoro, casilla 0030) — solo IBKR.
-    # Son DECLARABLES por defecto: Art. 25.2 LIRPF no admite minimis.
+    # T-Bills extranjeras (casilla 0031 — otros activos financieros; la
+    # 0030 es solo Letras del Tesoro ESPAÑOLAS, corrección 2026-06-12) —
+    # solo IBKR. Son DECLARABLES por defecto: Art. 25.2 LIRPF no admite
+    # minimis.
     tbills_total = None
     if fx_pl and fx_pl.get("tbills"):
         tbills_total = sum(
@@ -817,7 +819,10 @@ def generate_cartera_xlsx(
                                if s.get("asset")}),
         } if tr_staking else None),
     }
-    # Casilla 0030 — Letras del Tesoro (sólo si IBKR aporta T-Bills).
+    # Casilla 0031 — otros activos financieros (sólo si IBKR aporta
+    # T-Bills). La CLAVE del sidecar sigue siendo 'casilla_0030' por
+    # compatibilidad con pdf_generator y sidecars históricos; el número
+    # mostrado al usuario es 0031 (corrección doctrinal 2026-06-12).
     # FX (Art. 33 LIRPF) NO entra al sidecar: aplica minimis y la decisión
     # es del usuario (sigue como informativo en el Resumen).
     if tbills_total is not None and tbills_total != 0:
@@ -2902,7 +2907,7 @@ def _build_treasury_bills(wb, ejercicio: int, fecha_gen: str, tbills_rows: list[
                         "Unrealized Performance Summary' del Activity Statement IBKR. "
                         "El P&L realizado es el INTERÉS implícito al redimir/vender el "
                         "T-Bill. Tributa como rendimiento de capital mobiliario "
-                        "(intereses) — Renta 2025: casilla 0030 (T-Bills) o 0027 (intereses). Si IBKR retuvo en "
+                        "(intereses) — Renta 2025: casilla 0031 (T-Bills, otros activos financieros) o 0027 (intereses). Si IBKR retuvo en "
                         "origen sobre el T-Bill, ver sección Withholding Tax y declarar "
                         "en casilla 0588 (CDI tope 10% para US según convenio).")
     leg.font = FONT_MUTED
@@ -3716,11 +3721,12 @@ def _build_resumen(wb, ejercicio: int, fecha_gen: str,
              "tolerancia práctica AEAT para diferencias <~1.000 EUR)",
              fx_total_ref, "Forex", informativo=True)
 
-    # Treasury Bills (IBKR) — Letras del Tesoro, casilla 0030 RCM
-    # (Art. 25.2 LIRPF, Renta 2025).
+    # Treasury Bills (IBKR) — casilla 0031 'otros activos financieros'
+    # (Art. 25.2 LIRPF; la 0030 es solo Letras del Tesoro españolas —
+    # corrección doctrinal 2026-06-12).
     if tbills_total_ref is not None:
-        fila("0030", "Rendimientos del capital mobiliario — Letras del Tesoro "
-             "(transmisión/amortización)",
+        fila("0031", "Rendimientos del capital mobiliario — T-Bills, otros "
+             "activos financieros (transmisión/amortización)",
              tbills_total_ref, "Treasury_Bills", bold=True)
 
     # Intereses IBKR (Credit + Bond Interest) — DECLARABLE: RCM, casilla 0027.

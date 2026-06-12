@@ -1,6 +1,6 @@
 {
   "source": "/app/720",
-  "copied_at": "2026-06-12T16:57:55.652130+00:00",
+  "copied_at": "2026-06-12T17:05:18.444293+00:00",
   "files": {
     "irpf/motor_fiscal.py": "cb2ae6d4dd274c2d6abb09c737c38c349680f54121dcdbb6f5d5c943214d23ad",
     "irpf/generar_irpf.py": "bb036881940848fab909b6dca5cde100b68588efa026cb0eb095fc52b00c808a",
@@ -12,7 +12,7 @@
     "irpf/socimi_es_isin_list.json": "c581b3eee9f1533be90ebc0f5740c3b6b1cb63f52656df3c67542c658e3949a5",
     "irpf/ecb_fx_cache.json": "ba1c8b28a12351febf02997a1c48fbd28702a4eb6ad2b12a929a6460a301b7ab",
     "casillas_irpf.json": "0a6f118a908a5a19f38bf1a2c53718e6012e165ac708ad7632a4c76c2fd7753b",
-    "webapp/excel_cartera.py": "3b8196c046735ba0d7b8223109d2c4660f228556b382435e341decb933d885ff",
+    "webapp/excel_cartera.py": "ce9619f4d72c1a74fe6c7e79e3831fb987bd4e0107bd352bc9c702cd6ebf31e0",
     "webapp/clasificacion_origen.py": "e96ea080413f4da3364a9058fa93cdc0a75b9010e016b28481c5a6985ec850c2",
     "webapp/pdf_generator.py": "548b3e019db3c021231adc4fde82db4182f91811100904fe3f18d5564302aa90",
     "webapp/pdf_portfolio.py": "827dc0e45d1e563bcd382c186134c34f47baf8c5afb8ee928bd9785f4f68f06a",
