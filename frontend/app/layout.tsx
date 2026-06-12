@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Fraunces, Inter, IBM_Plex_Mono } from 'next/font/google';
 import { ChatWidget } from '@/components/ChatWidget';
+import { SaludDatosBadge } from '@/components/SaludDatosBadge';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Wordmark } from '@/components/Wordmark';
 import './globals.css';
@@ -53,6 +54,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </span>
             </Link>
             <div className="flex items-center gap-6">
+              <SaludDatosBadge />
               <nav className="flex gap-5 text-sm">
                 {NAV.map((n) => (
                   <Link

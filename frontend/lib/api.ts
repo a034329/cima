@@ -9,6 +9,7 @@ import type {
   ImportResultado,
   InteresesResumen,
   FugasResumen,
+  SaludDatos,
   OpcionesResumen,
   PosicionesResumen,
   ResumenFiscal,
@@ -784,4 +785,8 @@ export function fmtNum(n: string | number, opts: Intl.NumberFormatOptions = {}):
 
 export async function fetchFugas(): Promise<FugasResumen> {
   return fetchJson<FugasResumen>('/api/fiscal/fugas');
+}
+
+export async function fetchSaludDatos(): Promise<SaludDatos> {
+  return fetchJson<SaludDatos>('/api/salud-datos');
 }

@@ -1210,3 +1210,14 @@ export interface FugasResumen {
   total_exceso_real_ytd_eur: string;
   por_pais: FugaPais[];
 }
+
+// ── Salud / frescura de datos ───────────────────────────────────────────────
+
+export interface SaludDatos {
+  precios_ts: string | null;
+  fx_ts: string | null;
+  fundamentales_ts: string | null;
+  ultimo_import_ts: string | null;
+  ultimo_import_desc: string | null;
+  ultima_transaccion: string | null;
+}

@@ -22,7 +22,7 @@ from app.routers import (
     analisis, aportaciones, asesor, auditoria, bills, bloques, bootstrap, cartera, complejos, config,
     cuadrate, dashboard, dividendos, estimaciones, fiscal, forex, health, hoja_ruta, importar,
     intereses, liquidez, mantenimiento, onboarding, opciones, paso0, plan, posiciones,
-    regimen, seguimiento, transacciones, vigilancia,
+    regimen, salud_datos, seguimiento, transacciones, vigilancia,
 )
 
 
@@ -104,6 +104,7 @@ app.include_router(asesor.router, prefix="/api")
 app.include_router(vigilancia.router, prefix="/api")
 app.include_router(hoja_ruta.router, prefix="/api")
 app.include_router(cuadrate.router, prefix="/api")
+app.include_router(salud_datos.router, prefix="/api")
 
 
 @app.get("/", include_in_schema=False)
