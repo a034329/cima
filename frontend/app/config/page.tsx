@@ -112,6 +112,7 @@ export default function ConfigPage() {
       {/* Brokers */}
       <section className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-4">
         <h3 className="font-semibold mb-3">Brokers</h3>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-[rgb(var(--muted))]">
             <tr className="text-left border-b border-[rgb(var(--border))]">
@@ -134,6 +135,7 @@ export default function ConfigPage() {
             ))}
           </tbody>
         </table>
+        </div>
         <p className="text-xs text-[rgb(var(--muted))] mt-3">
           El saldo reportado es el del último extracto importado (DEGIRO/IBKR). Trade Republic y los
           demás no reportan saldo final → su liquidez se calcula de los flujos.

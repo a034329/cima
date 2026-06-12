@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Fraunces, Inter, IBM_Plex_Mono } from 'next/font/google';
 import { ChatWidget } from '@/components/ChatWidget';
+import { MobileNav } from '@/components/MobileNav';
 import { SaludDatosBadge } from '@/components/SaludDatosBadge';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Wordmark } from '@/components/Wordmark';
@@ -34,6 +35,11 @@ const NAV = [
   { href: `/fiscal/${new Date().getFullYear()}`, label: 'Fiscalidad' },
   { href: '/transacciones', label: 'Movimientos' },
 ];
+const NAV_MOVIL = [
+  ...NAV,
+  { href: `/informe/${new Date().getFullYear()}/${new Date().getMonth() + 1}`, label: 'Cierre de mes' },
+  { href: '/config', label: 'Configuración' },
+];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -45,8 +51,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: noFlash }} />
       </head>
       <body className="min-h-screen font-sans antialiased">
-        <header className="border-b border-[rgb(var(--border))] bg-[rgb(var(--card))]/80 backdrop-blur sticky top-0 z-30">
-          <div className="mx-auto max-w-6xl px-6 py-3 flex items-center justify-between gap-4">
+        <header className="relative border-b border-[rgb(var(--border))] bg-[rgb(var(--card))]/80 backdrop-blur sticky top-0 z-30">
+          <div className="mx-auto max-w-6xl px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
             <Link href="/" className="flex items-baseline gap-2.5 group">
               <Wordmark className="text-xl" />
               <span className="hidden sm:inline text-xs text-[rgb(var(--muted))] tracking-wide">
@@ -55,7 +61,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <div className="flex items-center gap-6">
               <SaludDatosBadge />
-              <nav className="flex gap-5 text-sm">
+              <nav className="hidden md:flex gap-5 text-sm">
                 {NAV.map((n) => (
                   <Link
                     key={n.href}
@@ -70,15 +76,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 href="/config"
                 aria-label="Configuración"
                 title="Configuración"
-                className="text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))] transition-colors text-base leading-none"
+                className="hidden md:inline text-[rgb(var(--muted))] hover:text-[rgb(var(--fg))] transition-colors text-base leading-none"
               >
                 ⚙
               </Link>
               <ThemeToggle />
+              <MobileNav items={NAV_MOVIL} />
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+        <main className="mx-auto max-w-6xl px-4 sm:px-6 py-8">{children}</main>
         <footer className="border-t border-[rgb(var(--border))] mt-16">
           <div className="mx-auto max-w-6xl px-6 py-5 flex items-center justify-between flex-wrap gap-2 text-xs text-[rgb(var(--muted))]">
             <span>

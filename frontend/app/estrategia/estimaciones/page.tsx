@@ -102,7 +102,7 @@ export default function EstimacionesPage() {
       )}
 
       {data && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Card label="Yield estimado" value={data.yield_estimado_pct ? fmtPct(data.yield_estimado_pct, 2) : '—'} />
           <Card label="CAGR4 + Div ponderado" value={data.cagr4_div_ponderado_pct ? fmtPct(data.cagr4_div_ponderado_pct, 1) : '—'} destacado />
           <Card label="Cobertura" value={fmtPct(data.cobertura, 0)} sub="del valor con estimación" />
