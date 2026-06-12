@@ -343,7 +343,7 @@ class FugaPosicionOut(BaseModel):
     isin: str
     nombre: str
     pais: str
-    exceso_pct: Decimal = Field(decimal_places=4)
+    exceso_pct: Decimal = Field(decimal_places=6)   # DE = 0.11375 (5 decimales)
     div_anual_estimado_eur: Decimal | None = None
     fuga_anual_estimada_eur: Decimal | None = None
     exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
@@ -351,7 +351,7 @@ class FugaPosicionOut(BaseModel):
 
 class FugaPaisOut(BaseModel):
     pais: str
-    exceso_pct: Decimal = Field(decimal_places=4)
+    exceso_pct: Decimal = Field(decimal_places=6)   # DE = 0.11375 (5 decimales)
     fuga_anual_estimada_eur: Decimal = Field(decimal_places=2)
     exceso_real_ytd_eur: Decimal = Field(decimal_places=2)
     mecanismo: str

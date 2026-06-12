@@ -171,3 +171,19 @@ def test_endpoint_fugas_no_choca_con_ruta_dinamica(monkeypatch) -> None:
     finally:
         app.dependency_overrides.clear()
         engine.dispose()
+
+
+def test_out_admite_excesos_con_5_decimales() -> None:
+    """Regresión: el exceso alemán (26,375% − 15% = 0.11375) tiene 5 decimales
+    y Field(decimal_places=4) lo rechazaba → 500 en /fiscal/fugas."""
+    from app.routers.fiscal import FugaPaisOut, FugaPosicionOut
+
+    x = FugaPosicionOut(isin="DE0007164600", nombre="SAP", pais="DE",
+                        exceso_pct=Decimal("0.11375"),
+                        div_anual_estimado_eur=None, fuga_anual_estimada_eur=None,
+                        exceso_real_ytd_eur=Decimal("0.00"))
+    p = FugaPaisOut(pais="DE", exceso_pct=Decimal("0.11375"),
+                    fuga_anual_estimada_eur=Decimal("0.00"),
+                    exceso_real_ytd_eur=Decimal("0.00"),
+                    mecanismo="BZSt", posiciones=[x])
+    assert p.exceso_pct == Decimal("0.11375")
