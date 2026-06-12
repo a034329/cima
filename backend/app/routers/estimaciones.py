@@ -159,3 +159,24 @@ def editar(isin: str, payload: EstimacionIn, db: Session = Depends(get_db)) -> N
         meta.pop("revisar_tipo_val", None)
         e.consenso_json = json.dumps(meta)
     db.commit()
+
+
+# ── Salud del dividendo (V6) ────────────────────────────────────────────────
+
+class SaludDividendoOut(BaseModel):
+    isin: str
+    nivel: str                      # ALTA | MEDIA | RIESGO | SIN_DATOS
+    motivo: str
+    fcf_cobertura: float | None = None
+    payout: float | None = None
+
+
+@router.get("/salud-dividendo", response_model=list[SaludDividendoOut],
+            summary="Score de salud del dividendo por posición (cobertura FCF + payout)")
+def get_salud_dividendo(db: Session = Depends(get_db)) -> list[SaludDividendoOut]:
+    from app.services.salud_dividendo import evaluar
+    c = _cartera(db)
+    return [SaludDividendoOut(
+        isin=s.isin, nivel=s.nivel, motivo=s.motivo,
+        fcf_cobertura=s.fcf_cobertura, payout=s.payout,
+    ) for s in evaluar(db, c.id).values()]

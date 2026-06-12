@@ -5,12 +5,13 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   editarEstimacion,
   fetchEstimaciones,
+  fetchSaludDividendo,
   fmtEUR,
   fmtNum,
   fmtPct,
   prefillEstimaciones,
 } from '@/lib/api';
-import type { EstimacionItem, EstimacionesResumen, TipoVal } from '@/lib/types';
+import type { EstimacionItem, EstimacionesResumen, SaludDividendo, TipoVal } from '@/lib/types';
 import { parseNumEs } from '@/lib/num';
 
 // Precio en su DIVISA NATIVA (las estimaciones son agnósticas de divisa): €
@@ -34,6 +35,7 @@ export default function EstimacionesPage() {
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [filtro, setFiltro] = useState('');
+  const [salud, setSalud] = useState<Record<string, SaludDividendo>>({});
 
   const cargar = useCallback(async () => {
     try {
@@ -42,6 +44,11 @@ export default function EstimacionesPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+    // Score de salud del dividendo (V6): best-effort, no bloquea la tabla.
+    try {
+      const lista = await fetchSaludDividendo();
+      setSalud(Object.fromEntries(lista.map((x) => [x.isin, x])));
+    } catch { /* sin fundamentales cacheados aún */ }
   }, []);
 
   useEffect(() => {
@@ -141,7 +148,7 @@ export default function EstimacionesPage() {
           <tbody className="font-mono">
             {data?.estimaciones
               .filter((e) => !filtro || e.nombre.toLowerCase().includes(filtro.toLowerCase()))
-              .map((e) => <Fila key={e.isin} e={e} onGuardar={guardar} />)}
+              .map((e) => <Fila key={e.isin} e={e} salud={salud[e.isin]} onGuardar={guardar} />)}
           </tbody>
         </table>
       </div>
@@ -169,8 +176,16 @@ function desgloseCagr(e: EstimacionItem): string | null {
   return lineas.join('\n');
 }
 
-function Fila({ e, onGuardar }: {
+const SALUD_COLOR: Record<string, string> = {
+  ALTA: 'bg-emerald-500',
+  MEDIA: 'bg-amber-500',
+  RIESGO: 'bg-rose-500',
+  SIN_DATOS: 'bg-zinc-400',
+};
+
+function Fila({ e, salud, onGuardar }: {
   e: EstimacionItem;
+  salud?: SaludDividendo;
   onGuardar: (isin: string, campos: Record<string, unknown>) => Promise<void>;
 }) {
   const pct = (v: string | null, dp = 1) =>
@@ -203,7 +218,15 @@ function Fila({ e, onGuardar }: {
       <td className="px-2 text-right">{precioNativo(e.precio_objetivo, e.divisa)}</td>
       <td className="px-2 text-right text-[rgb(var(--muted))]">{pct(e.crecimiento_pct)}</td>
       <td className={`px-2 text-right ${colorPct(e.cagr4_pct)}`}>{pct(e.cagr4_pct)}</td>
-      <td className="px-2 text-right text-[rgb(var(--muted))]">{pct(e.div_yield_pct, 2)}</td>
+      <td className="px-2 text-right text-[rgb(var(--muted))] whitespace-nowrap">
+        {salud && (
+          <span
+            title={`Salud del dividendo: ${salud.nivel} — ${salud.motivo}`}
+            className={`inline-block w-2 h-2 rounded-full mr-1 align-middle cursor-help ${SALUD_COLOR[salud.nivel] ?? 'bg-zinc-400'}`}
+          />
+        )}
+        {pct(e.div_yield_pct, 2)}
+      </td>
       <td
         className={`px-2 text-right font-semibold ${colorPct(e.cagr4_div_pct)}`}
         title={desgloseCagr(e) ?? undefined}

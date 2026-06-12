@@ -1235,3 +1235,13 @@ export interface SaludDatos {
   ultimo_import_desc: string | null;
   ultima_transaccion: string | null;
 }
+
+// ── Salud del dividendo (V6) ────────────────────────────────────────────────
+
+export interface SaludDividendo {
+  isin: string;
+  nivel: 'ALTA' | 'MEDIA' | 'RIESGO' | 'SIN_DATOS';
+  motivo: string;
+  fcf_cobertura: number | null;
+  payout: number | null;
+}

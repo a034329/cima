@@ -10,6 +10,7 @@ import type {
   InteresesResumen,
   FugasResumen,
   SaludDatos,
+  SaludDividendo,
   OpcionesResumen,
   PosicionesResumen,
   ResumenFiscal,
@@ -797,4 +798,8 @@ export async function restaurarTransaccion(txId: string): Promise<TransaccionOut
     `/api/transacciones/${encodeURIComponent(txId)}/restaurar`,
     { method: 'POST' },
   );
+}
+
+export async function fetchSaludDividendo(): Promise<SaludDividendo[]> {
+  return fetchJson<SaludDividendo[]>('/api/estimaciones/salud-dividendo');
 }

@@ -381,6 +381,21 @@ def obtener_cierres_anteriores_eur(
 _TTL_FUND = 7 * 24 * 3600   # fundamentales cambian lento
 
 
+def _cobertura_fcf(info: dict) -> float | None:
+    """FCF / dividendo total pagado (free cash flow cubre N veces el
+    dividendo). >1,5 holgado · 1,1-1,5 ajustado · <1,1 dividendo en riesgo
+    (umbral del protocolo de rotaciones de WG)."""
+    fcf = info.get("freeCashflow")
+    dps = info.get("dividendRate")
+    shares = info.get("sharesOutstanding")
+    if not all(isinstance(x, (int, float)) for x in (fcf, dps, shares)):
+        return None
+    div_total = dps * shares
+    if div_total <= 0:
+        return None
+    return fcf / div_total
+
+
 def _fetch_fundamentales(sim: str) -> dict | None:
     try:
         import yfinance as yf  # type: ignore[import-not-found]
@@ -447,6 +462,11 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             # ROE como proxy de calidad: ROIC no está en .info; returnOnEquity sí
             # (fracción, p.ej. 0.37 = 37%). Apalancado, pero útil para el corte.
             "roe": info.get("returnOnEquity"),
+            # Salud del dividendo (V6). Cobertura FCF calculada con valores
+            # CRUDOS de yfinance (FCF, DPS y nº acciones en la misma divisa
+            # financiera — sin el escalado GBp, que rompería las unidades).
+            "payout": info.get("payoutRatio"),   # sobre beneficios (fracción)
+            "fcf_cobertura_div": _cobertura_fcf(info),
             "dps_hist": dps_hist,    # DPS anual real (oldest→newest, años completos)
         }
     except Exception:
