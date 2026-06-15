@@ -1,9 +1,9 @@
 {
   "source": "/app/720",
-  "copied_at": "2026-06-15T07:29:24.972001+00:00",
+  "copied_at": "2026-06-15T07:54:32.232182+00:00",
   "files": {
     "irpf/motor_fiscal.py": "fc4286da6be40c5debbfc65ab01142a130a4e29e9dbf037c0e5dd4afec4514cf",
-    "irpf/generar_irpf.py": "e9d5ebdb8b4a1299af4ae946c65c84ce2e2e8b22397ffd5f1ccabfe85f1d76e4",
+    "irpf/generar_irpf.py": "f05f7aecc81f576f657e97c3ec087cf9b74f668fefc263b0e51ca6f815c51b73",
     "irpf/compensacion_perdidas.py": "8ae9cbbdcba4e5d4e7f45dafcd5121fa400abb11c6092f2c01a740b9eae0ef5e",
     "irpf/instrument_classifier.py": "098421a8287d7202f200a51f6cde25d466207fe890ea16b34f81c71979454582",
     "irpf/derechos_clasificados.json": "ac1c7841a5491120545bea561a206c8557a063463b887fd7822ef57eecf4dc32",

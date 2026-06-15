@@ -3573,9 +3573,39 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                     if not fecha:
                         continue
 
+                    # La sección Corporate Actions de IBKR NO trae columnas
+                    # Symbol/ISIN: el ticker y el ISIN van EMBEBIDOS en la
+                    # descripción, "TICKER(ISIN) <evento> ...". Extraerlos de ahí
+                    # (verificado en datos reales). `symbol`/`isin_col` se mantienen
+                    # como fuente preferente por si una variante del export sí los
+                    # trae como columna.
+                    _head = re.match(r'\s*(\S+?)\(([A-Z]{2}[A-Z0-9]{10})\)', desc)
+                    if not symbol and _head:
+                        symbol = _head.group(1)
+                    isin_desc = _head.group(2) if _head else ''
+
                     # Nombre canónico (FII Description) con fallback al símbolo.
                     fii_entry = sym_isin_map.get(symbol) or {}
                     nombre_canon = fii_entry.get('description') or symbol
+
+                    # Clave del instrumento resuelta EXACTAMENTE como en Trades
+                    # (columna ISIN 12 chars → mapa FII → SYM:<symbol>), para que
+                    # la fila del split/contrasplit case con los lotes. El ISIN de
+                    # la descripción solo se usa como último recurso (puede ser el
+                    # ISIN nuevo tras un cambio de CUSIP, que NO casaría con la
+                    # clave SYM: que reciben los trades). Antes se usaba la columna
+                    # ISIN —vacía en CA reales— → el split se generaba sin clave y
+                    # NO se aplicaba a ningún lote (caso NCNA/BNKK 2025). Para los
+                    # splits que ya funcionaban (ISIN válido) es idéntico.
+                    isin_col_clean = (isin_col or '').strip()
+                    if len(isin_col_clean) == 12:
+                        isin_ca = isin_col_clean
+                    elif fii_entry.get('isin'):
+                        isin_ca = fii_entry['isin']
+                    elif symbol:
+                        isin_ca = f"SYM:{symbol.strip().upper()}"
+                    else:
+                        isin_ca = isin_desc
 
                     # Detectar splits/contrasplits en la descripción IBKR
                     # IBKR los describe como: "SPLIT 1 FOR 3" o "REVERSE SPLIT 3 FOR 1"
@@ -3593,7 +3623,7 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
 
                         corp_events.append({'tipo_ca': tipo_ca,
                                              'fecha': fecha, 'nombre': nombre_canon[:50],
-                                             'isin_old': isin_col, 'isin_new': isin_col,
+                                             'isin_old': isin_ca, 'isin_new': isin_ca,
                                              'qty_old': float(qty_old),
                                              'qty_new': float(qty_new),
                                              'descripcion': desc[:80]})
@@ -3601,7 +3631,7 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                     else:
                         corp_events.append({'tipo_ca': CA_COMPLEX,
                                              'fecha': fecha, 'nombre': nombre_canon[:50],
-                                             'isin': isin_col, 'cantidad': float(qty),
+                                             'isin': isin_ca, 'cantidad': float(qty),
                                              'descripcion': desc[:80],
                                              'descripcion_full': desc})  # full para post-procesado scrip
                 except (ValueError, IndexError, KeyError):
