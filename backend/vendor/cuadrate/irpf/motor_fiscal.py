@@ -23,7 +23,7 @@ import re
 import sys
 import bisect
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -1359,26 +1359,83 @@ class FIFOTracker:
         self._build_buys_indexes()
         buys_by_isin = self._buys_by_isin_tuples  # alias local para mantener legibilidad
 
-        for match in self._matches:
-            if match.ganancia_perdida >= 0:
-                continue  # solo afecta a pérdidas
+        # Capacidad de "blindaje" de cada recompra (DGT V1117-21, recompra
+        # PARCIAL): cada lote de recompra puede diferir como mucho su propia
+        # cantidad de acciones-pérdida. Se consume entre ventas (FIFO por fecha
+        # de venta) para que una recompra de 30 NO difiera dos ventas de 100
+        # enteras. El bug histórico (corregido 2026-06-15) difería el 100% de
+        # la pérdida ante CUALQUIER recompra, ignorando la cantidad recomprada
+        # → sobre-diferimiento (el usuario tributaba de más ese año).
+        cap: dict[int, Decimal] = {}
 
-            # La regla anti-aplicación NO se aplica al cierre de una venta
-            # corta (doctrina cerrada del proyecto: la 2M presupone que
-            # conservas el valor en cartera tras venderlo con pérdida; en un
-            # corto la "recompra" ES el cierre de la posición, no una nueva
-            # tenencia). Además la ventana se anclaría en la apertura (no en
-            # la realización) → sobre-tributación. Por eso se saltan.
-            if getattr(match, 'es_corto', False):
-                continue
+        def _capacidad(lote_id: int) -> Decimal:
+            if lote_id not in cap:
+                buy = self._buys_by_lote_id.get(lote_id)
+                cap[lote_id] = (Decimal(str(buy.get("cantidad", "0")))
+                                if buy else Decimal("0"))
+            return cap[lote_id]
 
-            # ETCs y bonos tributan como RCM (Art. 25.2 LIRPF; ETCs según
-            # DGT V0267-25), no como G/P patrimonial — la regla del 33.5.f
-            # no les aplica, pero el último párrafo del Art. 25.2 contiene
-            # su equivalente exacto para RCM negativos (recompra de activos
-            # financieros homogéneos en ±2 meses → integración diferida).
-            # Por eso NO se saltan: se marcan con la misma ventana de 2
-            # meses, dejando el anclaje legal correcto en el detalle.
+        def _registrar_pd(bd_lote_id, fv_, importe, ejercicio, lote_origen,
+                          isin_, nombre_match):
+            """Crea o acumula la PerdidaDiferida atada al lote de recompra."""
+            origen_entry = {
+                "ejercicio": ejercicio, "fecha_venta": fv_,
+                "importe_eur": importe, "lote_origen": lote_origen,
+            }
+            pd_existente = self._perdidas_diferidas.get(bd_lote_id)
+            if pd_existente is None:
+                buy_recompra = self._buys_by_lote_id.get(bd_lote_id)
+                if buy_recompra is not None:
+                    nombre_lote = buy_recompra.get("nombre", nombre_match)
+                    cantidad_lote = Decimal(str(buy_recompra.get("cantidad", "0")))
+                else:
+                    nombre_lote = nombre_match
+                    cantidad_lote = Decimal("0")
+                self._perdidas_diferidas[bd_lote_id] = PerdidaDiferida(
+                    isin=isin_, nombre=nombre_lote, importe_eur=importe,
+                    cantidad_pendiente=cantidad_lote, fecha_venta_origen=fv_,
+                    ejercicio_origen=ejercicio, lote_id_recompra=bd_lote_id,
+                    origenes=[origen_entry],
+                )
+            else:
+                pd_existente.importe_eur += importe
+                pd_existente.origenes.append(origen_entry)
+
+        def _repartir_pd(reclamado, deferred_qty, importe_total, fv_, ejercicio,
+                         lote_origen, isin_, nombre_match):
+            """Reparte el importe diferido entre las recompras reclamadas,
+            proporcional a la cantidad tomada de cada una; el último se lleva
+            el resto exacto (sin deriva de céntimos)."""
+            asignado = ZERO
+            for k, (bd, bd_lote_id, qty) in enumerate(reclamado):
+                if k == len(reclamado) - 1:
+                    imp = importe_total - asignado
+                else:
+                    imp = (importe_total * qty / deferred_qty).quantize(
+                        CENT, ROUND_HALF_UP)
+                asignado += imp
+                _registrar_pd(bd_lote_id, fv_, imp, ejercicio, lote_origen,
+                              isin_, nombre_match)
+
+        # Resultado de los splits por recompra parcial: id(match) → [diferido,
+        # deducible]. Los matches de diferimiento total se mutan in-place; los
+        # de recompra parcial se PARTEN. Reconstruimos self._matches al final
+        # preservando el orden original.
+        splits: dict[int, list] = {}
+
+        # Procesar SOLO las pérdidas (no cortos), en orden de fecha de venta
+        # para que el consumo de capacidad de recompra sea FIFO entre ventas.
+        # La regla anti-aplicación NO se aplica al cierre de un corto (la 2M
+        # presupone que conservas el valor tras venderlo con pérdida; en un
+        # corto la "recompra" ES el cierre). ETCs/bonos NO se saltan: el Art.
+        # 25.2 LIRPF último párrafo contiene el equivalente RCM de la 2M.
+        loss_matches = sorted(
+            (m for m in self._matches
+             if m.ganancia_perdida < 0 and not getattr(m, 'es_corto', False)),
+            key=lambda m: m.fecha_venta,
+        )
+
+        for match in loss_matches:
             isin = match.isin
             fv = match.fecha_venta
 
@@ -1392,92 +1449,125 @@ class FIFOTracker:
             window_end = _add_months(fv, window_months)
             window_label = "1 año" if window_months == 12 else f"{window_months} meses"
 
-            # Triage lineal por prioridad (sin sort). La doctrina prefiere:
-            #   1º. Lote POSTERIOR a la venta (recompra pura — arrastra
-            #       posicion despues de la venta-perdida).
-            #   2º. Lote ANTERIOR aun vivo en self._lots (no consumido por
-            #       la propia venta-perdida).
-            #   3º. Lote anterior ya consumido (fallback: activa la regla 2M
-            #       pero ata la PD a un lote muerto, limpiado por el sweep).
-            # Antes se ordenaba via `sorted` con un closure que evaluaba
-            # lotes_vivos_isin por iteracion (~1.1M llamadas para 3000 ops).
-            # Una pasada O(n) lo sustituye con el mismo orden de seleccion.
+            # Candidatos de recompra en ventana (excluyendo el lote consumido
+            # por la propia venta), en orden de prioridad doctrinal:
+            #   1º recompra pura post-venta · 2º lote previo aún vivo · 3º previo
+            #   consumido. La cantidad recomprada se acumula entre candidatos
+            #   hasta cubrir la cantidad vendida con pérdida (recompra parcial).
             lotes_vivos_isin = self._lotes_vivos_por_isin.get(isin, set())
             tups = buys_by_isin.get(isin, ())
             dates_isin = self._buys_by_isin_dates.get(isin, ())
             lo = bisect.bisect_left(dates_isin, window_start)
             hi = bisect.bisect_right(dates_isin, window_end)
-            chosen_recompra_pura: tuple | None = None
-            chosen_previa_viva: tuple | None = None
-            chosen_previa_consumida: tuple | None = None
+            pura, previa_viva, previa_consumida = [], [], []
             for j in range(lo, hi):
                 bd, bd_lote_id = tups[j]
                 if bd_lote_id == match.lote_id:
                     continue
                 if bd > fv:
-                    chosen_recompra_pura = (bd, bd_lote_id)
-                    break   # mejor prioridad — no hace falta seguir
-                if chosen_previa_viva is None and bd_lote_id in lotes_vivos_isin:
-                    chosen_previa_viva = (bd, bd_lote_id)
-                elif chosen_previa_consumida is None:
-                    chosen_previa_consumida = (bd, bd_lote_id)
-            chosen = (chosen_recompra_pura
-                      or chosen_previa_viva
-                      or chosen_previa_consumida)
+                    pura.append((bd, bd_lote_id))
+                elif bd_lote_id in lotes_vivos_isin:
+                    previa_viva.append((bd, bd_lote_id))
+                else:
+                    previa_consumida.append((bd, bd_lote_id))
+            candidatos = pura + previa_viva + previa_consumida
 
-            # Recopilamos la eleccion en una lista de un solo elemento para
-            # mantener la estructura del bucle posterior (que ya tiene
-            # logica de skip/window — refactorizar mas profundamente seria
-            # mas arriesgado de cara a la fiscalidad).
-            candidatos = [chosen] if chosen is not None else []
-
+            # Reclamar capacidad de recompra hasta cubrir la cantidad vendida.
+            cantidad = match.cantidad
+            pendiente = cantidad
+            reclamado: list[tuple] = []  # (fecha, lote_id, qty_reclamada)
             for (bd, bd_lote_id) in candidatos:
-                if bd_lote_id == match.lote_id:
-                    continue
-                if window_start <= bd <= window_end:
-                    match.regla_2_meses = True
-                    _es_rcm = getattr(match, 'instrument_type', 'STOCK') in ('BOND', 'ETC')
-                    _anclaje = ("Art. 25.2 LIRPF último párrafo (RCM)" if _es_rcm
-                                else "Art. 33.5.f/g LIRPF")
-                    match.regla_2_meses_detalle = (
-                        f"Recompra {_format_es_date(bd)} dentro de ventana {window_label} "
-                        f"(venta {_format_es_date(fv)}) — {_anclaje}"
-                    )
-                    importe_diferido = abs(match.ganancia_perdida)
-                    origen_entry = {
-                        "ejercicio": match.ejercicio_fiscal,
-                        "fecha_venta": fv,
-                        "importe_eur": importe_diferido,
-                        "lote_origen": match.lote_id,
-                    }
-                    pd_existente = self._perdidas_diferidas.get(bd_lote_id)
-                    if pd_existente is None:
-                        # Lookup O(1) via indice precomputado en lugar de
-                        # scan lineal sobre _all_buys.
-                        buy_recompra = self._buys_by_lote_id.get(bd_lote_id)
-                        if buy_recompra is not None:
-                            nombre_lote = buy_recompra.get("nombre", match.nombre)
-                            cantidad_lote = Decimal(str(buy_recompra.get("cantidad", "0")))
-                        else:
-                            nombre_lote = match.nombre
-                            cantidad_lote = Decimal("0")
-                        self._perdidas_diferidas[bd_lote_id] = PerdidaDiferida(
-                            isin=isin,
-                            nombre=nombre_lote,
-                            importe_eur=importe_diferido,
-                            cantidad_pendiente=cantidad_lote,
-                            fecha_venta_origen=fv,
-                            ejercicio_origen=match.ejercicio_fiscal,
-                            lote_id_recompra=bd_lote_id,
-                            origenes=[origen_entry],
-                        )
-                    else:
-                        # Cadena de diferimientos: la pérdida nueva se
-                        # suma a la que ya arrastraba el lote, y se
-                        # añade un origen al desglose para trazabilidad.
-                        pd_existente.importe_eur += importe_diferido
-                        pd_existente.origenes.append(origen_entry)
+                if pendiente <= 0:
                     break
+                disp = _capacidad(bd_lote_id)
+                if disp <= 0:
+                    continue
+                tomar = min(disp, pendiente)
+                cap[bd_lote_id] = disp - tomar
+                pendiente -= tomar
+                reclamado.append((bd, bd_lote_id, tomar))
+
+            deferred_qty = cantidad - pendiente
+            if deferred_qty <= 0:
+                continue  # sin recompra en ventana → pérdida íntegra deducible
+
+            _es_rcm = getattr(match, 'instrument_type', 'STOCK') in ('BOND', 'ETC')
+            _anclaje = ("Art. 25.2 LIRPF último párrafo (RCM)" if _es_rcm
+                        else "Art. 33.5.f/g LIRPF")
+            _primera_bd = reclamado[0][0]
+
+            if deferred_qty >= cantidad:
+                # Diferimiento TOTAL: mutar el match (comportamiento histórico).
+                match.regla_2_meses = True
+                match.regla_2_meses_detalle = (
+                    f"Recompra {_format_es_date(_primera_bd)} dentro de ventana "
+                    f"{window_label} (venta {_format_es_date(fv)}) — {_anclaje}"
+                )
+                _repartir_pd(reclamado, deferred_qty, abs(match.ganancia_perdida),
+                             fv, match.ejercicio_fiscal, match.lote_id, isin,
+                             match.nombre)
+            else:
+                # Recompra PARCIAL → partir en (diferido + deducible) y diferir
+                # solo la parte proporcional (DGT V1117-21).
+                def_match, ded_match = self._split_match_2m(match, deferred_qty)
+                def_match.regla_2_meses = True
+                def_match.regla_2_meses_detalle = (
+                    f"Recompra PARCIAL {deferred_qty}/{cantidad} acciones "
+                    f"{_format_es_date(_primera_bd)} en ventana {window_label} "
+                    f"(venta {_format_es_date(fv)}) — {_anclaje}; "
+                    f"diferimiento proporcional (DGT V1117-21)"
+                )
+                splits[id(match)] = [def_match, ded_match]
+                _repartir_pd(reclamado, deferred_qty, abs(def_match.ganancia_perdida),
+                             fv, def_match.ejercicio_fiscal, def_match.lote_id, isin,
+                             def_match.nombre)
+
+        # Reconstruir self._matches preservando el orden, expandiendo los splits
+        # de recompra parcial en sus dos tramos (diferido + deducible).
+        if splits:
+            nuevos = []
+            for m in self._matches:
+                rep = splits.get(id(m))
+                nuevos.extend(rep) if rep else nuevos.append(m)
+            self._matches = nuevos
+
+    def _split_match_2m(self, match: 'FIFOMatch', deferred_qty: Decimal):
+        """Parte un match-pérdida en (diferido, deducible) por cantidad, para la
+        recompra PARCIAL (DGT V1117-21). Los importes monetarios se reparten por
+        proporción de cantidad; el tramo deducible se calcula como
+        (original − diferido) campo a campo para que la suma cuadre EXACTAMENTE
+        sin deriva de céntimos. El diferido conserva la marca 2M; el deducible
+        queda limpio. Ambos comparten lote_id (consumieron el mismo lote): la
+        afloración los procesa juntos consumiendo en total la misma cantidad que
+        el match sin partir."""
+        total_qty = match.cantidad
+
+        def _frac(x):
+            return (Decimal(str(x)) * deferred_qty / total_qty).quantize(
+                CENT, ROUND_HALF_UP)
+
+        def_importe = _frac(match.importe_transmision)
+        def_gastos_v = _frac(match.gastos_venta)
+        def_coste = _frac(match.coste_adquisicion)
+        def_gastos_c = _frac(match.gastos_compra)
+        def_gp = def_importe - def_gastos_v - def_coste
+
+        deferred = replace(
+            match, cantidad=deferred_qty,
+            importe_transmision=def_importe, gastos_venta=def_gastos_v,
+            coste_adquisicion=def_coste, gastos_compra=def_gastos_c,
+            ganancia_perdida=def_gp,
+        )
+        deductible = replace(
+            match, cantidad=total_qty - deferred_qty,
+            importe_transmision=match.importe_transmision - def_importe,
+            gastos_venta=match.gastos_venta - def_gastos_v,
+            coste_adquisicion=match.coste_adquisicion - def_coste,
+            gastos_compra=match.gastos_compra - def_gastos_c,
+            ganancia_perdida=match.ganancia_perdida - def_gp,
+            regla_2_meses=False, regla_2_meses_detalle="",
+        )
+        return deferred, deductible
 
     def _hay_recompra_homogenea_en_2m(self, isin: str, fecha_v: date,
                                        exclude_lote_id: int,
