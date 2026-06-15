@@ -2813,8 +2813,23 @@ def _build_ibkr_symbol_isin_map(filepath: str) -> dict:
                 if not type_field:
                     type_field = 'CRYPTOCURRENCY'
             elif not isin or len(isin) != 12:
-                # Activos no-cripto sin ISIN válido: descartar (no soportados).
-                continue
+                # Sin ISIN de 12 chars. Típico en small-caps/ADRs US que
+                # reportan un CUSIP (9 chars) en Security ID, o tras un cambio
+                # de CUSIP por reverse split. ANTES se descartaban como "no
+                # soportados", pero eso dejaba el trade con ISIN vacío y el FIFO
+                # (A) lo marcaba como venta huérfana y (B) — peor — colapsaba
+                # TODOS los instrumentos sin ISIN a la misma clave "", cruzando
+                # lotes de valores distintos entre sí. Caso real NCNA/BNKK 2025:
+                # cash-in-lieu de la fracción tras un contrasplit con cambio de
+                # CUSIP. Generamos una clave sintética por SÍMBOLO (estable
+                # frente al cambio de CUSIP — el ticker se mantiene), igual que
+                # con cripto. Consolida la actividad del instrumento dentro de
+                # IBKR; no cruza con otros brokers (requeriría ISIN real), pero
+                # estos small-caps rara vez están en dos brokers.
+                primary_alias = symbol_field.split(',')[0].strip().upper()
+                if not primary_alias:
+                    continue
+                isin = f"SYM:{primary_alias}"
             for alias in (s.strip() for s in symbol_field.split(',')):
                 if alias:
                     out.setdefault(alias, {
@@ -3329,8 +3344,17 @@ def parse_ibkr(filepath, bond_data: dict | None = None):
                     # Si la fila Trades no trae ISIN (lo habitual en IBKR),
                     # resolverlo desde el mapping de Financial Instrument Information.
                     fii_entry = sym_isin_map.get(symbol) or {}
-                    isin_resolved = (isin_col[:12] if isin_col
-                                     else fii_entry.get('isin', ''))
+                    isin_col_clean = (isin_col or '').strip()
+                    if len(isin_col_clean) == 12:
+                        isin_resolved = isin_col_clean
+                    else:
+                        isin_resolved = fii_entry.get('isin', '')
+                    # Último recurso: ni la fila ni el FII dan un identificador
+                    # (símbolo ausente del FII, o este sin ISIN/CUSIP). Clave
+                    # sintética por símbolo para no orfanar la operación NI
+                    # colapsarla con otros instrumentos sin ISIN bajo clave "".
+                    if not isin_resolved and symbol:
+                        isin_resolved = f"SYM:{symbol.strip().upper()}"
                     # Nombre canónico desde FII Description ("VISCOFAN SA"),
                     # con fallback al símbolo IBKR ("VISe") si no hay descripción.
                     nombre_canon = fii_entry.get('description') or symbol
