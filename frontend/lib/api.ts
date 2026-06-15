@@ -807,6 +807,10 @@ export async function fetchSaludDatos(): Promise<SaludDatos> {
   return fetchJson<SaludDatos>('/api/salud-datos');
 }
 
+export async function refrescarSaludDatos(): Promise<SaludDatos> {
+  return fetchJson<SaludDatos>('/api/salud-datos/refrescar', { method: 'POST' });
+}
+
 export async function restaurarTransaccion(txId: string): Promise<TransaccionOut> {
   return fetchJson<TransaccionOut>(
     `/api/transacciones/${encodeURIComponent(txId)}/restaurar`,

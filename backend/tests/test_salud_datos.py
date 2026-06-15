@@ -98,3 +98,34 @@ def test_restaurar_descartada(client_y_db) -> None:
 
     # Restaurar dos veces → 409 (ya confirmada)
     assert client.post(f"/api/transacciones/{tx_id}/restaurar").status_code == 409
+
+
+def test_refrescar_endpoint(client_y_db, monkeypatch) -> None:
+    """POST /salud-datos/refrescar fuerza precios (forzar=True) y devuelve la
+    frescura. Simulamos el feed para no salir a red."""
+    client, SessionLocal = client_y_db
+    with SessionLocal() as s:
+        user = models.User(email="r@cima.local", modo="owner")
+        s.add(user); s.flush()
+        s.add(models.Cartera(user_id=user.id, nombre="Test"))
+        s.commit()
+
+    llamado = {"forzar": None}
+    from app.services import precios
+    def _fake(db, cid, forzar=False):
+        llamado["forzar"] = forzar
+        return ({}, [])
+    monkeypatch.setattr(precios, "obtener_precios_eur", _fake)
+
+    r = client.post("/api/salud-datos/refrescar")
+    assert r.status_code == 200
+    assert llamado["forzar"] is True   # refresco explícito del feed
+    assert set(r.json()) == {
+        "precios_ts", "fx_ts", "fundamentales_ts",
+        "ultimo_import_ts", "ultimo_import_desc", "ultima_transaccion",
+    }
+
+
+def test_refrescar_sin_cartera_404(client_y_db) -> None:
+    client, _ = client_y_db
+    assert client.post("/api/salud-datos/refrescar").status_code == 404
