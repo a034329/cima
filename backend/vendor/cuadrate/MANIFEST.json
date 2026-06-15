@@ -1,6 +1,6 @@
 {
   "source": "/app/720",
-  "copied_at": "2026-06-15T06:52:16.751787+00:00",
+  "copied_at": "2026-06-15T07:29:24.972001+00:00",
   "files": {
     "irpf/motor_fiscal.py": "fc4286da6be40c5debbfc65ab01142a130a4e29e9dbf037c0e5dd4afec4514cf",
     "irpf/generar_irpf.py": "e9d5ebdb8b4a1299af4ae946c65c84ce2e2e8b22397ffd5f1ccabfe85f1d76e4",
