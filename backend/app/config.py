@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # ── Modo de ejecución ───────────────────────────────────────────────
     mode: Mode = Field(default=Mode.SAAS, description="Modo SaaS o Owner")
 
+    # ── Autenticación (ADR-003) ─────────────────────────────────────────
+    # Secreto de firma del JWT (HS256). DEBE fijarse en producción
+    # (CIMA_JWT_SECRET); el default solo vale para dev/owner local.
+    jwt_secret: str = "dev-insecure-change-me"
+    # Vida del access token en minutos (por defecto 7 días).
+    access_token_ttl_min: int = 60 * 24 * 7
+    # En modo owner la auth se PUENTEA: este usuario único se provisiona y se
+    # devuelve sin exigir token (uso local del fundador, sin login).
+    owner_email: str = "gmarrero.angel@gmail.com"
+
     # ── Fiscalidad del dividendo (métrica CAGR4+Div neta) ───────────────
     # Tramo marginal de la base del ahorro aplicable a los dividendos del
     # usuario (suelo del tipo efectivo). 0.19 = primer tramo (hasta 6.000 €);

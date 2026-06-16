@@ -43,84 +43,25 @@ def bootstrap(
     devuelve sus IDs.
     """
     payload = payload or BootstrapIn()
+    from app.config import settings
+    from app.services.provisioning import provision_user
 
-    user = db.execute(
-        select(models.User).where(models.User.email == payload.email)
-    ).scalar_one_or_none()
-    creado = False
-    if user is None:
-        # El modo del usuario refleja el modo de despliegue (S1 auditoría:
-        # "owner" hardcodeado persistía usuarios owner en BD aunque el
-        # backend corriera como SaaS — mordería al llegar multi-usuario).
-        from app.config import settings
-        user = models.User(email=payload.email, modo=settings.mode.value)
-        db.add(user)
-        db.flush()
-        creado = True
-
+    user, creado = provision_user(
+        db, payload.email, modo=settings.mode.value,
+        nombre_cartera=payload.nombre_cartera,
+    )
     cartera = db.execute(
         select(models.Cartera).where(models.Cartera.user_id == user.id)
-    ).scalar_one_or_none()
-    if cartera is None:
-        cartera = models.Cartera(user_id=user.id, nombre=payload.nombre_cartera)
-        db.add(cartera)
-        db.flush()
-        creado = True
-
-    brokers_existentes = {
-        b.broker_tipo: b
+    ).scalar_one()
+    brokers_out = {
+        b.broker_tipo: b.id
         for b in db.execute(
             select(models.Broker).where(models.Broker.user_id == user.id)
         ).scalars()
     }
-
-    brokers_out: dict[str, str] = {}
-    for tipo in ("degiro", "ibkr", "tr", "trading212", "ing", "myinvestor"):
-        if tipo in brokers_existentes:
-            brokers_out[tipo] = brokers_existentes[tipo].id
-            continue
-        broker = models.Broker(user_id=user.id, broker_tipo=tipo, alias=tipo.upper())
-        db.add(broker)
-        db.flush()
-        brokers_out[tipo] = broker.id
-        creado = True
-
-    # Sembrar catálogo base de bloques (idempotente: solo si la cartera no
-    # tiene ninguno). 'Sin clasificar' NO es una fila — es bloque_id NULL.
-    tiene_bloques = db.execute(
-        select(models.Bloque).where(models.Bloque.cartera_id == cartera.id)
-    ).first()
-    if tiene_bloques is None:
-        # Catálogo base = las fichas con es_base (6). Las opcionales (indice,
-        # renta_fija) NO se siembran: el usuario las añade si las usa.
-        base = sorted(
-            ((cod, f) for cod, f in FICHAS.items() if f.es_base),
-            key=lambda cf: cf[1].orden,
-        )
-        for cod, f in base:
-            db.add(models.Bloque(
-                cartera_id=cartera.id, nombre=f.nombre, categoria_base=cod,
-                orden=f.orden, es_base=True, en_estrategia=f.en_estrategia,
-            ))
-        creado = True
-
-    db.commit()
     return BootstrapOut(
         user_id=user.id,
         cartera_id=cartera.id,
         brokers=brokers_out,
         creado=creado,
     )
-
-
-@router.get("", summary="Estado del bootstrap")
-def estado_bootstrap(db: Session = Depends(get_db)) -> dict[str, object]:
-    user = db.execute(select(models.User)).scalars().first()
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    brokers = db.execute(select(models.Broker)).scalars().all()
-    return {
-        "tiene_user": user is not None,
-        "tiene_cartera": cartera is not None,
-        "n_brokers": len(brokers),
-        "brokers_tipos": sorted({b.broker_tipo for b in brokers}),
-    }

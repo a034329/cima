@@ -45,6 +45,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     nif: Mapped[str | None] = mapped_column(String(20), nullable=True)
     modo: Mapped[str] = mapped_column(String(10), nullable=False, default="saas")
+    # Hash de la contraseña (scrypt, ver app/auth/passwords.py). Null para el
+    # usuario owner (auth puenteada) y, en el futuro, usuarios de magic-link.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
