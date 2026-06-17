@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import delete, event, select
@@ -192,6 +193,39 @@ def aplicar_fifo(db: Session, tx: models.Transaccion) -> None:
         # de recepción tributaba dos veces (auditoría Cima 2026-06-11, A2).
         aplicar_buy(db, tx)
     # Otros tipos no afectan inventario en esta versión.
+
+
+def cantidad_a_fecha(db: Session, posicion_id: str, fecha_limite: date) -> Decimal:
+    """Cantidad poseída de una posición al CIERRE de `fecha_limite` (incluida).
+
+    Replay del MISMO efecto sobre inventario que `aplicar_fifo`, pero solo a
+    nivel de cantidad y hasta una fecha — para valorar el histórico mensual
+    (ADR-004) con las acciones REALES de cada momento (clave para los splits:
+    el cierre crudo se multiplica por la cantidad pre-split de entonces).
+    Independiente de los lots (no los toca)."""
+    txs = db.execute(
+        select(models.Transaccion)
+        .where(models.Transaccion.posicion_id == posicion_id)
+        .where(models.Transaccion.estado == "confirmada")
+        .where(models.Transaccion.fecha <= fecha_limite)
+        .order_by(models.Transaccion.fecha, models.Transaccion.created_at)
+    ).scalars()
+    q = Decimal("0")
+    for tx in txs:
+        if tx.tipo == "BUY" or (tx.tipo == "STAKING_REWARD" and tx.cantidad and tx.cantidad > 0):
+            q += tx.cantidad
+        elif tx.tipo == "SELL":
+            q -= tx.cantidad
+        elif tx.tipo == "CORPORATE_SPLIT" and tx.notas:
+            try:
+                sp = json.loads(tx.notas)["split"]
+                qty_old = Decimal(str(sp["qty_old"]))
+                qty_new = Decimal(str(sp["qty_new"]))
+                if qty_old > 0:
+                    q = (q * (qty_new / qty_old)).quantize(Decimal("0.0000000001"))
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+    return q
 
 
 # ── Rebuild (cross-broker FIFO correcto independientemente del orden) ──

@@ -71,8 +71,50 @@ function Contenido({ d }: { d: InformeMensual }) {
     && parseFloat(d.aportaciones_eur) === 0
     && parseFloat(d.intereses_eur) === 0;
 
+  const varPct = d.valor_mercado_var_pct != null ? parseFloat(d.valor_mercado_var_pct) : null;
+
   return (
     <div className="space-y-6">
+      {d.valor_mercado_eur != null && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-lg border border-brand-300/60 dark:border-brand-700/60 bg-brand-50/40 dark:bg-brand-900/15 p-4">
+            <p className="text-xs text-[rgb(var(--muted))]">Valor a cierre de mes</p>
+            <p className="text-2xl font-semibold font-mono">
+              {fmtEUR(d.valor_mercado_eur, { maximumFractionDigits: 0 })}
+            </p>
+            {!d.valor_mercado_completo && (
+              <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                parcial — falta el cierre de algún valor
+              </p>
+            )}
+          </div>
+          <div className="rounded-lg border border-brand-300/60 dark:border-brand-700/60 bg-brand-50/40 dark:bg-brand-900/15 p-4">
+            <p className="text-xs text-[rgb(var(--muted))]">Variación del mes</p>
+            {varPct != null ? (
+              <p className={`text-2xl font-semibold font-mono ${
+                varPct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+              }`}>
+                {varPct >= 0 ? '▲' : '▼'} {fmtPct(Math.abs(varPct), 1)}
+              </p>
+            ) : (
+              <p className="text-2xl font-semibold font-mono text-[rgb(var(--muted))]">—</p>
+            )}
+            <p className="text-[10px] text-[rgb(var(--muted))] mt-1">frente al cierre del mes anterior</p>
+          </div>
+          <div className="rounded-lg border border-brand-300/60 dark:border-brand-700/60 bg-brand-50/40 dark:bg-brand-900/15 p-4">
+            <p className="text-xs text-[rgb(var(--muted))]">Objetivo IF</p>
+            <p className="text-2xl font-semibold font-mono">
+              {d.objetivo_if_eur != null ? fmtEUR(d.objetivo_if_eur, { maximumFractionDigits: 0 }) : '—'}
+            </p>
+            {d.progreso_if_pct != null && (
+              <p className="text-[10px] text-[rgb(var(--muted))] mt-1">
+                {fmtPct(d.progreso_if_pct, 1)} alcanzado (a hoy)
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="Aportado de bolsillo" value={fmtEUR(d.aportaciones_eur, { maximumFractionDigits: 0 })} />
         <Card label={`Compras (${d.n_compras})`} value={fmtEUR(d.compras_eur, { maximumFractionDigits: 0 })} />
@@ -143,8 +185,8 @@ function Contenido({ d }: { d: InformeMensual }) {
 
       <p className="text-xs text-[rgb(var(--muted))]">
         La G/P realizada usa el mismo motor FIFO fiscal (incluye gastos y reglas de
-        homogeneidad). El progreso IF es la foto de HOY, no la del cierre del mes —
-        Cima no guarda histórico de precios.
+        homogeneidad). El valor a cierre y su variación usan el precio de cierre real
+        de cada mes; el progreso hacia el objetivo IF es la foto de HOY.
       </p>
     </div>
   );

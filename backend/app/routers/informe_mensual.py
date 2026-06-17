@@ -5,10 +5,10 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from decimal import Decimal
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 
 router = APIRouter(prefix="/informe-mensual", tags=["informe-mensual"])
@@ -41,7 +41,11 @@ class InformeMensualOut(BaseModel):
     dividendos_neto_eur: Decimal
     intereses_eur: Decimal
     gp_realizada_eur: Decimal
+    valor_mercado_eur: Decimal | None
+    valor_mercado_var_pct: Decimal | None
+    valor_mercado_completo: bool
     capital_estrategia_eur: Decimal | None
+    objetivo_if_eur: Decimal | None
     progreso_if_pct: Decimal | None
     anios_if: Decimal | None
     destacados: list[MovimientoOut]
@@ -51,15 +55,10 @@ class InformeMensualOut(BaseModel):
 @router.get("/{anio}/{mes}", response_model=InformeMensualOut,
             summary="Cierre de mes: flujos, dividendos, G/P realizada y foto IF")
 def get_informe_mensual(anio: int, mes: int,
-                        db: Session = Depends(get_db)) -> InformeMensualOut:
+                        db: Session = Depends(get_db),
+                        cartera: models.Cartera = Depends(get_current_cartera)) -> InformeMensualOut:
     if not (1 <= mes <= 12) or not (2000 <= anio <= 2100):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mes o año fuera de rango")
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
     from app.services.informe_mensual import calcular_informe
     r = calcular_informe(db, cartera.id, anio, mes)
     return InformeMensualOut(
@@ -72,7 +71,11 @@ def get_informe_mensual(anio: int, mes: int,
         dividendos_neto_eur=r.dividendos_neto_eur,
         intereses_eur=r.intereses_eur,
         gp_realizada_eur=r.gp_realizada_eur,
+        valor_mercado_eur=r.valor_mercado_eur,
+        valor_mercado_var_pct=r.valor_mercado_var_pct,
+        valor_mercado_completo=r.valor_mercado_completo,
         capital_estrategia_eur=r.capital_estrategia_eur,
+        objetivo_if_eur=r.objetivo_if_eur,
         progreso_if_pct=r.progreso_if_pct,
         anios_if=r.anios_if,
         destacados=[MovimientoOut(fecha=m.fecha, tipo=m.tipo, nombre=m.nombre,

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { fmtEUR, fmtNum, fmtPct, guardarColumnasPosiciones } from '@/lib/api';
 import { DECISION_COLOR, DECISION_LABEL } from '@/lib/decisiones';
+import { EvolucionChart } from '@/components/EvolucionChart';
 import type { ColumnaCatalogo, PosicionMetricas, PosicionesResumen } from '@/lib/types';
 
 // Columnas monetarias por acción (PM/precio) vs importes absolutos (€) vs %.
@@ -34,6 +35,30 @@ function valorColumna(p: PosicionMetricas, id: string): string {
   return fmtEUR(raw, { maximumFractionDigits: 2 });
 }
 
+// Fila de posición + (si está abierta) fila expandida con la evolución mensual
+// del valor de ESE valor. La gráfica solo se monta cuando se abre (lazy fetch).
+function FragmentoFila({ p, abierto, colSpan, children }: {
+  p: PosicionMetricas;
+  abierto: boolean;
+  colSpan: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <tr className="border-t border-[rgb(var(--border))]/30">{children}</tr>
+      {abierto && (
+        <tr className="bg-[rgb(var(--bg))]/40">
+          <td colSpan={colSpan} className="p-3">
+            <div className="font-sans">
+              <EvolucionChart isin={p.isin} titulo={`Evolución · ${p.nombre}`} />
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 export function PosicionesEnriquecidas({ data, onData }: {
   data: PosicionesResumen;
   onData: (d: PosicionesResumen) => void;
@@ -41,6 +66,7 @@ export function PosicionesEnriquecidas({ data, onData }: {
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
   const [abrePanel, setAbrePanel] = useState(false);
+  const [expandido, setExpandido] = useState<string | null>(null);   // ISIN con la gráfica abierta
   const [filtro, setFiltro] = useState('');
   const [orden, setOrden] = useState<{ key: string; dir: 1 | -1 }>({
     key: 'gp_no_realizada_eur', dir: -1,
@@ -177,14 +203,22 @@ export function PosicionesEnriquecidas({ data, onData }: {
           </thead>
           <tbody className="font-mono">
             {filas.map((p) => (
-              <tr key={p.isin} className="border-t border-[rgb(var(--border))]/30">
+              <FragmentoFila key={p.isin}
+                p={p}
+                abierto={expandido === p.isin}
+                colSpan={3 + colsMostradas.length}
+              >
                 <td className="py-1 pr-2">
-                  <div className="font-sans font-medium flex items-center gap-1.5">
+                  <button type="button"
+                    onClick={() => setExpandido((cur) => (cur === p.isin ? null : p.isin))}
+                    className="font-sans font-medium flex items-center gap-1.5 text-left hover:text-brand-600 transition-colors"
+                    title="Ver evolución mensual">
+                    <span className="text-[rgb(var(--muted))] text-[10px]">{expandido === p.isin ? '▾' : '▸'}</span>
                     {p.nombre}
                     {p.tipo_activo === 'ETF' && (
                       <span className="text-[9px] px-1 py-0.5 rounded bg-[rgb(var(--bg))] border border-[rgb(var(--border))] text-[rgb(var(--muted))]">ETF</span>
                     )}
-                  </div>
+                  </button>
                   <div className="text-[10px] text-[rgb(var(--muted))]">{p.isin}</div>
                 </td>
                 <td className="pr-2 text-right">{fmtNum(p.cantidad)}</td>
@@ -214,7 +248,7 @@ export function PosicionesEnriquecidas({ data, onData }: {
                     </td>
                   );
                 })}
-              </tr>
+              </FragmentoFila>
             ))}
           </tbody>
         </table>

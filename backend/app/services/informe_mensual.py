@@ -54,8 +54,13 @@ class InformeMensual:
     dividendos_neto_eur: Decimal
     intereses_eur: Decimal
     gp_realizada_eur: Decimal              # G/P FIFO de ventas del mes
+    # Valor de mercado a CIERRE del mes (histórico, ADR-004)
+    valor_mercado_eur: Decimal | None
+    valor_mercado_var_pct: Decimal | None      # variación % vs cierre del mes anterior
+    valor_mercado_completo: bool               # False si faltó el cierre de algún valor
     # Foto a hoy (no histórica)
     capital_estrategia_eur: Decimal | None
+    objetivo_if_eur: Decimal | None
     progreso_if_pct: Decimal | None
     anios_if: Decimal | None
     destacados: list[MovimientoDestacado] = field(default_factory=list)
@@ -107,11 +112,29 @@ def calcular_informe(db: Session, cartera_id: str, anio: int, mes: int) -> Infor
     except Exception:
         pass   # sin transacciones de venta o motor sin datos: informe sin G/P
 
+    # Valor de mercado a CIERRE del mes y variación % vs el mes anterior (ADR-004).
+    valor_mercado = var_pct = None
+    completo_mercado = True
+    try:
+        from app.services import historico
+        ym = f"{anio:04d}-{mes:02d}"
+        valor_mes, completo_mercado = historico.valor_cartera_mes(db, cartera_id, ym)
+        py, pm = (anio, mes - 1) if mes > 1 else (anio - 1, 12)
+        valor_prev, _ = historico.valor_cartera_mes(db, cartera_id, f"{py:04d}-{pm:02d}")
+        if valor_mes is not None:
+            valor_mercado = _q2(valor_mes)
+            if valor_prev and valor_prev > 0:
+                var_pct = ((valor_mes / valor_prev) - 1).quantize(
+                    Decimal("0.0001"), ROUND_HALF_UP)
+    except Exception:
+        completo_mercado = True
+
     # Foto IF a hoy (misma proyección del dashboard, vía impacto_if).
-    capital = progreso = anios = None
+    capital = progreso = anios = objetivo_if = None
     try:
         cap, aport, objetivo, retorno = parametros_proyeccion_if(db, cartera_id)
         capital = _q2(cap)
+        objetivo_if = _q2(objetivo)
         if objetivo > 0:
             progreso = (cap / objetivo).quantize(Decimal("0.0001"), ROUND_HALF_UP)
         anios = proyeccion.anios_hasta(cap, aport, objetivo, float(retorno))
@@ -138,7 +161,11 @@ def calcular_informe(db: Session, cartera_id: str, anio: int, mes: int) -> Infor
         dividendos_neto_eur=_q2(div_bruto - div_ret),
         intereses_eur=_q2(intereses),
         gp_realizada_eur=_q2(gp_mes),
+        valor_mercado_eur=valor_mercado,
+        valor_mercado_var_pct=var_pct,
+        valor_mercado_completo=completo_mercado,
         capital_estrategia_eur=capital,
+        objetivo_if_eur=objetivo_if,
         progreso_if_pct=progreso,
         anios_if=anios,
         destacados=destacados,

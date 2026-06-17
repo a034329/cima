@@ -1039,3 +1039,52 @@ class ExtractoArchivo(Base):
             name="ck_extracto_kind",
         ),
     )
+
+
+# ── histórico de cierres mensuales (caché GLOBAL compartida, ADR-004) ────────
+# OJO: estas dos tablas NO llevan cartera_id — son dato de mercado público
+# compartido entre TODOS los usuarios (primer dato cross-tenant del producto).
+# La valoración por cartera se calcula al vuelo con las transacciones del
+# usuario; aquí solo viven los cierres/FX, idénticos para todos.
+
+class PrecioMensual(Base):
+    """Cierre de mercado de fin de mes (EOM) por símbolo, en su divisa NATIVA y
+    CRUDO (sin ajustar por splits). Caché global: una descarga sirve a todos los
+    usuarios que tengan ese valor. Clave de negocio (simbolo, anio_mes)."""
+
+    __tablename__ = "precios_mensuales"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    simbolo: Mapped[str] = mapped_column(String(32), nullable=False)   # símbolo yfinance resuelto
+    anio_mes: Mapped[str] = mapped_column(String(7), nullable=False)   # 'YYYY-MM'
+    cierre: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    divisa: Mapped[str] = mapped_column(String(8), nullable=False)
+    fuente: Mapped[str] = mapped_column(String(16), nullable=False, default="yfinance")
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("simbolo", "anio_mes", name="uq_precio_mensual_sim_mes"),
+        Index("ix_precio_mensual_sim", "simbolo", "anio_mes"),
+    )
+
+
+class FxMensual(Base):
+    """Factor de conversión a EUR de fin de mes por divisa. Global y compartido.
+    `rate_eur` = cuántos EUR vale 1 unidad de `divisa` ese mes. Clave (divisa, anio_mes)."""
+
+    __tablename__ = "fx_mensuales"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    divisa: Mapped[str] = mapped_column(String(8), nullable=False)
+    anio_mes: Mapped[str] = mapped_column(String(7), nullable=False)
+    rate_eur: Mapped[Decimal] = mapped_column(Numeric(20, 10), nullable=False)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("divisa", "anio_mes", name="uq_fx_mensual_div_mes"),
+        Index("ix_fx_mensual_div", "divisa", "anio_mes"),
+    )

@@ -1289,7 +1289,11 @@ export interface InformeMensual {
   dividendos_neto_eur: string;
   intereses_eur: string;
   gp_realizada_eur: string;
+  valor_mercado_eur: string | null;
+  valor_mercado_var_pct: string | null;
+  valor_mercado_completo: boolean;
   capital_estrategia_eur: string | null;
+  objetivo_if_eur: string | null;
   progreso_if_pct: string | null;
   anios_if: string | null;
   destacados: MovimientoDestacado[];

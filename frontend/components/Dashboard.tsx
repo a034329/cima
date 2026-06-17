@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchDashboard, fetchPlanFirmado, fmtEUR, fmtPct } from '@/lib/api';
 import { onDatosActualizados } from '@/lib/refetch';
 import { DividendosChart } from '@/components/DividendosChart';
+import { EvolucionChart } from '@/components/EvolucionChart';
 import { DECISION_COLOR, DECISION_LABEL } from '@/lib/decisiones';
 import { CAT_HEX, CAT_LABEL } from '@/lib/categorias';
 import { fetchVigilancia, marcarVistoVigilancia } from '@/lib/api';
@@ -244,6 +245,11 @@ export function Dashboard() {
             )}
           </Panel>
         </div>
+      </Grupo>
+
+      {/* ── Evolución (histórico de cierres mensuales, ADR-004) ── */}
+      <Grupo titulo="Evolución">
+        <EvolucionChart titulo="Valor de mercado vs capital aportado" />
       </Grupo>
     </div>
   );
