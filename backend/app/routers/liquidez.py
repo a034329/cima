@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.liquidez import calcular_liquidez
 
@@ -31,13 +31,8 @@ class LiquidezOut(BaseModel):
 
 @router.get("", response_model=LiquidezOut,
             summary="Liquidez calculada de cash flows + validación vs saldo broker")
-def get_liquidez(db: Session = Depends(get_db)) -> LiquidezOut:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
+def get_liquidez(db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> LiquidezOut:
     r = calcular_liquidez(db, cartera.id)
     return LiquidezOut(
         total_calculada=r.total_calculada,

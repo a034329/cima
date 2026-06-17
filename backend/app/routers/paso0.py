@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.ia import ClasificadorError
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import paso0 as svc
 
@@ -56,19 +56,12 @@ class CausaRaizOut(BaseModel):
     disclaimer: str | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 @router.get("/{isin}", response_model=ContextoOut,
             summary="PASO 0: busca contexto web reciente y clasifica coyuntural/estructural")
-def contexto(isin: str, db: Session = Depends(get_db)) -> ContextoOut:
+def contexto(isin: str, db: Session = Depends(get_db),
+             cartera: models.Cartera = Depends(get_current_cartera)) -> ContextoOut:
     try:
-        a = svc.analizar_contexto(db, _cartera(db).id, isin)
+        a = svc.analizar_contexto(db, cartera.id, isin)
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"IA con búsqueda web: {e}")
     except NotImplementedError as e:
@@ -87,12 +80,13 @@ def causa_raiz(
     isin: str,
     contexto_previo: ContextoPrevio | None = None,
     db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
 ) -> CausaRaizOut:
     """POST porque acepta body opcional con el contexto del PASO 0. Sin body, la
     IA arranca a frío y descubre el evento de partida también — más lento."""
     prev = contexto_previo.model_dump() if contexto_previo else None
     try:
-        a = svc.analizar_causa_raiz(db, _cartera(db).id, isin, prev)
+        a = svc.analizar_causa_raiz(db, cartera.id, isin, prev)
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"IA con búsqueda web: {e}")
     except NotImplementedError as e:

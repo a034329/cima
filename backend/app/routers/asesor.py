@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.ia import ClasificadorError
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import asesor as svc
 
@@ -43,30 +43,24 @@ class EnviarIn(BaseModel):
     forzar_web: bool = False
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 def _out(m: models.MensajeAsesor) -> MensajeOut:
     return MensajeOut(rol=m.rol, contenido=m.contenido, created_at=m.created_at.isoformat())
 
 
 @router.get("", response_model=list[MensajeOut], summary="Historial del chat con el asesor")
-def get_historial(limit: int = 200, db: Session = Depends(get_db)) -> list[MensajeOut]:
-    return [_out(m) for m in svc.historial(db, _cartera(db).id, limit=min(limit, 1000))]
+def get_historial(limit: int = 200, db: Session = Depends(get_db),
+                  cartera: models.Cartera = Depends(get_current_cartera)) -> list[MensajeOut]:
+    return [_out(m) for m in svc.historial(db, cartera.id, limit=min(limit, 1000))]
 
 
 @router.post("", response_model=RespuestaOut, summary="Enviar un mensaje al asesor y obtener su respuesta")
-def enviar(payload: EnviarIn, db: Session = Depends(get_db)) -> RespuestaOut:
+def enviar(payload: EnviarIn, db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> RespuestaOut:
     texto = payload.mensaje.strip()
     if not texto:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mensaje vacío")
     try:
-        m, acciones = svc.responder(db, _cartera(db).id, texto,
+        m, acciones = svc.responder(db, cartera.id, texto,
                                     por_voz=payload.por_voz,
                                     forzar_web=payload.forzar_web)
     except ClasificadorError as e:
@@ -81,5 +75,6 @@ def enviar(payload: EnviarIn, db: Session = Depends(get_db)) -> RespuestaOut:
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT, summary="Limpiar la conversación")
-def limpiar(db: Session = Depends(get_db)) -> None:
-    svc.limpiar(db, _cartera(db).id)
+def limpiar(db: Session = Depends(get_db),
+            cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    svc.limpiar(db, cartera.id)

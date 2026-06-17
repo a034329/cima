@@ -10,22 +10,14 @@ from datetime import date
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import cuadrate_irpf as svc
 
 
 router = APIRouter(prefix="/cuadrate", tags=["cuadrate"])
-
-
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
 
 
 @router.get(
@@ -37,6 +29,7 @@ def generar_irpf_zip(
     ejercicio: int,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
 ) -> FileResponse:
     """Devuelve `cartera_irpf_{ejercicio}.zip` con todos los entregables que
     produce el motor de Cuádrate. Requiere haber subido previamente los CSVs
@@ -51,7 +44,7 @@ def generar_irpf_zip(
             f"Ejercicio fuera de rango (esperado 2000..{ahora}): {ejercicio}",
         )
 
-    cartera_id = _cartera(db).id     # fuera del try: deja propagar el 404
+    cartera_id = cartera.id     # fuera del try: deja propagar el 404
     try:
         resultado = svc.generar_irpf_zip(db, cartera_id, ejercicio)
     except svc.DependenciasFaltantesError as e:

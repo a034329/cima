@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { fetchConfig, fmtEUR, guardarConfig } from '@/lib/api';
+import { clearToken, isSaasMode } from '@/lib/auth';
 import { parseNumEs } from '@/lib/num';
 import { notificarDatosActualizados } from '@/lib/refetch';
 import type { ConfigCartera } from '@/lib/types';
@@ -12,6 +14,7 @@ const BROKER_LABEL: Record<string, string> = {
 };
 
 export default function ConfigPage() {
+  const router = useRouter();
   const [data, setData] = useState<ConfigCartera | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nombre, setNombre] = useState('');
@@ -141,6 +144,22 @@ export default function ConfigPage() {
           demás no reportan saldo final → su liquidez se calcula de los flujos.
         </p>
       </section>
+
+      {/* Cuenta — sólo en SaaS (en owner el backend puentea la auth, no hay login). */}
+      {isSaasMode && (
+        <section className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-4 space-y-3">
+          <h3 className="font-semibold">Cuenta</h3>
+          <Campo label="Sesión iniciada como">
+            <span className="text-sm text-[rgb(var(--muted))]">{data.email}</span>
+          </Campo>
+          <button
+            onClick={() => { clearToken(); router.replace('/login'); router.refresh(); }}
+            className="px-3 py-1.5 text-sm rounded border border-[rgb(var(--border))] hover:bg-[rgb(var(--bg))]"
+          >
+            Cerrar sesión
+          </button>
+        </section>
+      )}
 
       <section className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--bg))] p-4">
         <p className="text-xs text-[rgb(var(--muted))]">

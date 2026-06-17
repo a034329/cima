@@ -59,12 +59,12 @@ def test_s2_transaccion_de_otra_cartera_es_404(db: Session, cartera):
         estado="confirmada", origen="manual",
     )
     db.add(tx2); db.commit()
-    # La cartera activa (por defecto) es la del fixture, no c2 → 404.
+    # La cartera activa (la del fixture autenticado) es distinta de c2 → 404.
     with pytest.raises(HTTPException) as e1:
-        obtener_transaccion(tx2.id, db)
+        obtener_transaccion(tx2.id, db, cartera)
     assert e1.value.status_code == 404
     with pytest.raises(HTTPException) as e2:
-        descartar_transaccion(tx2.id, db)
+        descartar_transaccion(tx2.id, db, cartera)
     assert e2.value.status_code == 404
     db.refresh(tx2)
     assert tx2.estado == "confirmada", "no debe poder descartarse desde otra cartera"

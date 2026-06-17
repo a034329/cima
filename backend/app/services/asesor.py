@@ -325,9 +325,11 @@ def responder(
         # La pregunta exige datos en vivo o noticias → IA con búsqueda web. Para
         # el chat usamos un timeout más corto (3 min) que el del análisis
         # profundo (10 min); si tarda más, abortamos y el usuario reformula.
-        respuesta = ia.investigar(system, user, timeout_s=settings.ia_chat_web_timeout_s)
+        respuesta = ia.investigar(system, user, timeout_s=settings.ia_chat_web_timeout_s,
+                                  modelo=settings.asesor_model)
     else:
-        respuesta = ia.completar(system, user, timeout_s=settings.ia_chat_timeout_s)
+        respuesta = ia.completar(system, user, timeout_s=settings.ia_chat_timeout_s,
+                                 modelo=settings.asesor_model)
     creditos.registrar_uso_ia(db, cartera_id, "asesor", 1)
     if mode == "owner":
         contenido, acciones = parse_acciones(respuesta or "")

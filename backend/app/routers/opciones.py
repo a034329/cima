@@ -10,9 +10,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.schemas.opciones import ContratoOpcion, OpcionesResumen
 from app.services.fiscal_opciones import calcular_opciones, opciones_abiertas
@@ -96,16 +96,6 @@ def _serializar(r) -> OpcionesResumen:  # type: ignore[no-untyped-def]
     )
 
 
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 class OpcionIn(BaseModel):
     """Payload para registrar una opción manualmente."""
     fecha: date
@@ -127,8 +117,8 @@ class OpcionIn(BaseModel):
 
 @router.post("", status_code=status.HTTP_201_CREATED,
              summary="Registrar opción manual")
-def crear_opcion(payload: OpcionIn, db: Session = Depends(get_db)) -> dict[str, Any]:
-    cartera = _cartera(db)
+def crear_opcion(payload: OpcionIn, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> dict[str, Any]:
     simbolo = f"{payload.subyacente} {payload.tipo_op}{payload.strike} {payload.vencimiento}"
     # external_id determinista para evitar duplicados de la misma operación.
     ext_id = (
@@ -151,14 +141,15 @@ def crear_opcion(payload: OpcionIn, db: Session = Depends(get_db)) -> dict[str, 
 
 @router.get("/acumulado", response_model=OpcionesResumen,
             summary="Resumen de opciones acumulado (todos los años)")
-def get_opciones_acumulado(db: Session = Depends(get_db)) -> OpcionesResumen:
-    cartera = _cartera(db)
+def get_opciones_acumulado(db: Session = Depends(get_db),
+                           cartera: models.Cartera = Depends(get_current_cartera)) -> OpcionesResumen:
     return _serializar(calcular_opciones(db, cartera.id, None))
 
 
 @router.get("/abiertas", response_model=list[OpcionAbiertaOut],
             summary="Opciones abiertas vivas (para la vista de Cartera)")
-def get_opciones_abiertas(db: Session = Depends(get_db)) -> list[OpcionAbiertaOut]:
+def get_opciones_abiertas(db: Session = Depends(get_db),
+                          cartera: models.Cartera = Depends(get_current_cartera)) -> list[OpcionAbiertaOut]:
     return [
         OpcionAbiertaOut(
             subyacente=o.subyacente, tipo_op=o.tipo_op, strike=o.strike,
@@ -168,17 +159,17 @@ def get_opciones_abiertas(db: Session = Depends(get_db)) -> list[OpcionAbiertaOu
             divisa_subyacente=o.divisa_subyacente, gp_estimada_eur=o.gp_estimada_eur,
             gp_estimada_pct=o.gp_estimada_pct,
         )
-        for o in opciones_abiertas(db, _cartera(db).id)
+        for o in opciones_abiertas(db, cartera.id)
     ]
 
 
 @router.get("/{ejercicio}", response_model=OpcionesResumen,
             summary="Resumen de opciones del ejercicio (DGT V2172-21)")
-def get_opciones(ejercicio: int, db: Session = Depends(get_db)) -> OpcionesResumen:
+def get_opciones(ejercicio: int, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> OpcionesResumen:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
         )
-    cartera = _cartera(db)
     return _serializar(calcular_opciones(db, cartera.id, ejercicio))

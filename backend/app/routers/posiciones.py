@@ -5,11 +5,12 @@ import json
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.posiciones import calcular_metricas_posiciones
 
@@ -97,16 +98,6 @@ def _timestamp_precios() -> str | None:
     return timestamp_precios()
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return c
-
-
 def _seleccion_columnas(db: Session, cartera_id: str) -> list[str]:
     pref = db.execute(
         select(models.Preferencias).where(models.Preferencias.cartera_id == cartera_id)
@@ -126,8 +117,8 @@ def _seleccion_columnas(db: Session, cartera_id: str) -> list[str]:
 
 @router.get("/posiciones", response_model=PosicionesResumen,
             summary="Posiciones con métricas + columnas seleccionadas")
-def get_posiciones(db: Session = Depends(get_db)) -> PosicionesResumen:
-    cartera = _cartera(db)
+def get_posiciones(db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> PosicionesResumen:
     metricas = calcular_metricas_posiciones(db, cartera.id)
     return PosicionesResumen(
         anio=date.today().year,
@@ -140,8 +131,8 @@ def get_posiciones(db: Session = Depends(get_db)) -> PosicionesResumen:
 
 @router.put("/posiciones/columnas", response_model=PosicionesResumen,
             summary="Guardar selección de columnas (por cartera)")
-def set_columnas(payload: ColumnasIn, db: Session = Depends(get_db)) -> PosicionesResumen:
-    cartera = _cartera(db)
+def set_columnas(payload: ColumnasIn, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> PosicionesResumen:
     sel = [c for c in payload.columnas if c in _IDS_VALIDOS]
     if "pm_real" not in sel:
         sel = ["pm_real", *sel]

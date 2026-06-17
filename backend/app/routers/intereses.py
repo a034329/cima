@@ -6,9 +6,9 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.fiscal_intereses import calcular_intereses
 
@@ -62,28 +62,20 @@ def _serializar(r) -> InteresesResumen:  # type: ignore[no-untyped-def]
     )
 
 
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 @router.get("/acumulado", response_model=InteresesResumen,
             summary="Intereses acumulados (todos los años)")
-def get_intereses_acumulado(db: Session = Depends(get_db)) -> InteresesResumen:
-    return _serializar(calcular_intereses(db, _cartera(db).id, None))
+def get_intereses_acumulado(db: Session = Depends(get_db),
+                            cartera: models.Cartera = Depends(get_current_cartera)) -> InteresesResumen:
+    return _serializar(calcular_intereses(db, cartera.id, None))
 
 
 @router.get("/{ejercicio}", response_model=InteresesResumen,
             summary="Intereses del ejercicio (RCM casilla 0027)")
-def get_intereses(ejercicio: int, db: Session = Depends(get_db)) -> InteresesResumen:
+def get_intereses(ejercicio: int, db: Session = Depends(get_db),
+                  cartera: models.Cartera = Depends(get_current_cartera)) -> InteresesResumen:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
         )
-    return _serializar(calcular_intereses(db, _cartera(db).id, ejercicio))
+    return _serializar(calcular_intereses(db, cartera.id, ejercicio))

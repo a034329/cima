@@ -5,10 +5,10 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.ia import ClasificadorError
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import bloques as svc
 from app.services import clasificador as clasif_svc
@@ -140,26 +140,15 @@ class EvaluacionOut(BaseModel):
     cubre_target: bool | None = None
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @router.get("", response_model=DistribucionOut,
             summary="Distribución actual de la cartera por bloque")
-def get_distribucion(db: Session = Depends(get_db)) -> DistribucionOut:
+def get_distribucion(db: Session = Depends(get_db),
+                     cartera: models.Cartera = Depends(get_current_cartera)) -> DistribucionOut:
     from app.services.estimaciones import agregado_por_bloque
 
-    cid = _cartera(db).id
+    cid = cartera.id
     r = svc.calcular_distribucion(db, cid)
     # CAGR4+Div proyectado por bloque (posiciones sin clasificar → clave None).
     aggs = agregado_por_bloque(db, cid)
@@ -197,21 +186,23 @@ def get_distribucion(db: Session = Depends(get_db)) -> DistribucionOut:
 
 @router.get("/posiciones", response_model=list[PosicionBloqueOut],
             summary="Posiciones abiertas con su bloque asignado (para asignar)")
-def get_posiciones(db: Session = Depends(get_db)) -> list[PosicionBloqueOut]:
+def get_posiciones(db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> list[PosicionBloqueOut]:
     return [
         PosicionBloqueOut(
             isin=p.isin, nombre=p.nombre, valor_eur=_q2(p.valor_eur),
             bloque_id=p.bloque_id,
         )
-        for p in svc.listar_posiciones(db, _cartera(db).id)
+        for p in svc.listar_posiciones(db, cartera.id)
     ]
 
 
 @router.put("/asignar", status_code=status.HTTP_204_NO_CONTENT,
             summary="Asignar una posición a un bloque (o a 'Sin clasificar')")
-def asignar(payload: AsignarIn, db: Session = Depends(get_db)) -> None:
+def asignar(payload: AsignarIn, db: Session = Depends(get_db),
+            cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     svc.asignar_bloque(
-        db, _cartera(db).id, payload.isin, payload.bloque_id,
+        db, cartera.id, payload.isin, payload.bloque_id,
         categoria_sugerida=payload.categoria_sugerida,
         confianza_ia=payload.confianza_ia, razon=payload.razon,
     )
@@ -227,9 +218,10 @@ def _sug_out(s) -> SugerenciaBloqueOut:  # type: ignore[no-untyped-def]
 
 @router.post("/sugerir", response_model=SugerenciaBloqueOut,
              summary="Sugerir bloque para una posición (IA). El usuario decide.")
-def sugerir(payload: SugerirIn, db: Session = Depends(get_db)) -> SugerenciaBloqueOut:
+def sugerir(payload: SugerirIn, db: Session = Depends(get_db),
+            cartera: models.Cartera = Depends(get_current_cartera)) -> SugerenciaBloqueOut:
     try:
-        s = clasif_svc.sugerir(db, _cartera(db).id, payload.isin)
+        s = clasif_svc.sugerir(db, cartera.id, payload.isin)
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Clasificador IA: {e}")
     except NotImplementedError as e:
@@ -241,9 +233,10 @@ def sugerir(payload: SugerirIn, db: Session = Depends(get_db)) -> SugerenciaBloq
             summary="Evaluar un candidato: ¿en qué bloque encaja y cumple sus criterios? "
                     "(target opcional = el bloque cuyo déficit quieres llenar)")
 def evaluar(isin: str, target: str | None = None,
-            db: Session = Depends(get_db)) -> EvaluacionOut:
+            db: Session = Depends(get_db),
+            cartera: models.Cartera = Depends(get_current_cartera)) -> EvaluacionOut:
     try:
-        ev = clasif_svc.evaluar_candidato(db, _cartera(db).id, isin, target)
+        ev = clasif_svc.evaluar_candidato(db, cartera.id, isin, target)
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Clasificador IA: {e}")
     except NotImplementedError as e:
@@ -267,11 +260,12 @@ def evaluar(isin: str, target: str | None = None,
              summary="Autoclasificar en lote las posiciones (IA). Menos preciso, "
                      "más barato. El usuario revisa y aplica.")
 def autoclasificar(payload: AutoclasificarIn | None = None,
-                   db: Session = Depends(get_db)) -> list[SugerenciaBloqueOut]:
+                   db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> list[SugerenciaBloqueOut]:
     solo = payload.solo_sin_clasificar if payload else True
     isines = payload.isines if payload else None
     try:
-        sugs = clasif_svc.autoclasificar(db, _cartera(db).id, solo, isines)
+        sugs = clasif_svc.autoclasificar(db, cartera.id, solo, isines)
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Clasificador IA: {e}")
     except NotImplementedError as e:
@@ -281,8 +275,9 @@ def autoclasificar(payload: AutoclasificarIn | None = None,
 
 @router.post("", response_model=BloqueOut, status_code=status.HTTP_201_CREATED,
              summary="Crear un bloque personalizado (tope 8)")
-def crear(payload: CrearBloqueIn, db: Session = Depends(get_db)) -> BloqueOut:
-    b = svc.crear_bloque(db, _cartera(db).id, payload.nombre, payload.categoria_base)
+def crear(payload: CrearBloqueIn, db: Session = Depends(get_db),
+          cartera: models.Cartera = Depends(get_current_cartera)) -> BloqueOut:
+    b = svc.crear_bloque(db, cartera.id, payload.nombre, payload.categoria_base)
     return BloqueOut(id=b.id, nombre=b.nombre, categoria_base=b.categoria_base,
                      orden=b.orden, es_base=b.es_base)
 
@@ -290,10 +285,11 @@ def crear(payload: CrearBloqueIn, db: Session = Depends(get_db)) -> BloqueOut:
 @router.patch("/{bloque_id}", response_model=BloqueOut,
               summary="Renombrar o recategorizar un bloque")
 def editar(bloque_id: str, payload: EditarBloqueIn,
-           db: Session = Depends(get_db)) -> BloqueOut:
+           db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> BloqueOut:
     enviados = payload.model_dump(exclude_unset=True)
     b = svc.editar_bloque(
-        db, _cartera(db).id, bloque_id,
+        db, cartera.id, bloque_id,
         payload.nombre, payload.categoria_base,
         liquidez_asignada_eur=payload.liquidez_asignada_eur,
         rendimiento_pct=payload.rendimiento_pct,
@@ -310,5 +306,6 @@ def editar(bloque_id: str, payload: EditarBloqueIn,
 
 @router.delete("/{bloque_id}", status_code=status.HTTP_204_NO_CONTENT,
                summary="Eliminar un bloque (sus posiciones → Sin clasificar)")
-def eliminar(bloque_id: str, db: Session = Depends(get_db)) -> None:
-    svc.eliminar_bloque(db, _cartera(db).id, bloque_id)
+def eliminar(bloque_id: str, db: Session = Depends(get_db),
+             cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    svc.eliminar_bloque(db, cartera.id, bloque_id)

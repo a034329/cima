@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.config import settings
 from app.db import get_db, models
 
@@ -41,14 +42,6 @@ class ConfigIn(BaseModel):
     aportacion_mensual_eur: Decimal | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 def _serializar(db: Session, cartera: models.Cartera) -> ConfigOut:
     user = db.get(models.User, cartera.user_id)
     brokers = db.execute(
@@ -72,13 +65,14 @@ def _serializar(db: Session, cartera: models.Cartera) -> ConfigOut:
 
 
 @router.get("", response_model=ConfigOut, summary="Configuración de la cartera")
-def get_config(db: Session = Depends(get_db)) -> ConfigOut:
-    return _serializar(db, _cartera(db))
+def get_config(db: Session = Depends(get_db),
+               cartera: models.Cartera = Depends(get_current_cartera)) -> ConfigOut:
+    return _serializar(db, cartera)
 
 
 @router.patch("", response_model=ConfigOut, summary="Actualizar configuración")
-def patch_config(payload: ConfigIn, db: Session = Depends(get_db)) -> ConfigOut:
-    cartera = _cartera(db)
+def patch_config(payload: ConfigIn, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> ConfigOut:
     if payload.nombre_cartera is not None:
         nombre = payload.nombre_cartera.strip()
         if not nombre:

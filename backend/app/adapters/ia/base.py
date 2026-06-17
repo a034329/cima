@@ -73,17 +73,21 @@ class ClasificadorIA(Protocol):
         contexto comprimido y salida tersa (menos preciso que `clasificar`)."""
         ...
 
-    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None,
+                  modelo: str | None = None) -> str:
         """Transporte genérico: devuelve el texto crudo del modelo para un par
         (system, user). Lo usan capacidades que arman su propio prompt+parser
         (p.ej. el onboarding, el asesor). `timeout_s` permite ampliar el límite
-        para generaciones largas (planes multi-paso). El swap de proveedor es
+        para generaciones largas (planes multi-paso). `modelo` fuerza un modelo
+        concreto (None = el por defecto del proveedor). El swap de proveedor es
         transparente."""
         ...
 
-    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None,
+                   modelo: str | None = None) -> str:
         """Como `completar` pero CON búsqueda web (PASO 0: contexto cualitativo).
         En dev (Max CLI) usa la tool WebSearch pre-aprobada; en la API usará el
         server-tool `web_search`. Más lento y no determinista que `completar`.
-        `timeout_s` permite acortar para chat conversacional vs análisis profundo."""
+        `timeout_s` permite acortar para chat conversacional vs análisis profundo.
+        `modelo` fuerza un modelo concreto (None = el por defecto del proveedor)."""
         ...

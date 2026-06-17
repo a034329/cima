@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.adapters import cuadrate
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.schemas.transaccion import ImportResultado
 from app.services.aportaciones import (
@@ -69,30 +70,24 @@ class ExtractoOut(BaseModel):
     uploaded_at: str
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 @router.get("/extractos", response_model=list[ExtractoOut],
             summary="Lista los CSVs originales guardados (Roadmap 1.9)")
 def listar_extractos_guardados(
     ejercicio: int | None = None,
     db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
 ) -> list[ExtractoOut]:
     """Para que el frontend muestre qué tiene Cima guardado y permita generar
     la declaración solo cuando hay extractos para ese ejercicio."""
-    items = storage_extractos.listar_extractos(db, _cartera(db).id, ejercicio)
+    items = storage_extractos.listar_extractos(db, cartera.id, ejercicio)
     return [ExtractoOut(**i.__dict__) for i in items]
 
 
 @router.delete("/extractos/{extracto_id}", status_code=status.HTTP_204_NO_CONTENT,
                summary="Elimina un CSV guardado (fila + fichero)")
-def eliminar_extracto_guardado(extracto_id: str, db: Session = Depends(get_db)) -> None:
-    cartera_id = _cartera(db).id
+def eliminar_extracto_guardado(extracto_id: str, db: Session = Depends(get_db),
+                               cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    cartera_id = cartera.id
     if not storage_extractos.eliminar_extracto(db, cartera_id, extracto_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Extracto no encontrado")
     db.commit()
@@ -116,13 +111,11 @@ class BrokerEstado(BaseModel):
 
 @router.get("/estado", response_model=list[BrokerEstado],
             summary="Fecha del último registro importado por broker (para reanudar desde ahí)")
-def estado_brokers(db: Session = Depends(get_db)) -> list[BrokerEstado]:
+def estado_brokers(db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> list[BrokerEstado]:
     """Por cada broker del usuario: la fecha del registro más reciente ya
     importado (máximo entre transacciones, opciones y aportaciones). Permite
     saber desde qué fecha pedir el siguiente extracto sin solaparse."""
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        return []
     brokers = db.execute(
         select(models.Broker).where(models.Broker.user_id == cartera.user_id)
     ).scalars().all()
@@ -163,14 +156,8 @@ def estado_brokers(db: Session = Depends(get_db)) -> list[BrokerEstado]:
 
 
 def _resolver_broker(
-    db: Session, broker_tipo: str
+    db: Session, broker_tipo: str, cartera: models.Cartera
 ) -> tuple[models.Cartera, models.Broker]:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
     broker_tipo_bd = cuadrate.broker_tipo_db(broker_tipo)
     broker = db.execute(
         select(models.Broker)
@@ -328,6 +315,7 @@ def _resumen_opt(cands: list, filtro: str | None) -> dict:
 )
 async def importar_extracto(
     db: Annotated[Session, Depends(get_db)],
+    cartera: Annotated[models.Cartera, Depends(get_current_cartera)],
     broker_tipo: Annotated[str, Form(description="ej: 'tr', 'degiro', 'ibkr'")],
     fichero: Annotated[
         UploadFile,
@@ -366,7 +354,7 @@ async def importar_extracto(
             ),
         )
 
-    cartera, broker = _resolver_broker(db, broker_tipo)
+    cartera, broker = _resolver_broker(db, broker_tipo, cartera)
 
     suffix_main = Path(fichero.filename or "extracto.csv").suffix or ".csv"
     avisos_parser: list[str] = []

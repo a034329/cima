@@ -45,7 +45,8 @@ class MockClasificador:
     ) -> list[SugerenciaBloque]:
         return [self.clasificar(e, catalogo) for e in empresas]
 
-    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None,
+                  modelo: str | None = None) -> str:
         """Propuesta de onboarding canónica (offline): reparto de acumulación."""
         return (
             '{"bloques": ['
@@ -60,7 +61,8 @@ class MockClasificador:
             '], "resumen": "Cartera de acumulación equilibrada hacia el crecimiento."}'
         )
 
-    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:  # noqa: ARG002
+    def investigar(self, system: str, user: str, timeout_s: int | None = None,  # noqa: ARG002
+                   modelo: str | None = None) -> str:
         """PASO 0 canónico (offline): contexto + clasificación coyuntural."""
         return (
             '{"resumen": "Sin noticias estructurales recientes; ruido de mercado de corto plazo.",'

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import comps as comps_svc
 from app.services import jobs
@@ -60,14 +60,6 @@ class ValoracionOut(BaseModel):
     disclaimer: str | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 def _out(op: svc.OnePager) -> OnePagerOut:
     return OnePagerOut(
         isin=op.isin, nombre=op.nombre, que_hace=op.que_hace, tesis=op.tesis,
@@ -85,8 +77,9 @@ class OnePagerEstadoOut(BaseModel):
 
 @router.get("/{isin}/one-pager", response_model=OnePagerEstadoOut,
             summary="Estado del one-pager + resultado guardado (para polling)")
-def one_pager_estado(isin: str, db: Session = Depends(get_db)) -> OnePagerEstadoOut:
-    cid = _cartera(db).id
+def one_pager_estado(isin: str, db: Session = Depends(get_db),
+                     cartera: models.Cartera = Depends(get_current_cartera)) -> OnePagerEstadoOut:
+    cid = cartera.id
     job = jobs.estado(db, cid, isin, "one_pager")
     res = svc.guardado(db, cid, isin)
     out = _out(res) if res else None
@@ -102,8 +95,9 @@ def one_pager_estado(isin: str, db: Session = Depends(get_db)) -> OnePagerEstado
 @router.post("/{isin}/one-pager", response_model=OnePagerEstadoOut,
              status_code=status.HTTP_202_ACCEPTED,
              summary="Lanza la generación del one-pager en segundo plano (IA + web)")
-def one_pager_lanzar(isin: str, db: Session = Depends(get_db)) -> OnePagerEstadoOut:
-    jobs.lanzar(db, _cartera(db).id, isin, "one_pager", svc.generar)
+def one_pager_lanzar(isin: str, db: Session = Depends(get_db),
+                     cartera: models.Cartera = Depends(get_current_cartera)) -> OnePagerEstadoOut:
+    jobs.lanzar(db, cartera.id, isin, "one_pager", svc.generar)
     return OnePagerEstadoOut(estado="en_curso")
 
 
@@ -130,8 +124,9 @@ class ValoracionEstadoOut(BaseModel):
 
 @router.get("/{isin}/valoracion", response_model=ValoracionEstadoOut,
             summary="Estado de la valoración + resultado guardado (para polling)")
-def valoracion_estado(isin: str, db: Session = Depends(get_db)) -> ValoracionEstadoOut:
-    cid = _cartera(db).id
+def valoracion_estado(isin: str, db: Session = Depends(get_db),
+                      cartera: models.Cartera = Depends(get_current_cartera)) -> ValoracionEstadoOut:
+    cid = cartera.id
     job = jobs.estado(db, cid, isin, "valoracion")
     v = val_svc.guardado(db, cid, isin)
     out = _val_out(v) if v else None
@@ -147,8 +142,9 @@ def valoracion_estado(isin: str, db: Session = Depends(get_db)) -> ValoracionEst
 @router.post("/{isin}/valoracion", response_model=ValoracionEstadoOut,
              status_code=status.HTTP_202_ACCEPTED,
              summary="Lanza los escenarios de valoración en segundo plano (solo PER)")
-def valoracion_lanzar(isin: str, db: Session = Depends(get_db)) -> ValoracionEstadoOut:
-    jobs.lanzar(db, _cartera(db).id, isin, "valoracion", val_svc.proponer)
+def valoracion_lanzar(isin: str, db: Session = Depends(get_db),
+                      cartera: models.Cartera = Depends(get_current_cartera)) -> ValoracionEstadoOut:
+    jobs.lanzar(db, cartera.id, isin, "valoracion", val_svc.proponer)
     return ValoracionEstadoOut(estado="en_curso")
 
 
@@ -193,8 +189,9 @@ def _comps_out(c: comps_svc.Comps) -> CompsOut:
 
 @router.get("/{isin}/comps", response_model=CompsEstadoOut,
             summary="Estado de los comparables + resultado guardado (para polling)")
-def comps_estado(isin: str, db: Session = Depends(get_db)) -> CompsEstadoOut:
-    cid = _cartera(db).id
+def comps_estado(isin: str, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> CompsEstadoOut:
+    cid = cartera.id
     job = jobs.estado(db, cid, isin, "comps")
     c = comps_svc.guardado(db, cid, isin)
     out = _comps_out(c) if c else None
@@ -210,6 +207,7 @@ def comps_estado(isin: str, db: Session = Depends(get_db)) -> CompsEstadoOut:
 @router.post("/{isin}/comps", response_model=CompsEstadoOut,
              status_code=status.HTTP_202_ACCEPTED,
              summary="Lanza la generación de comparables en segundo plano (IA + web)")
-def comps_lanzar(isin: str, db: Session = Depends(get_db)) -> CompsEstadoOut:
-    jobs.lanzar(db, _cartera(db).id, isin, "comps", comps_svc.generar)
+def comps_lanzar(isin: str, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> CompsEstadoOut:
+    jobs.lanzar(db, cartera.id, isin, "comps", comps_svc.generar)
     return CompsEstadoOut(estado="en_curso")

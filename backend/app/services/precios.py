@@ -378,6 +378,37 @@ def obtener_cierres_anteriores_eur(
     return out
 
 
+# ── Helpers públicos reutilizables (histórico mensual, ADR-004) ────────────
+
+def resolver_simbolos(isines: list[str]) -> dict[str, str]:
+    """ISIN → símbolo yfinance para los que resuelven (OpenFIGI + overrides).
+    Reusa la misma resolución que el feed spot. Los no resueltos se omiten."""
+    cache = _leer_cache()
+    _resolver_figi(isines, cache)
+    out: dict[str, str] = {}
+    for isin in isines:
+        figi = cache.get(f"figi:{isin}", {})
+        sim = _ISIN_OVERRIDE.get(isin) or _yf_simbolo(figi.get("ticker"), figi.get("exch"))
+        if sim is not None:
+            out[isin] = sim
+    _guardar_cache(cache)
+    return out
+
+
+def base_y_escala(divisa: str) -> tuple[str, Decimal]:
+    """Divisa de cotización → (divisa BASE para el par EUR, escala). GBp/GBX →
+    (GBP, 0.01); el resto → (divisa, 1). Misma convención de peniques que el spot."""
+    raw = divisa or "EUR"
+    div = raw.upper()
+    if div == "EUR":
+        return "EUR", Decimal("1")
+    if raw == "GBp" or div in ("GBX", "GBP_PENCE"):
+        return "GBP", Decimal("0.01")
+    if div == "GBP":
+        return "GBP", Decimal("1")
+    return div, Decimal("1")
+
+
 _TTL_FUND = 7 * 24 * 3600   # fundamentales cambian lento
 
 

@@ -8,11 +8,12 @@ from __future__ import annotations
 from collections import defaultdict
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import fifo
 
@@ -34,7 +35,10 @@ class DedupResultado(BaseModel):
     response_model=DedupResultado,
     summary="Dedup retroactiva de tx sin external_id (bug previo a id sintético)",
 )
-def deduplicar_sin_external_id(db: Session = Depends(get_db)) -> DedupResultado:
+def deduplicar_sin_external_id(
+    db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
+) -> DedupResultado:
     """Encuentra transacciones que comparten firma natural
     `(broker_id, posicion_id, fecha, tipo, cantidad, importe_eur)` y conserva
     sólo la más antigua. El resto pasa a `estado='descartada'`.
@@ -46,13 +50,6 @@ def deduplicar_sin_external_id(db: Session = Depends(get_db)) -> DedupResultado:
 
     Es idempotente: una segunda invocación no encontrará duplicados nuevos.
     """
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-
     txs = list(db.execute(
         select(models.Transaccion)
         .where(models.Transaccion.cartera_id == cartera.id)

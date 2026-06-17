@@ -163,8 +163,8 @@ def test_j7_doble_submit_no_duplica(db: Session, cartera):
     from app.routers.aportaciones import AportacionIn, crear
     payload = AportacionIn(fecha=date(2025, 3, 1), importe_eur=Decimal("1000"),
                            descripcion="Transferencia", broker_id=None)
-    crear(payload, db)
-    crear(payload, db)
+    crear(payload, db, cartera)
+    crear(payload, db, cartera)
     assert db.query(models.Aportacion).count() == 1, \
         "el doble clic creaba dos filas y corrompía el neto anual"
 

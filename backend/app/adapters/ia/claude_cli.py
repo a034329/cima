@@ -69,15 +69,17 @@ class ClaudeCliClasificador:
                 continue
         return out
 
-    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None,
+                  modelo: str | None = None) -> str:
         """Transporte genérico (onboarding, asesor, etc.): texto crudo del modelo."""
-        return self._run(system, user, timeout=timeout_s)
+        return self._run(system, user, modelo=modelo, timeout=timeout_s)
 
-    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None,
+                   modelo: str | None = None) -> str:
         """PASO 0: texto del modelo CON búsqueda web. Pre-aprueba SOLO `WebSearch`
         (read-only, mediada por Anthropic) — sin bypass, sin FS/Bash. `timeout_s`
         permite acortar para el chat (3 min) vs análisis profundo (10 min)."""
-        return self._run(system, user, tools="WebSearch", allowed="WebSearch",
+        return self._run(system, user, modelo=modelo, tools="WebSearch", allowed="WebSearch",
                          timeout=timeout_s or settings.ia_web_timeout_s,
                          effort=settings.ia_effort_web)
 

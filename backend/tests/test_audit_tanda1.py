@@ -145,7 +145,7 @@ def test_c3_descartar_compra_elimina_lotes(db: Session, cartera):
     db.commit()
     assert fifo.estado_posicion(db, pos.id)["cantidad"] == Decimal("10")
 
-    descartar_transaccion(tx.id, db)
+    descartar_transaccion(tx.id, db, cartera)
 
     assert fifo.estado_posicion(db, pos.id)["cantidad"] == Decimal("0"), \
         "tras descartar la única compra, la posición no puede conservar lotes"

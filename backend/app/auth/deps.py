@@ -60,3 +60,25 @@ def get_current_user(
             detail="El usuario del token ya no existe",
         )
     return user
+
+
+def get_current_cartera(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> models.Cartera:
+    """La cartera del usuario autenticado (1:1 por ahora) — SCOPING multi-tenant.
+    Sustituye los `select(Cartera).first()` que cogían "la primera" (IDOR por
+    diseño). En modo owner `user` es el owner provisionado → su cartera; en saas
+    es el del token. 404 si el usuario aún no tiene cartera (no debería tras el
+    provisioning)."""
+    from sqlalchemy import select
+
+    cartera = db.execute(
+        select(models.Cartera).where(models.Cartera.user_id == user.id)
+    ).scalars().first()
+    if cartera is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hay cartera para este usuario. Llama primero a POST /api/bootstrap",
+        )
+    return cartera

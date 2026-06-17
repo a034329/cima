@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.routers.estimaciones import EstimacionOut, _to_out
 from app.services import estimaciones as svc
@@ -38,13 +39,6 @@ class AltaSeguimiento(BaseModel):
     notas: str | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No hay cartera. POST /api/bootstrap")
-    return c
-
-
 def _bloques_nombre(db: Session, cid: str) -> dict[str, str]:
     return {
         b.id: b.nombre for b in db.execute(
@@ -55,8 +49,9 @@ def _bloques_nombre(db: Session, cid: str) -> dict[str, str]:
 
 @router.get("", response_model=list[SeguimientoOut],
             summary="Lista de empresas en seguimiento con su valoración")
-def listar(db: Session = Depends(get_db)) -> list[SeguimientoOut]:
-    cid = _cartera(db).id
+def listar(db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> list[SeguimientoOut]:
+    cid = cartera.id
     segs = {
         s.isin: s for s in db.execute(
             select(models.Seguimiento).where(models.Seguimiento.cartera_id == cid)
@@ -81,8 +76,9 @@ def listar(db: Session = Depends(get_db)) -> list[SeguimientoOut]:
 
 @router.post("", response_model=SeguimientoOut, status_code=status.HTTP_201_CREATED,
              summary="Añadir empresa al seguimiento por ticker (autorrellena estimación)")
-def anadir(payload: AltaSeguimiento, db: Session = Depends(get_db)) -> SeguimientoOut:
-    cid = _cartera(db).id
+def anadir(payload: AltaSeguimiento, db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> SeguimientoOut:
+    cid = cartera.id
     info = precios_svc.resolver_ticker(payload.ticker)
     if not info or not info.get("isin"):
         raise HTTPException(status.HTTP_404_NOT_FOUND,
@@ -133,8 +129,9 @@ def anadir(payload: AltaSeguimiento, db: Session = Depends(get_db)) -> Seguimien
 
 @router.delete("/{isin}", status_code=status.HTTP_204_NO_CONTENT,
                summary="Quitar empresa del seguimiento")
-def quitar(isin: str, db: Session = Depends(get_db)) -> None:
-    cid = _cartera(db).id
+def quitar(isin: str, db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    cid = cartera.id
     s = db.execute(
         select(models.Seguimiento)
         .where(models.Seguimiento.cartera_id == cid)

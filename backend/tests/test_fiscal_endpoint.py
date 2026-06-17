@@ -116,7 +116,10 @@ def test_get_fiscal_sin_cartera_devuelve_404(
 def test_get_fiscal_ejercicio_fuera_rango_devuelve_400(
     client_y_db: tuple[TestClient, sessionmaker],
 ) -> None:
-    client, _ = client_y_db
+    client, SessionLocal = client_y_db
+    # La cartera se resuelve como dependencia ANTES del check de rango, así que
+    # debe existir para llegar al 400 (antes el rango se validaba primero).
+    _seed_basico(SessionLocal)
     r = client.get("/api/fiscal/2010")
     assert r.status_code == 400
     r2 = client.get("/api/fiscal/2099")

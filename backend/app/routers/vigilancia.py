@@ -5,9 +5,9 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import vigilancia as svc
 
@@ -46,14 +46,6 @@ class VigilanciaOut(BaseModel):
     desde: str | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    from fastapi import HTTPException
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No hay cartera. POST /api/bootstrap")
-    return c
-
-
 def _alerta_out(a: svc.Alerta) -> AlertaOut:
     return AlertaOut(
         isin=a.isin, nombre=a.nombre,
@@ -65,8 +57,9 @@ def _alerta_out(a: svc.Alerta) -> AlertaOut:
 
 @router.get("", response_model=VigilanciaOut,
             summary="Alertas de movimiento: vs último 'visto' (baseline) y vs cierre de ayer (intradia)")
-def get_vigilancia(db: Session = Depends(get_db)) -> VigilanciaOut:
-    cid = _cartera(db).id
+def get_vigilancia(db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> VigilanciaOut:
+    cid = cartera.id
     alertas, desde = svc.evaluar(db, cid)
     intradia = svc.evaluar_intradia(db, cid)
     plan = svc.evaluar_plan_precio(db, cid)
@@ -84,5 +77,6 @@ def get_vigilancia(db: Session = Depends(get_db)) -> VigilanciaOut:
 
 
 @router.post("/visto", status_code=status.HTTP_204_NO_CONTENT, summary="Marcar como visto (resetea el baseline)")
-def visto(db: Session = Depends(get_db)) -> None:
-    svc.marcar_visto(db, _cartera(db).id)
+def visto(db: Session = Depends(get_db),
+          cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    svc.marcar_visto(db, cartera.id)

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.aportaciones import aportaciones_por_anio
 
@@ -44,20 +45,10 @@ class AportacionesResumen(BaseModel):
     movimientos: list[AportacionOut]
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return c
-
-
 @router.get("", response_model=AportacionesResumen,
             summary="Aportaciones netas por año + movimientos")
-def listar(db: Session = Depends(get_db)) -> AportacionesResumen:
-    cartera = _cartera(db)
+def listar(db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> AportacionesResumen:
     por_anio = aportaciones_por_anio(db, cartera.id)
     # Cota al listado (los totales se calculan aparte sobre TODO el
     # histórico): sin límite el payload crecía sin tope (auditoría).
@@ -76,8 +67,8 @@ def listar(db: Session = Depends(get_db)) -> AportacionesResumen:
 
 @router.post("", response_model=AportacionOut, status_code=status.HTTP_201_CREATED,
              summary="Registrar aportación/retirada manual")
-def crear(payload: AportacionIn, db: Session = Depends(get_db)) -> models.Aportacion:
-    cartera = _cartera(db)
+def crear(payload: AportacionIn, db: Session = Depends(get_db),
+          cartera: models.Cartera = Depends(get_current_cartera)) -> models.Aportacion:
     if payload.importe_eur == 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -107,9 +98,10 @@ def crear(payload: AportacionIn, db: Session = Depends(get_db)) -> models.Aporta
 
 @router.delete("/{aportacion_id}", status_code=status.HTTP_204_NO_CONTENT,
                summary="Eliminar una aportación")
-def eliminar(aportacion_id: str, db: Session = Depends(get_db)) -> None:
+def eliminar(aportacion_id: str, db: Session = Depends(get_db),
+             cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     ap = db.get(models.Aportacion, aportacion_id)
-    if ap is not None and ap.cartera_id != _cartera(db).id:
+    if ap is not None and ap.cartera_id != cartera.id:
         ap = None   # S2: scoping a la cartera activa
     if ap is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No existe")

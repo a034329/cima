@@ -4,11 +4,11 @@ from __future__ import annotations
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import plan as svc
 
@@ -127,16 +127,6 @@ class EditarPasoIn(BaseModel):
     precio_alerta_eur: Decimal | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 def _to_paso_out(p: models.PlanPaso) -> PasoOut:
     return PasoOut(
         id=p.id, isin=p.isin, decision=p.decision, prioridad=p.prioridad,
@@ -149,13 +139,15 @@ def _to_paso_out(p: models.PlanPaso) -> PasoOut:
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[PasoOut], summary="Cola de pasos del plan")
-def get_pasos(estado: str | None = None, db: Session = Depends(get_db)) -> list[PasoOut]:
-    return [_to_paso_out(p) for p in svc.listar_pasos(db, _cartera(db).id, estado)]
+def get_pasos(estado: str | None = None, db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> list[PasoOut]:
+    return [_to_paso_out(p) for p in svc.listar_pasos(db, cartera.id, estado)]
 
 
 @router.get("/posiciones", response_model=list[PosicionPlanOut],
             summary="Posiciones abiertas con su decisión activa + bloque")
-def get_posiciones(db: Session = Depends(get_db)) -> list[PosicionPlanOut]:
+def get_posiciones(db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> list[PosicionPlanOut]:
     return [
         PosicionPlanOut(
             isin=p.isin, nombre=p.nombre, valor_eur=_q2(p.valor_eur),  # type: ignore[arg-type]
@@ -165,14 +157,15 @@ def get_posiciones(db: Session = Depends(get_db)) -> list[PosicionPlanOut]:
             en_cartera=p.en_cartera,
             fecha_objetivo=p.fecha_objetivo, proximo_tramo_fecha=p.proximo_tramo_fecha,
         )
-        for p in svc.posiciones_con_plan(db, _cartera(db).id)
+        for p in svc.posiciones_con_plan(db, cartera.id)
     ]
 
 
 @router.get("/hueco", response_model=HuecoOut,
             summary="Hueco de asignación: cuánto falta comprar por bloque (top-down)")
-def get_hueco(db: Session = Depends(get_db)) -> HuecoOut:
-    r = svc.hueco_asignacion(db, _cartera(db).id)
+def get_hueco(db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> HuecoOut:
+    r = svc.hueco_asignacion(db, cartera.id)
     return HuecoOut(
         total_actual_eur=_q2(r.total_actual_eur),                # type: ignore[arg-type]
         total_planeado_eur=_q2(r.total_planeado_eur),            # type: ignore[arg-type]
@@ -194,9 +187,10 @@ def get_hueco(db: Session = Depends(get_db)) -> HuecoOut:
 
 @router.post("/evaluar-friccion", response_model=FriccionOut | None,
              summary="¿Esta decisión (VENDER/RECORTAR) merece fricción? null = deja pasar")
-def evaluar_friccion(payload: FriccionIn, db: Session = Depends(get_db)) -> FriccionOut | None:
+def evaluar_friccion(payload: FriccionIn, db: Session = Depends(get_db),
+                     cartera: models.Cartera = Depends(get_current_cartera)) -> FriccionOut | None:
     from app.services import friccion
-    r = friccion.evaluar_friccion(db, _cartera(db).id, payload.isin, payload.decision)
+    r = friccion.evaluar_friccion(db, cartera.id, payload.isin, payload.decision)
     if r is None:
         return None
     return FriccionOut(severidad=r.severidad, titulo=r.titulo, rebate1=r.rebate1,
@@ -213,18 +207,20 @@ class RegistrarFriccionIn(BaseModel):
 
 @router.post("/registrar-friccion", status_code=status.HTTP_204_NO_CONTENT,
              summary="Registrar un evento de fricción (override del usuario)")
-def registrar_friccion(payload: RegistrarFriccionIn, db: Session = Depends(get_db)) -> None:
+def registrar_friccion(payload: RegistrarFriccionIn, db: Session = Depends(get_db),
+                       cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     """Captura el override cuando el usuario continúa con la operación tras la
     fricción (no se ata a un paso del plan; lo usa el alta de transacciones)."""
     from app.services import friccion
-    friccion.registrar_evento(db, _cartera(db).id, payload.isin, payload.decision,
+    friccion.registrar_evento(db, cartera.id, payload.isin, payload.decision,
                               payload.severidad, payload.motivo, payload.rebatido)
 
 
 @router.post("", response_model=PasoOut, status_code=status.HTTP_201_CREATED,
              summary="Crear un paso del plan para una posición")
-def crear(payload: CrearPasoIn, db: Session = Depends(get_db)) -> PasoOut:
-    cid = _cartera(db).id
+def crear(payload: CrearPasoIn, db: Session = Depends(get_db),
+          cartera: models.Cartera = Depends(get_current_cartera)) -> PasoOut:
+    cid = cartera.id
     p = svc.crear_paso(
         db, cid, payload.isin, payload.decision, payload.prioridad,
         razon=payload.razon, capital_objetivo_eur=payload.capital_objetivo_eur,
@@ -243,13 +239,15 @@ def crear(payload: CrearPasoIn, db: Session = Depends(get_db)) -> PasoOut:
 
 @router.patch("/{paso_id}", response_model=PasoOut, summary="Editar un paso")
 def editar(paso_id: str, payload: EditarPasoIn,
-           db: Session = Depends(get_db)) -> PasoOut:
+           db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> PasoOut:
     campos = payload.model_dump(exclude_unset=True)
-    p = svc.actualizar_paso(db, _cartera(db).id, paso_id, **campos)
+    p = svc.actualizar_paso(db, cartera.id, paso_id, **campos)
     return _to_paso_out(p)
 
 
 @router.delete("/{paso_id}", status_code=status.HTTP_204_NO_CONTENT,
                summary="Eliminar un paso")
-def eliminar(paso_id: str, db: Session = Depends(get_db)) -> None:
-    svc.eliminar_paso(db, _cartera(db).id, paso_id)
+def eliminar(paso_id: str, db: Session = Depends(get_db),
+             cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    svc.eliminar_paso(db, cartera.id, paso_id)

@@ -75,14 +75,35 @@ Supabase alojado) y sin servidor aparte** (un `docker-compose`, no Vercel+Railwa
 - `middleware.ts`: redirige a `/login` sin sesión. `fetchJson` adjunta el Bearer.
 
 ## Fases
-- **A — Auth core (en curso):** passwords, tokens, `get_current_user` (+puente owner),
+- **A — Auth core (HECHA):** passwords, tokens, `get_current_user` (+puente owner),
   `provisioning`, endpoints `/api/auth/*`, columna `password_hash`. **NO toca los 38
   endpoints** → no rompe nada; aditivo y testeado en aislamiento.
-- **B — Multi-tenancy:** `get_current_cartera` + refactor de los 38 endpoints + test IDOR
-  (user A no ve cartera de B). Bootstrap deja de ser público.
-- **C — Frontend:** login/signup, middleware, Bearer en fetchJson.
-- **D — Tests + endurecimiento:** rate-limit de login, lockout, expiración/refresh,
-  rotación de secreto, CORS.
+- **B — Multi-tenancy (HECHA):** `get_current_cartera` scopa por usuario (cierra el IDOR)
+  y se inyectó vía `Depends` en TODOS los routers (regimen + 31 ficheros, ~80 endpoints;
+  helpers `_cartera`/`_cartera_o_404`/`_resolver_cartera_por_defecto` y los `select(Cartera).first()`
+  inline eliminados). Tests de endpoint siguen verdes vía override autouse en `conftest`
+  (resuelve "la única cartera" sin token); `tests/test_multitenancy.py` quita ese override
+  y prueba el aislamiento real con tokens Bearer en modo saas (user A no ve la cartera de B).
+  Bootstrap se conserva como atajo de seed (no concede acceso en saas: sin token y
+  `password_hash=None`); el squatting de email se anota para Fase D. Suite 488 verde.
+- **C — Frontend (HECHA):** `lib/auth.ts` (token JWT en cookie `cima_token` legible,
+  isomórfica vía `next/headers` en SSR y `document.cookie` en cliente); `apiFetch` inyecta
+  `Authorization: Bearer` en TODAS las llamadas (`fetchJson` + 16 fetch crudos reconvertidos);
+  páginas `/login` y `/signup` (componente `AuthForm`); `middleware.ts` (gate de UX sólo en
+  SaaS — redirige a `/login` sin cookie, y de `/login` a `/` con cookie); botón "Cerrar sesión"
+  en Config (sólo SaaS). En owner mode no hay token y el backend puentea → UI intacta.
+  El modo se expone al front con `NEXT_PUBLIC_CIMA_MODE` (default `owner`). `next build` verde.
+- **D — Endurecimiento (HECHA):** rate-limit + lockout de login (`app/auth/ratelimit.py`,
+  ventana deslizante en memoria por `(IP, email)` → 429 con Retry-After; clavado por IP+email
+  para no permitir DoS de lockout a terceros); endpoint `POST /api/auth/refresh` (renueva token
+  válido) + `AuthRefresher` en el front (renovación proactiva cada 12 h → evita el 401 en SSR);
+  `fetchJson` redirige a `/login?next=` ante un 401 en cliente saas; el **squatting de email
+  queda cerrado**: el signup RECLAMA una cuenta sin contraseña (provisionada por bootstrap)
+  fijando la password en vez de 409. CORS ya era explícito (orígenes de settings, no `*`) y
+  usamos Bearer (no cookies cross-origin). Suite 492 verde.
+  - **Pendiente menor (cuando escale):** el rate-limit en memoria no se comparte entre
+    réplicas/workers (necesitaría Redis); cookie httpOnly + token fuera de JS si el riesgo
+    XSS lo justifica; rotación de secreto con `kid`/multi-clave para no invalidar todo de golpe.
 
 ## Alternativas consideradas
 - **Supabase Auth alojado:** vendor externo + datos fuera. Descartado por el requisito

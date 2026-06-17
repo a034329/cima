@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.schemas.fiscal import CompensacionOut, FiscalResumenOut
 from app.services.fiscal import calcular_fiscal
@@ -82,31 +83,23 @@ def _serializar_resumen(r) -> ResumenFiscalOut:  # type: ignore[no-untyped-def]
     )
 
 
-def _cartera_o_404(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 @router.get("/resumen/acumulado", response_model=ResumenFiscalOut,
             summary="Cuadro IRPF integrado — acumulado")
-def get_resumen_acumulado(db: Session = Depends(get_db)) -> ResumenFiscalOut:
-    return _serializar_resumen(calcular_resumen(db, _cartera_o_404(db).id, None))
+def get_resumen_acumulado(db: Session = Depends(get_db),
+                          cartera: models.Cartera = Depends(get_current_cartera)) -> ResumenFiscalOut:
+    return _serializar_resumen(calcular_resumen(db, cartera.id, None))
 
 
 @router.get("/resumen/{ejercicio}", response_model=ResumenFiscalOut,
             summary="Cuadro IRPF integrado del ejercicio (base del ahorro completa)")
-def get_resumen(ejercicio: int, db: Session = Depends(get_db)) -> ResumenFiscalOut:
+def get_resumen(ejercicio: int, db: Session = Depends(get_db),
+                cartera: models.Cartera = Depends(get_current_cartera)) -> ResumenFiscalOut:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
         )
-    return _serializar_resumen(calcular_resumen(db, _cartera_o_404(db).id, ejercicio))
+    return _serializar_resumen(calcular_resumen(db, cartera.id, ejercicio))
 
 
 # Rango razonable. Antes de 2015 cambió la regla 2M; después de 2030 es
@@ -141,7 +134,8 @@ def _serializar(r) -> FiscalResumenOut:  # type: ignore[no-untyped-def]
     summary="Cálculo fiscal acumulado (todos los años en BD)",
 )
 def get_fiscal_acumulado(limit_matches: int = 1000,
-                         db: Session = Depends(get_db)) -> FiscalResumenOut:
+                         db: Session = Depends(get_db),
+                         cartera: models.Cartera = Depends(get_current_cartera)) -> FiscalResumenOut:
     """Vista histórica: todos los matches FIFO de cualquier año + todos los
     dividendos del histórico. La compensación se devuelve referida al año
     siguiente al último match (informativo, no es la cifra que va a RentaWEB).
@@ -149,12 +143,6 @@ def get_fiscal_acumulado(limit_matches: int = 1000,
     Útil para auditar el patrimonio realizado total y los flujos de RCM
     sin tener que pivotar año por año.
     """
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
     r = calcular_fiscal(db, cartera.id, None)
     out = _serializar(r)
     # Cota de payload: un daytrader acumula miles de matches históricos —
@@ -207,11 +195,12 @@ def _q4n(x):  # type: ignore[no-untyped-def]
 
 @router.get("/optimizador/{ejercicio}", response_model=OptimizadorOut,
             summary="Optimizador fiscal de cierre de año (harvesting)")
-def get_optimizador(ejercicio: int, db: Session = Depends(get_db)) -> OptimizadorOut:
+def get_optimizador(ejercicio: int, db: Session = Depends(get_db),
+                    cartera: models.Cartera = Depends(get_current_cartera)) -> OptimizadorOut:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ejercicio fuera de rango")
     from app.services.fiscal_optimizador import calcular_optimizador
-    r = calcular_optimizador(db, _cartera_o_404(db).id, ejercicio)
+    r = calcular_optimizador(db, cartera.id, ejercicio)
     return OptimizadorOut(
         ejercicio=r.ejercicio, fecha_calculo=r.fecha_calculo,
         gp_realizada_ytd=_q2(r.gp_realizada_ytd), rcm_ytd=_q2(r.rcm_ytd),
@@ -249,26 +238,28 @@ class PerdidaManualIn(BaseModel):
 
 @router.get("/perdidas-pendientes", response_model=list[PerdidaManualOut],
             summary="Pérdidas pendientes de años anteriores (entrada manual)")
-def get_perdidas_pendientes(db: Session = Depends(get_db)) -> list[PerdidaManualOut]:
+def get_perdidas_pendientes(db: Session = Depends(get_db),
+                            cartera: models.Cartera = Depends(get_current_cartera)) -> list[PerdidaManualOut]:
     from app.services import perdidas as svc
     return [
         PerdidaManualOut(ejercicio_origen=p.ejercicio_origen,
                          importe_eur=_q2(p.importe_eur), expira=p.expira)
-        for p in svc.listar(db, _cartera_o_404(db).id)
+        for p in svc.listar(db, cartera.id)
     ]
 
 
 @router.put("/perdidas-pendientes", status_code=status.HTTP_204_NO_CONTENT,
             summary="Fijar/quitar una pérdida pendiente de un año anterior")
-def set_perdida_pendiente(payload: PerdidaManualIn, db: Session = Depends(get_db)) -> None:
+def set_perdida_pendiente(payload: PerdidaManualIn, db: Session = Depends(get_db),
+                          cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     from app.services import perdidas as svc
-    svc.set_perdida(db, _cartera_o_404(db).id, payload.ejercicio_origen, payload.importe_eur)
+    svc.set_perdida(db, cartera.id, payload.ejercicio_origen, payload.importe_eur)
 
 
 @router.put("/optimizador/precio", status_code=status.HTTP_204_NO_CONTENT,
             summary="Fijar/quitar el precio actual manual de una posición")
-def set_precio_manual(payload: PrecioManualIn, db: Session = Depends(get_db)) -> None:
-    cartera = _cartera_o_404(db)
+def set_precio_manual(payload: PrecioManualIn, db: Session = Depends(get_db),
+                      cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     pos = db.execute(
         select(models.Posicion)
         .where(models.Posicion.cartera_id == cartera.id)
@@ -309,11 +300,12 @@ class RotacionOut(BaseModel):
 
 @router.get("/rotacion/{ejercicio}", response_model=RotacionOut,
             summary="Filtro fiscal de rotación: umbral CAGR4+Div que debe batir el destino")
-def get_rotacion(ejercicio: int, db: Session = Depends(get_db)) -> RotacionOut:
+def get_rotacion(ejercicio: int, db: Session = Depends(get_db),
+                 cartera: models.Cartera = Depends(get_current_cartera)) -> RotacionOut:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ejercicio fuera de rango")
     from app.services.fiscal_rotacion import calcular_rotacion
-    r = calcular_rotacion(db, _cartera_o_404(db).id, ejercicio)
+    r = calcular_rotacion(db, cartera.id, ejercicio)
     return RotacionOut(
         ejercicio=r.ejercicio, fecha_calculo=r.fecha_calculo,
         base_ahorro_actual_eur=_q2(r.base_ahorro_actual_eur),
@@ -388,19 +380,14 @@ class ReclamadoIn(BaseModel):
 
 @router.get("/fugas", response_model=FugasOut,
             summary="Fugas fiscales: exceso CDI reclamable por país y año (ventana de plazos)")
-def get_fugas(db: Session = Depends(get_db)) -> FugasOut:
+def get_fugas(db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> FugasOut:
     """Exceso de retención de origen sobre el tope CDI, por país y AÑO, dentro
     de la ventana de reclamación de cada país (CH 3 / DE 4 / FR 2 / IT 4 /
     BE-DK 5 años). Incluye la proyección anual y lo ya marcado como
     reclamado por el usuario."""
     from app.services.fugas_fiscales import calcular_fugas
 
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
     r = calcular_fugas(db, cartera.id)
     return FugasOut(
         ejercicio=r.ejercicio,
@@ -434,15 +421,10 @@ def get_fugas(db: Session = Depends(get_db)) -> FugasOut:
 @router.post("/fugas/reclamado", status_code=status.HTTP_204_NO_CONTENT,
              summary="Marcar/desmarcar un (país, ejercicio) como ya reclamado")
 def post_fugas_reclamado(payload: ReclamadoIn,
-                         db: Session = Depends(get_db)) -> None:
+                         db: Session = Depends(get_db),
+                         cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     from app.services.fugas_fiscales import marcar_reclamado
 
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
     marcar_reclamado(db, cartera.id, payload.pais, payload.ejercicio,
                      payload.reclamado, payload.notas)
 
@@ -455,6 +437,7 @@ def post_fugas_reclamado(payload: ReclamadoIn,
 def get_fiscal(
     ejercicio: int,
     db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
 ) -> FiscalResumenOut:
     """Devuelve el cálculo fiscal completo para un ejercicio: matches FIFO,
     G/P bruto y deducible, pérdidas diferidas latentes y compensación final.
@@ -467,13 +450,6 @@ def get_fiscal(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
-        )
-
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
         )
 
     r = calcular_fiscal(db, cartera.id, ejercicio)

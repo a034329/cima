@@ -6,9 +6,9 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.fiscal_bills import calcular_bills
 
@@ -51,28 +51,20 @@ def _serializar(r) -> BillsResumen:  # type: ignore[no-untyped-def]
     )
 
 
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 @router.get("/acumulado", response_model=BillsResumen,
             summary="T-Bills acumulado (todos los años)")
-def get_bills_acumulado(db: Session = Depends(get_db)) -> BillsResumen:
-    return _serializar(calcular_bills(db, _cartera(db).id, None))
+def get_bills_acumulado(db: Session = Depends(get_db),
+                        cartera: models.Cartera = Depends(get_current_cartera)) -> BillsResumen:
+    return _serializar(calcular_bills(db, cartera.id, None))
 
 
 @router.get("/{ejercicio}", response_model=BillsResumen,
             summary="Letras del Tesoro del ejercicio (RCM)")
-def get_bills(ejercicio: int, db: Session = Depends(get_db)) -> BillsResumen:
+def get_bills(ejercicio: int, db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> BillsResumen:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
         )
-    return _serializar(calcular_bills(db, _cartera(db).id, ejercicio))
+    return _serializar(calcular_bills(db, cartera.id, ejercicio))

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.fifo import estado_posicion
 
@@ -74,12 +75,9 @@ router = APIRouter(tags=["cartera"])
 
 
 @router.get("/cartera", response_model=CarteraResumen)
-def get_cartera(db: Session = Depends(get_db)) -> CarteraResumen:
-    """Devuelve resumen de la primera cartera. Si la BD está vacía, mock."""
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        return _mock_resumen()
-
+def get_cartera(db: Session = Depends(get_db),
+                cartera: models.Cartera = Depends(get_current_cartera)) -> CarteraResumen:
+    """Devuelve resumen de la cartera del usuario autenticado."""
     posiciones_db = list(db.execute(
         select(models.Posicion).where(models.Posicion.cartera_id == cartera.id)
     ).scalars())

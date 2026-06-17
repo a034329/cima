@@ -146,3 +146,67 @@ def test_me_owner_mode_sin_token(client_y_db, monkeypatch):
     r = client.get("/api/auth/me")
     assert r.status_code == 200
     assert r.json()["email"] == "duenyo@cima.local" and r.json()["modo"] == "owner"
+
+
+# ── Fase D: endurecimiento ───────────────────────────────────────────────────
+
+def test_login_lockout_tras_n_fallos(client_y_db):
+    """Tras `login_max_fails` fallos, el (IP, email) queda bloqueado (429)."""
+    from app.routers.auth import _login_limiter
+    from app.config import settings as st
+    _login_limiter.clear()
+    client, _ = client_y_db
+    client.post("/api/auth/signup", json={"email": "a@b.com", "password": "12345678"})
+
+    # Agota los intentos con contraseña incorrecta → 401 cada uno.
+    for _ in range(st.login_max_fails):
+        r = client.post("/api/auth/login", json={"email": "a@b.com", "password": "malamala"})
+        assert r.status_code == 401
+    # El siguiente, aun con contraseña CORRECTA, está bloqueado → 429 + Retry-After.
+    r = client.post("/api/auth/login", json={"email": "a@b.com", "password": "12345678"})
+    assert r.status_code == 429
+    assert int(r.headers.get("Retry-After", "0")) > 0
+    _login_limiter.clear()
+
+
+def test_login_ok_resetea_contador(client_y_db):
+    from app.routers.auth import _login_limiter
+    _login_limiter.clear()
+    client, _ = client_y_db
+    client.post("/api/auth/signup", json={"email": "c@b.com", "password": "12345678"})
+    client.post("/api/auth/login", json={"email": "c@b.com", "password": "malamala"})  # 1 fallo
+    assert client.post("/api/auth/login", json={"email": "c@b.com", "password": "12345678"}).status_code == 200
+    # Tras el éxito el contador se limpia: nuevos fallos parten de cero (no bloquea ya).
+    r = client.post("/api/auth/login", json={"email": "c@b.com", "password": "malamala"})
+    assert r.status_code == 401
+    _login_limiter.clear()
+
+
+def test_signup_reclama_cuenta_sin_password(client_y_db, monkeypatch):
+    """Una cuenta provisionada por /bootstrap (password_hash=None) se reclama en
+    el signup fijando la contraseña, en vez de devolver 409 (cierra squatting)."""
+    monkeypatch.setattr(settings, "mode", Mode.OWNER)  # bootstrap funciona
+    client, SessionLocal = client_y_db
+    # bootstrap crea el user sin contraseña
+    client.post("/api/bootstrap", json={"email": "squat@b.com"})
+    with SessionLocal() as s:
+        u = s.execute(
+            __import__("sqlalchemy").select(models.User).where(models.User.email == "squat@b.com")
+        ).scalar_one()
+        assert u.password_hash is None
+    # signup con ese email NO da 409: lo reclama y emite token
+    monkeypatch.setattr(settings, "mode", Mode.SAAS)
+    r = client.post("/api/auth/signup", json={"email": "squat@b.com", "password": "12345678"})
+    assert r.status_code == 201, r.text
+    # y ahora puede hacer login
+    assert client.post("/api/auth/login", json={"email": "squat@b.com", "password": "12345678"}).status_code == 200
+
+
+def test_refresh_emite_token_nuevo(client_y_db):
+    client, _ = client_y_db
+    tok = client.post("/api/auth/signup", json={"email": "r@b.com", "password": "12345678"}).json()["access_token"]
+    r = client.post("/api/auth/refresh", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    assert r.json()["access_token"]
+    # sin token (saas) → 401
+    assert client.post("/api/auth/refresh").status_code == 401

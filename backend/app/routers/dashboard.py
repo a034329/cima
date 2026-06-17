@@ -4,11 +4,11 @@ from __future__ import annotations
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.dashboard import calcular_dashboard
 
@@ -92,13 +92,8 @@ class DashboardOut(BaseModel):
 
 @router.get("", response_model=DashboardOut,
             summary="Dashboard agregado (pantalla Resumen)")
-def get_dashboard(db: Session = Depends(get_db)) -> DashboardOut:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
+def get_dashboard(db: Session = Depends(get_db),
+                  cartera: models.Cartera = Depends(get_current_cartera)) -> DashboardOut:
     r = calcular_dashboard(db, cartera.id)
     return DashboardOut(
         anio=r.anio, fecha_calculo=r.fecha_calculo,

@@ -24,6 +24,37 @@ def _settings_aislados(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "mode", Mode.SAAS)
 
 
+@pytest.fixture(autouse=True)
+def _cartera_override() -> Generator[None, None, None]:
+    """Override de `get_current_cartera` para los tests de endpoints (Fase B).
+
+    En producción `get_current_cartera` scopa por usuario autenticado (token en
+    saas). Los tests son SINGLE-TENANT (una cartera) y llaman sin token, así que
+    aquí lo resolvemos a "la única cartera de la BD del test" usando el `get_db`
+    que cada test override-ea. Mantiene verdes los ~23 ficheros de endpoints sin
+    autenticarlos. El test de AISLAMIENTO (IDOR) quita este override y usa la
+    dependencia real con tokens."""
+    from fastapi import Depends, HTTPException, status
+    from sqlalchemy import select
+
+    from app.auth.deps import get_current_cartera
+    from app.db import get_db, models
+    from app.main import app
+
+    def _primera_cartera(db: Session = Depends(get_db)) -> models.Cartera:
+        c = db.execute(select(models.Cartera)).scalars().first()
+        if c is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="No hay cartera (test).")
+        return c
+
+    app.dependency_overrides[get_current_cartera] = _primera_cartera
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_cartera, None)
+
+
 @pytest.fixture()
 def db() -> Generator[Session, None, None]:
     """BD SQLite en memoria, schema fresco por test."""

@@ -26,6 +26,9 @@ FRONTEND_DIR="${CIMA_DIR}/frontend"
 BACKEND_PORT="${CIMA_BACKEND_PORT:-8000}"
 FRONTEND_PORT="${CIMA_FRONTEND_PORT:-3000}"
 export CIMA_MODE="${CIMA_MODE:-owner}"
+# El front DEBE ir en el mismo modo que el backend (si no, el middleware y el
+# backend discrepan: p.ej. front pide login pero el backend puentea owner).
+export NEXT_PUBLIC_CIMA_MODE="${CIMA_MODE}"
 
 echo ""
 echo "  =================================================="

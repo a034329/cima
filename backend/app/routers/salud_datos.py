@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 
 router = APIRouter(prefix="/salud-datos", tags=["salud-datos"])
@@ -33,16 +34,6 @@ def _max_ts_cache(cache: dict, prefijo: str) -> str | None:
     if not ts or max(ts) == 0:
         return None
     return datetime.fromtimestamp(max(ts), tz=timezone.utc).isoformat()
-
-
-def _cartera_o_404(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
 
 
 def _construir_salud(db: Session, cartera: models.Cartera) -> SaludDatos:
@@ -79,19 +70,20 @@ def _construir_salud(db: Session, cartera: models.Cartera) -> SaludDatos:
 
 
 @router.get("", response_model=SaludDatos, summary="Frescura de precios/FX/fundamentales/imports")
-def get_salud_datos(db: Session = Depends(get_db)) -> SaludDatos:
-    return _construir_salud(db, _cartera_o_404(db))
+def get_salud_datos(db: Session = Depends(get_db),
+                    cartera: models.Cartera = Depends(get_current_cartera)) -> SaludDatos:
+    return _construir_salud(db, cartera)
 
 
 @router.post("/refrescar", response_model=SaludDatos,
              summary="Refresca precios + tipos de cambio desde el feed y devuelve la frescura")
-def refrescar(db: Session = Depends(get_db)) -> SaludDatos:
+def refrescar(db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> SaludDatos:
     """Refresco LIGERO de mercado disparado desde el badge de frescura: vuelve a
     bajar precios y FX de las posiciones abiertas (`forzar=True`), sin re-sembrar
     estimaciones ni fundamentales (eso es el prefill, más pesado). Devuelve la
     frescura actualizada para que el badge se repinte."""
     from app.services.precios import obtener_precios_eur
 
-    cartera = _cartera_o_404(db)
     obtener_precios_eur(db, cartera.id, forzar=True)
     return _construir_salud(db, cartera)

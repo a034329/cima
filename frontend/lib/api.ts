@@ -19,7 +19,18 @@ import type {
   TransaccionOut,
 } from './types';
 
+import { getToken, clearToken, isSaasMode } from './auth';
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+/** fetch hacia la API con el token Bearer inyectado (si lo hay) y base URL.
+ *  En modo owner no hay token y el backend puentea la auth → funciona igual. */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = await getToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(`${API_BASE}${path}`, { cache: 'no-store', ...init, headers });
+}
 
 /** Error de API con el `status` HTTP accesible para que la UI decida tono/acción. */
 export class ApiError extends Error {
@@ -59,11 +70,21 @@ async function apiError(res: Response): Promise<ApiError> {
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    cache: 'no-store',
-    ...init,
-  });
+  const res = await apiFetch(path, init);
   if (!res.ok) {
+    // Token caducado/ inválido en cliente saas: limpia y manda a login (con
+    // ?next=). En SSR no podemos redirigir desde aquí → el middleware/refresh
+    // proactivo lo cubren. No actúa en /login ni /signup (evita bucle).
+    if (
+      res.status === 401 &&
+      isSaasMode &&
+      typeof window !== 'undefined' &&
+      !/^\/(login|signup)/.test(window.location.pathname)
+    ) {
+      clearToken();
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.assign(`/login?next=${next}`);
+    }
     throw await apiError(res);
   }
   return (await res.json()) as T;
@@ -144,7 +165,7 @@ export async function crearAportacion(payload: AportacionIn): Promise<unknown> {
 }
 
 export async function descartarTransaccion(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/transacciones/${id}`, {
+  const res = await apiFetch(`/api/transacciones/${id}`, {
     method: 'DELETE',
   });
   if (!res.ok && res.status !== 204) {
@@ -169,7 +190,7 @@ export async function importarExtracto(
     // re-pasárselo al motor de Cuádrate al generar la declaración (1.9).
     form.set('ejercicio', String(ejercicio));
   }
-  const res = await fetch(`${API_BASE}/api/import`, {
+  const res = await apiFetch(`/api/import`, {
     method: 'POST',
     body: form,
   });
@@ -241,7 +262,7 @@ export async function fijarPrecioManual(
   isin: string,
   precioEur: number | null,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/fiscal/optimizador/precio`, {
+  const res = await apiFetch(`/api/fiscal/optimizador/precio`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ isin, precio_eur: precioEur }),
@@ -261,7 +282,7 @@ export async function setPerdidaPendiente(
   ejercicioOrigen: number,
   importeEur: number | null,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/fiscal/perdidas-pendientes`, {
+  const res = await apiFetch(`/api/fiscal/perdidas-pendientes`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ejercicio_origen: ejercicioOrigen, importe_eur: importeEur }),
@@ -370,7 +391,7 @@ export async function asignarBloque(
   bloqueId: string | null,
   opts: { categoriaSugerida?: string; confianzaIa?: number; razon?: string } = {},
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/bloques/asignar`, {
+  const res = await apiFetch(`/api/bloques/asignar`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -447,7 +468,7 @@ export async function editarBloque(
 }
 
 export async function eliminarBloque(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/bloques/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/bloques/${id}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) {
     throw await apiError(res);
   }
@@ -485,7 +506,7 @@ export async function evaluarFriccion(
 export async function registrarFriccion(
   isin: string, decision: string, severidad: string, motivo: string | null,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/plan/registrar-friccion`, {
+  const res = await apiFetch(`/api/plan/registrar-friccion`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ isin, decision, severidad, motivo, rebatido: true }),
@@ -525,7 +546,7 @@ export async function fetchVigilancia(): Promise<import('./types').Vigilancia> {
 }
 
 export async function marcarVistoVigilancia(): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/vigilancia/visto`, { method: 'POST' });
+  const res = await apiFetch(`/api/vigilancia/visto`, { method: 'POST' });
   if (!res.ok) throw new Error(`No se pudo marcar la vigilancia como vista (${res.status})`);
 }
 
@@ -547,7 +568,7 @@ export async function enviarMensajeAsesor(
 export async function limpiarAsesor(): Promise<void> {
   // res.ok: con un 500 el caller borraba la conversación en pantalla pero el
   // historial seguía en el servidor (auditoría Cima 2026-06-11, F5).
-  const res = await fetch(`${API_BASE}/api/asesor`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/asesor`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`No se pudo limpiar el historial (${res.status})`);
 }
 
@@ -560,19 +581,19 @@ export async function fetchRegimenAuto(): Promise<import('./types').RegimenAutoE
 }
 
 export async function lanzarRegimenAuto(): Promise<import('./types').RegimenAutoEstado> {
-  const res = await fetch(`${API_BASE}/api/regimen/auto`, { method: 'POST' });
+  const res = await apiFetch(`/api/regimen/auto`, { method: 'POST' });
   if (!res.ok && res.status !== 202) throw await apiError(res);
   return res.json();
 }
 
 export async function firmarRegimenAuto(): Promise<import('./types').RegimenEstado> {
-  const res = await fetch(`${API_BASE}/api/regimen/firmar`, { method: 'POST' });
+  const res = await apiFetch(`/api/regimen/firmar`, { method: 'POST' });
   if (!res.ok) throw await apiError(res);
   return res.json();
 }
 
 export async function descartarRegimenAuto(): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/regimen/auto`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/regimen/auto`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) throw await apiError(res);
 }
 
@@ -689,7 +710,7 @@ export async function actualizarPaso(
 }
 
 export async function eliminarPaso(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/plan/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/plan/${id}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) {
     throw await apiError(res);
   }
@@ -714,7 +735,7 @@ export async function editarEstimacion(
     notas: string | null;
   }>,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/estimaciones/${encodeURIComponent(isin)}`, {
+  const res = await apiFetch(`/api/estimaciones/${encodeURIComponent(isin)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(campos),
@@ -744,7 +765,7 @@ export async function anadirSeguimiento(
 }
 
 export async function quitarSeguimiento(isin: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/seguimiento/${encodeURIComponent(isin)}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/seguimiento/${encodeURIComponent(isin)}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) throw await apiError(res);
 }
 
@@ -759,6 +780,39 @@ export async function bootstrap(): Promise<{
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
+}
+
+// ── Auth (ADR-003, Fase C) ─────────────────────────────────────────────────
+
+export interface AuthToken {
+  access_token: string;
+  token_type: string;
+  user_id: string;
+  email: string;
+}
+
+export async function signup(email: string, password: string): Promise<AuthToken> {
+  return fetchJson<AuthToken>('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function login(email: string, password: string): Promise<AuthToken> {
+  return fetchJson<AuthToken>('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function fetchMe(): Promise<{ user_id: string; email: string; modo: string }> {
+  return fetchJson('/api/auth/me');
+}
+
+export async function refreshToken(): Promise<AuthToken> {
+  return fetchJson<AuthToken>('/api/auth/refresh', { method: 'POST' });
 }
 
 // Utilidades de formateo (la API devuelve Decimal como string)
@@ -793,7 +847,7 @@ export async function fetchFugas(): Promise<FugasResumen> {
 export async function marcarFugaReclamada(
   pais: string, ejercicio: number, reclamado: boolean,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/fiscal/fugas/reclamado`, {
+  const res = await apiFetch(`/api/fiscal/fugas/reclamado`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pais, ejercicio, reclamado }),
@@ -824,4 +878,30 @@ export async function fetchSaludDividendo(): Promise<SaludDividendo[]> {
 
 export async function fetchInformeMensual(anio: number, mes: number): Promise<InformeMensual> {
   return fetchJson<InformeMensual>(`/api/informe-mensual/${anio}/${mes}`);
+}
+
+// ── Histórico de cierres mensuales / evolución (ADR-004) ───────────────────
+
+export interface PuntoEvolucion {
+  anio_mes: string;
+  valor_eur: string;
+  aportado_eur: string;
+  completo: boolean;
+}
+export interface SerieEvolucion {
+  puntos: PuntoEvolucion[];
+  meses_pendientes: number;
+  job: 'ninguno' | 'en_curso' | 'ok' | 'error';
+}
+
+export async function fetchEvolucionCartera(): Promise<SerieEvolucion> {
+  return fetchJson<SerieEvolucion>('/api/historico/cartera');
+}
+
+export async function fetchEvolucionPosicion(isin: string): Promise<SerieEvolucion> {
+  return fetchJson<SerieEvolucion>(`/api/historico/posicion/${encodeURIComponent(isin)}`);
+}
+
+export async function refrescarHistorico(): Promise<{ lanzado: boolean; job: string }> {
+  return fetchJson('/api/historico/refrescar', { method: 'POST' });
 }

@@ -5,10 +5,10 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.ia import ClasificadorError
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import onboarding as svc
 
@@ -57,18 +57,12 @@ class PlanFirmadoOut(BaseModel):
     fecha: str
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No hay cartera. POST /api/bootstrap")
-    return c
-
-
 @router.post("/proponer", response_model=PropuestaOut,
              summary="La IA propone un reparto de bloques según el perfil")
-def proponer(payload: PerfilIn, db: Session = Depends(get_db)) -> PropuestaOut:
+def proponer(payload: PerfilIn, db: Session = Depends(get_db),
+             cartera: models.Cartera = Depends(get_current_cartera)) -> PropuestaOut:
     try:
-        p = svc.proponer_estrategia(db, _cartera(db).id, payload.model_dump())
+        p = svc.proponer_estrategia(db, cartera.id, payload.model_dump())
     except ClasificadorError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"IA no disponible: {e}") from e
     v = p.viabilidad
@@ -86,15 +80,17 @@ def proponer(payload: PerfilIn, db: Session = Depends(get_db)) -> PropuestaOut:
 
 @router.post("/firmar", response_model=PlanFirmadoOut, status_code=status.HTTP_201_CREATED,
              summary="Firma el plan: aplica los objetivos a los bloques y lo versiona")
-def firmar(payload: FirmarIn, db: Session = Depends(get_db)) -> PlanFirmadoOut:
-    plan = svc.firmar_plan(db, _cartera(db).id, payload.perfil.model_dump(), payload.objetivos)
+def firmar(payload: FirmarIn, db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> PlanFirmadoOut:
+    plan = svc.firmar_plan(db, cartera.id, payload.perfil.model_dump(), payload.objetivos)
     return _plan_out(plan)
 
 
 @router.get("/plan", response_model=PlanFirmadoOut | None,
             summary="Último plan firmado (o null)")
-def plan(db: Session = Depends(get_db)) -> PlanFirmadoOut | None:
-    p = svc.plan_firmado_actual(db, _cartera(db).id)
+def plan(db: Session = Depends(get_db),
+         cartera: models.Cartera = Depends(get_current_cartera)) -> PlanFirmadoOut | None:
+    p = svc.plan_firmado_actual(db, cartera.id)
     return _plan_out(p) if p else None
 
 

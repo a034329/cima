@@ -2,11 +2,11 @@
 de la estrategia firmada; el usuario los aprueba (→ crear_paso). Nivel cartera."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import hoja_ruta as svc
 from app.services import jobs
@@ -53,14 +53,6 @@ class HojaRutaEstadoOut(BaseModel):
     resultado: HojaRutaOut | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 def _out(hr: svc.HojaRuta) -> HojaRutaOut:
     return HojaRutaOut(
         capital_eur=hr.capital_eur, liquidez_eur=hr.liquidez_eur,
@@ -73,8 +65,9 @@ def _out(hr: svc.HojaRuta) -> HojaRutaOut:
 
 @router.get("", response_model=HojaRutaEstadoOut,
             summary="Estado de la hoja de ruta + resultado guardado (para polling)")
-def estado(db: Session = Depends(get_db)) -> HojaRutaEstadoOut:
-    cid = _cartera(db).id
+def estado(db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> HojaRutaEstadoOut:
+    cid = cartera.id
     job = jobs.estado(db, cid, "", _TIPO)
     hr = svc.guardado(db, cid)
     out = _out(hr) if hr else None
@@ -90,6 +83,7 @@ def estado(db: Session = Depends(get_db)) -> HojaRutaEstadoOut:
 @router.post("/generar", response_model=HojaRutaEstadoOut,
              status_code=status.HTTP_202_ACCEPTED,
              summary="Lanza la generación de la hoja de ruta en segundo plano")
-def generar(db: Session = Depends(get_db)) -> HojaRutaEstadoOut:
-    jobs.lanzar(db, _cartera(db).id, "", _TIPO, svc.proponer)
+def generar(db: Session = Depends(get_db),
+            cartera: models.Cartera = Depends(get_current_cartera)) -> HojaRutaEstadoOut:
+    jobs.lanzar(db, cartera.id, "", _TIPO, svc.proponer)
     return HojaRutaEstadoOut(estado="en_curso")

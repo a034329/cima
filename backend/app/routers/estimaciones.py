@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import estimaciones as svc
 
@@ -72,13 +73,6 @@ class EstimacionIn(BaseModel):
     notas: str | None = None
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No hay cartera. POST /api/bootstrap")
-    return c
-
-
 def _to_out(c) -> EstimacionOut:  # type: ignore[no-untyped-def]
     return EstimacionOut(
         isin=c.isin, nombre=c.nombre, tipo_val=c.tipo_val, divisa=c.divisa,
@@ -110,8 +104,9 @@ def _to_out(c) -> EstimacionOut:  # type: ignore[no-untyped-def]
 
 @router.get("", response_model=EstimacionesResumen,
             summary="Estimaciones por posición + agregado de cartera")
-def get_estimaciones(db: Session = Depends(get_db)) -> EstimacionesResumen:
-    cid = _cartera(db).id
+def get_estimaciones(db: Session = Depends(get_db),
+                     cartera: models.Cartera = Depends(get_current_cartera)) -> EstimacionesResumen:
+    cid = cartera.id
     calcs = svc.calcular_estimaciones(db, cid)
     agg = svc.agregado_cartera(db, cid)
     return EstimacionesResumen(
@@ -123,15 +118,17 @@ def get_estimaciones(db: Session = Depends(get_db)) -> EstimacionesResumen:
 
 
 @router.post("/prefill", summary="Auto-rellenar estimaciones desde el feed (campos vacíos)")
-def prefill(db: Session = Depends(get_db)) -> dict[str, int]:
-    n = svc.prefill_estimaciones(db, _cartera(db).id)
+def prefill(db: Session = Depends(get_db),
+            cartera: models.Cartera = Depends(get_current_cartera)) -> dict[str, int]:
+    n = svc.prefill_estimaciones(db, cartera.id)
     return {"actualizadas": n}
 
 
 @router.put("/{isin}", status_code=status.HTTP_204_NO_CONTENT,
             summary="Editar la estimación de una posición")
-def editar(isin: str, payload: EstimacionIn, db: Session = Depends(get_db)) -> None:
-    cid = _cartera(db).id
+def editar(isin: str, payload: EstimacionIn, db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    cid = cartera.id
     if payload.tipo_val is not None and payload.tipo_val not in models.TIPOS_VAL:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tipo_val inválido: {payload.tipo_val}")
     e = db.execute(
@@ -173,9 +170,10 @@ class SaludDividendoOut(BaseModel):
 
 @router.get("/salud-dividendo", response_model=list[SaludDividendoOut],
             summary="Score de salud del dividendo por posición (cobertura FCF + payout)")
-def get_salud_dividendo(db: Session = Depends(get_db)) -> list[SaludDividendoOut]:
+def get_salud_dividendo(db: Session = Depends(get_db),
+                        cartera: models.Cartera = Depends(get_current_cartera)) -> list[SaludDividendoOut]:
     from app.services.salud_dividendo import evaluar
-    c = _cartera(db)
+    c = cartera
     return [SaludDividendoOut(
         isin=s.isin, nivel=s.nivel, motivo=s.motivo,
         fcf_cobertura=s.fcf_cobertura, payout=s.payout,

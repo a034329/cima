@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # En modo owner la auth se PUENTEA: este usuario único se provisiona y se
     # devuelve sin exigir token (uso local del fundador, sin login).
     owner_email: str = "gmarrero.angel@gmail.com"
+    # Rate-limit / lockout de login (Fase D, anti fuerza bruta). Tras
+    # `login_max_fails` fallos por (IP, email) dentro de `login_window_s`, se
+    # bloquea ese par durante `login_lockout_s`.
+    login_max_fails: int = 5
+    login_window_s: int = 300
+    login_lockout_s: int = 900
 
     # ── Fiscalidad del dividendo (métrica CAGR4+Div neta) ───────────────
     # Tramo marginal de la base del ahorro aplicable a los dividendos del
@@ -85,16 +91,20 @@ class Settings(BaseSettings):
     # Modelo del autoclasificar en lote. Experimento 2026-05-24 (n=31): opus en
     # lote terso salió más preciso, rápido y barato que sonnet (sonnet ignoraba el
     # "sé conciso" y se enrollaba). El puntual usa anthropic_default_model.
-    ia_lote_model: str = "claude-opus-4-7"
+    ia_lote_model: str = "claude-opus-4-8"
 
     # ── Anthropic IA (usado por el adaptador 'anthropic') ──────────────
     anthropic_api_key: str = ""
-    # Opus 4.7 para todas las llamadas conversacionales/analíticas (asesor,
-    # valoración asistida, paso 0, one-pager, comps, onboarding). Subido desde
-    # Sonnet 4.6 el 2026-06-09 tras detectar sesgo de complacencia en el
-    # asesor (conversación LVMH→Hermès): Opus defiende mejor el análisis y
-    # capitula menos ante presión social del usuario. Coste Max sin cambio.
-    anthropic_default_model: str = "claude-opus-4-7"
+    # Opus 4.8 para todas las llamadas analíticas (valoración asistida, paso 0,
+    # one-pager, comps, onboarding y el lote). Histórico: Sonnet 4.6 → Opus 4.7
+    # (2026-06-09, sesgo de complacencia del asesor LVMH→Hermès) → Opus 4.8
+    # (2026-06-17, a petición de Ángel: todo el análisis al modelo más capaz).
+    # Coste Max sin cambio. El asesor conversacional usa `asesor_model`.
+    anthropic_default_model: str = "claude-opus-4-8"
+    # Modelo del ASESOR conversacional (chat). Opus 4.8 — el modelo más capaz
+    # disponible — por petición de Ángel (2026-06-17). El resto de llamadas
+    # (paso 0, one-pager, comps, onboarding) siguen en `anthropic_default_model`.
+    asesor_model: str = "claude-opus-4-8"
     # Effort por defecto para llamadas a Claude CLI. `low` mantiene la
     # latencia razonable; las llamadas de análisis profundo (paso 0, one-pager,
     # valoración con web) pueden subir vía `ia_effort_web`.

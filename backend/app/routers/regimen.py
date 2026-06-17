@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services import jobs
 from app.services import regimen as svc
@@ -44,14 +44,6 @@ class RegimenIn(BaseModel):
     mercado: str
 
 
-def _cartera(db: Session) -> models.Cartera:
-    c = db.execute(select(models.Cartera)).scalars().first()
-    if c is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "No hay cartera. Llama primero a POST /api/bootstrap")
-    return c
-
-
 def _out(e: svc.RegimenEstado) -> RegimenOut:
     from app.services.precios import mercado_correccion
 
@@ -67,12 +59,14 @@ def _out(e: svc.RegimenEstado) -> RegimenOut:
 
 
 @router.get("", response_model=RegimenOut, summary="Régimen macro vigente + calibración + regla −14%")
-def get_regimen(db: Session = Depends(get_db)) -> RegimenOut:
-    return _out(svc.estado_regimen(db, _cartera(db).id))
+def get_regimen(db: Session = Depends(get_db),
+                cartera: models.Cartera = Depends(get_current_cartera)) -> RegimenOut:
+    return _out(svc.estado_regimen(db, cartera.id))
 
 
 @router.put("", response_model=RegimenOut, summary="Fijar los 4 indicadores macro")
-def put_regimen(payload: RegimenIn, db: Session = Depends(get_db)) -> RegimenOut:
+def put_regimen(payload: RegimenIn, db: Session = Depends(get_db),
+                cartera: models.Cartera = Depends(get_current_cartera)) -> RegimenOut:
     indicadores = payload.model_dump()
     invalidas = {k: v for k, v in indicadores.items() if v not in svc.SENALES}
     if invalidas:
@@ -80,7 +74,7 @@ def put_regimen(payload: RegimenIn, db: Session = Depends(get_db)) -> RegimenOut
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"Señal inválida {invalidas}; usa una de {svc.SENALES}",
         )
-    return _out(svc.guardar_regimen(db, _cartera(db).id, indicadores))
+    return _out(svc.guardar_regimen(db, cartera.id, indicadores))
 
 
 # ── Auto-clasificación (híbrido números + IA, propuesta firmable) ──────────
@@ -119,8 +113,9 @@ def _propuesta_out(p: regimen_auto.Propuesta) -> PropuestaOut:
 
 @router.get("/auto", response_model=AutoEstadoOut,
             summary="Estado del job de auto-clasificación + última propuesta")
-def get_auto(db: Session = Depends(get_db)) -> AutoEstadoOut:
-    cid = _cartera(db).id
+def get_auto(db: Session = Depends(get_db),
+             cartera: models.Cartera = Depends(get_current_cartera)) -> AutoEstadoOut:
+    cid = cartera.id
     job = jobs.estado(db, cid, "", _TIPO_AUTO)
     p = regimen_auto.cargar_propuesta(db, cid)
     out = _propuesta_out(p) if p else None
@@ -136,15 +131,17 @@ def get_auto(db: Session = Depends(get_db)) -> AutoEstadoOut:
 @router.post("/auto", response_model=AutoEstadoOut,
              status_code=status.HTTP_202_ACCEPTED,
              summary="Lanza la auto-clasificación en segundo plano (números + IA)")
-def post_auto(db: Session = Depends(get_db)) -> AutoEstadoOut:
-    jobs.lanzar(db, _cartera(db).id, "", _TIPO_AUTO, regimen_auto.proponer)
+def post_auto(db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> AutoEstadoOut:
+    jobs.lanzar(db, cartera.id, "", _TIPO_AUTO, regimen_auto.proponer)
     return AutoEstadoOut(estado="en_curso")
 
 
 @router.post("/firmar", response_model=RegimenOut,
              summary="Firma la propuesta vigente y la aplica al régimen")
-def firmar(db: Session = Depends(get_db)) -> RegimenOut:
-    cid = _cartera(db).id
+def firmar(db: Session = Depends(get_db),
+           cartera: models.Cartera = Depends(get_current_cartera)) -> RegimenOut:
+    cid = cartera.id
     try:
         estado = regimen_auto.firmar(db, cid)
     except ValueError as e:
@@ -154,5 +151,6 @@ def firmar(db: Session = Depends(get_db)) -> RegimenOut:
 
 @router.delete("/auto", status_code=status.HTTP_204_NO_CONTENT,
                summary="Descarta la propuesta sin firmarla")
-def delete_auto(db: Session = Depends(get_db)) -> None:
-    regimen_auto.descartar_propuesta(db, _cartera(db).id)
+def delete_auto(db: Session = Depends(get_db),
+                cartera: models.Cartera = Depends(get_current_cartera)) -> None:
+    regimen_auto.descartar_propuesta(db, cartera.id)

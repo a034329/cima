@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Fraunces, Inter, IBM_Plex_Mono } from 'next/font/google';
+import { AuthRefresher } from '@/components/AuthRefresher';
 import { ChatWidget } from '@/components/ChatWidget';
 import { CmdKButton } from '@/components/CmdKButton';
 import { CommandPalette } from '@/components/CommandPalette';
@@ -110,6 +111,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </a>
           </div>
         </footer>
+        <AuthRefresher />
         <ChatWidget />
         <CommandPalette />
       </body>

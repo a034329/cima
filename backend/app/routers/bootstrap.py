@@ -5,7 +5,7 @@ vía Supabase Auth, y la cartera + brokers se crean en el onboarding IA.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -46,6 +46,11 @@ def bootstrap(
     from app.config import settings
     from app.services.provisioning import provision_user
 
+    # Atajo de dev/seed. En SaaS NO concede acceso: no emite token y deja
+    # password_hash=None (login imposible, get_current_user exige token). El
+    # alta real con credenciales es POST /api/auth/signup. (El squatting de
+    # email — provisionar un email ajeno sin password para bloquear su signup
+    # — queda anotado para el endurecimiento de Fase D.)
     user, creado = provision_user(
         db, payload.email, modo=settings.mode.value,
         nombre_cartera=payload.nombre_cartera,

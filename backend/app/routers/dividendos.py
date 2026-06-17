@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.schemas.dividendos import (
     DividendoPorIsin,
@@ -69,16 +69,6 @@ def _serializar(r) -> DividendosResumen:  # type: ignore[no-untyped-def]
     )
 
 
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 class PuntoAnualOut(BaseModel):
     anio: int
     bruto: Decimal = Field(decimal_places=2)
@@ -99,8 +89,9 @@ class SerieDividendosOut(BaseModel):
 
 @router.get("/serie", response_model=SerieDividendosOut,
             summary="Evolución de dividendos por año y por mes (gráficas)")
-def get_serie_dividendos(db: Session = Depends(get_db)) -> SerieDividendosOut:
-    s = serie_dividendos(db, _cartera(db).id)
+def get_serie_dividendos(db: Session = Depends(get_db),
+                         cartera: models.Cartera = Depends(get_current_cartera)) -> SerieDividendosOut:
+    s = serie_dividendos(db, cartera.id)
     return SerieDividendosOut(
         anual=[PuntoAnualOut(anio=p.anio, bruto=p.bruto, neto=p.neto) for p in s.anual],
         mensual=[PuntoMensualOut(anio=p.anio, mes=p.mes, bruto=p.bruto, neto=p.neto) for p in s.mensual],
@@ -123,8 +114,9 @@ class DiversificacionOut(BaseModel):
 @router.get("/diversificacion", response_model=DiversificacionOut,
             summary="Reparto del dividendo por empresa, país y sector")
 def get_diversificacion(anio: int | None = None,
-                        db: Session = Depends(get_db)) -> DiversificacionOut:
-    d = diversificacion_dividendos(db, _cartera(db).id, anio)
+                        db: Session = Depends(get_db),
+                        cartera: models.Cartera = Depends(get_current_cartera)) -> DiversificacionOut:
+    d = diversificacion_dividendos(db, cartera.id, anio)
     conv = lambda lst: [TrozoDivOut(clave=t.clave, bruto=t.bruto) for t in lst]  # noqa: E731
     return DiversificacionOut(
         anio=d.anio, bruto_total=d.bruto_total,
@@ -135,18 +127,18 @@ def get_diversificacion(anio: int | None = None,
 
 @router.get("/acumulado", response_model=DividendosResumen,
             summary="Dividendos acumulados (todos los años)")
-def get_dividendos_acumulado(db: Session = Depends(get_db)) -> DividendosResumen:
-    cartera = _cartera(db)
+def get_dividendos_acumulado(db: Session = Depends(get_db),
+                             cartera: models.Cartera = Depends(get_current_cartera)) -> DividendosResumen:
     return _serializar(calcular_dividendos(db, cartera.id, None))
 
 
 @router.get("/{ejercicio}", response_model=DividendosResumen,
             summary="Dividendos del ejercicio (bruto 0029, CDI 0588)")
-def get_dividendos(ejercicio: int, db: Session = Depends(get_db)) -> DividendosResumen:
+def get_dividendos(ejercicio: int, db: Session = Depends(get_db),
+                   cartera: models.Cartera = Depends(get_current_cartera)) -> DividendosResumen:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
         )
-    cartera = _cartera(db)
     return _serializar(calcular_dividendos(db, cartera.id, ejercicio))

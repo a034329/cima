@@ -16,7 +16,7 @@ class _FakeIA:
         self.reply = reply
         self.recibido = None
 
-    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None, modelo: str | None = None) -> str:
         self.recibido = (system, user)
         return self.reply
 
@@ -213,10 +213,10 @@ class _FakeIADual:
     def __init__(self) -> None:
         self.completar_n = 0
         self.investigar_n = 0
-    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None, modelo: str | None = None) -> str:
         self.completar_n += 1
         return "ok"
-    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def investigar(self, system: str, user: str, timeout_s: int | None = None, modelo: str | None = None) -> str:
         self.investigar_n += 1
         return "ok con web"
 

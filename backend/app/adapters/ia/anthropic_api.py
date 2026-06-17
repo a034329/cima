@@ -58,14 +58,16 @@ class AnthropicClasificador:
             "proveedor claude_cli (Claude Max)."
         )
 
-    def completar(self, system: str, user: str, timeout_s: int | None = None) -> str:
+    def completar(self, system: str, user: str, timeout_s: int | None = None,
+                  modelo: str | None = None) -> str:
         # TODO(api): client.messages.create(...) con prompt caching.
         raise NotImplementedError(
             "Adaptador Anthropic pendiente — ver TODO(api). De momento usa el "
             "proveedor claude_cli (Claude Max)."
         )
 
-    def investigar(self, system: str, user: str, timeout_s: int | None = None) -> str:  # noqa: ARG002
+    def investigar(self, system: str, user: str, timeout_s: int | None = None,  # noqa: ARG002
+                   modelo: str | None = None) -> str:
         # TODO(api): client.messages.create(..., tools=[{"type": "web_search_..."}]).
         raise NotImplementedError(
             "Búsqueda web vía API pendiente — usará el server-tool `web_search`. "

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.schemas.transaccion import (
     EstadoTransaccion,
@@ -19,20 +20,6 @@ from app.services.transacciones import TxCandidata, crear_manual
 router = APIRouter(prefix="/transacciones", tags=["transacciones"])
 
 
-def _resolver_cartera_por_defecto(db: Session) -> models.Cartera:
-    """Devuelve la primera cartera disponible.
-
-    Stub mientras no haya auth: en producción será `current_user.cartera_id`.
-    """
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera creada. Crea una primero o inicializa BD.",
-        )
-    return cartera
-
-
 @router.post(
     "",
     response_model=TransaccionOut,
@@ -42,6 +29,7 @@ def _resolver_cartera_por_defecto(db: Session) -> models.Cartera:
 def crear_transaccion(
     payload: TransaccionIn,
     db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
 ) -> models.Transaccion:
     """Registra una transacción manual. Por defecto se aplica AL INSTANTE
     (`confirmar_directo=true`): queda `confirmada` y dispara el rebuild FIFO
@@ -50,8 +38,6 @@ def crear_transaccion(
 
     Si pasas `posicion_id` (selector de la cartera), `isin`/`nombre`/`divisa`
     se autocompletan desde esa posición."""
-    cartera = _resolver_cartera_por_defecto(db)
-
     isin = payload.isin
     nombre = payload.nombre
     divisa_local = payload.divisa_local
@@ -107,8 +93,8 @@ def listar_transacciones(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    cartera: models.Cartera = Depends(get_current_cartera),
 ) -> list[models.Transaccion]:
-    cartera = _resolver_cartera_por_defecto(db)
     q = (
         select(models.Transaccion)
         .where(models.Transaccion.cartera_id == cartera.id)
@@ -131,11 +117,12 @@ def listar_transacciones(
     response_model=TransaccionOut,
     summary="Obtener una transacción por ID",
 )
-def obtener_transaccion(tx_id: str, db: Session = Depends(get_db)) -> models.Transaccion:
+def obtener_transaccion(tx_id: str, db: Session = Depends(get_db),
+                        cartera: models.Cartera = Depends(get_current_cartera)) -> models.Transaccion:
     tx = db.get(models.Transaccion, tx_id)
     # Scoping a la cartera activa (S2 auditoría: db.get por id global era un
     # IDOR directo en cuanto haya dos usuarios).
-    if tx is not None and tx.cartera_id != _resolver_cartera_por_defecto(db).id:
+    if tx is not None and tx.cartera_id != cartera.id:
         tx = None
     if tx is None:
         raise HTTPException(
@@ -150,7 +137,8 @@ def obtener_transaccion(tx_id: str, db: Session = Depends(get_db)) -> models.Tra
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Marcar una transacción como descartada",
 )
-def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
+def descartar_transaccion(tx_id: str, db: Session = Depends(get_db),
+                          cartera: models.Cartera = Depends(get_current_cartera)) -> None:
     """No elimina físicamente — marca `estado=descartada` para preservar
     auditoría, y reconstruye el FIFO de la posición (los lotes derivan de
     las transacciones confirmadas: sin rebuild, la posición seguía mostrando
@@ -158,7 +146,7 @@ def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
     optimizador — auditoría Cima 2026-06-11, C3; mantenimiento.py ya lo
     hacía bien)."""
     tx = db.get(models.Transaccion, tx_id)
-    if tx is not None and tx.cartera_id != _resolver_cartera_por_defecto(db).id:
+    if tx is not None and tx.cartera_id != cartera.id:
         tx = None   # S2: sin scoping era un IDOR en multi-usuario
     if tx is None:
         raise HTTPException(
@@ -177,11 +165,12 @@ def descartar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> None:
     response_model=TransaccionOut,
     summary="Restaurar una transacción descartada (papelera)",
 )
-def restaurar_transaccion(tx_id: str, db: Session = Depends(get_db)) -> models.Transaccion:
+def restaurar_transaccion(tx_id: str, db: Session = Depends(get_db),
+                          cartera: models.Cartera = Depends(get_current_cartera)) -> models.Transaccion:
     """Contrapartida del descarte: estado → confirmada + rebuild del FIFO.
     Solo aplica a descartadas (no resucita pendientes ni toca confirmadas)."""
     tx = db.get(models.Transaccion, tx_id)
-    if tx is not None and tx.cartera_id != _resolver_cartera_por_defecto(db).id:
+    if tx is not None and tx.cartera_id != cartera.id:
         tx = None   # mismo scoping anti-IDOR que el resto del router
     if tx is None:
         raise HTTPException(

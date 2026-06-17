@@ -6,9 +6,9 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_cartera
 from app.db import get_db, models
 from app.services.fiscal_forex import calcular_forex
 
@@ -55,28 +55,20 @@ def _serializar(r) -> ForexResumen:  # type: ignore[no-untyped-def]
     )
 
 
-def _cartera(db: Session) -> models.Cartera:
-    cartera = db.execute(select(models.Cartera)).scalars().first()
-    if cartera is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No hay cartera. Llama primero a POST /api/bootstrap",
-        )
-    return cartera
-
-
 @router.get("/acumulado", response_model=ForexResumen,
             summary="Forex acumulado (todos los años)")
-def get_forex_acumulado(db: Session = Depends(get_db)) -> ForexResumen:
-    return _serializar(calcular_forex(db, _cartera(db).id, None))
+def get_forex_acumulado(db: Session = Depends(get_db),
+                        cartera: models.Cartera = Depends(get_current_cartera)) -> ForexResumen:
+    return _serializar(calcular_forex(db, cartera.id, None))
 
 
 @router.get("/{ejercicio}", response_model=ForexResumen,
             summary="G/P de divisa del ejercicio (realized declarable Art. 33.5.e)")
-def get_forex(ejercicio: int, db: Session = Depends(get_db)) -> ForexResumen:
+def get_forex(ejercicio: int, db: Session = Depends(get_db),
+              cartera: models.Cartera = Depends(get_current_cartera)) -> ForexResumen:
     if not (_EJERCICIO_MIN <= ejercicio <= _EJERCICIO_MAX):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ejercicio fuera de rango ({_EJERCICIO_MIN}-{_EJERCICIO_MAX})",
         )
-    return _serializar(calcular_forex(db, _cartera(db).id, ejercicio))
+    return _serializar(calcular_forex(db, cartera.id, ejercicio))
