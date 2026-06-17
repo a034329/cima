@@ -34,6 +34,9 @@ export default function OnboardingPage() {
   const [fase, setFase] = useState('acumulacion');
 
   const [propuesta, setPropuesta] = useState<PropuestaEstrategia | null>(null);
+  // Perfil exacto con el que se generó `propuesta`, para detectar si el usuario
+  // cambió los datos al volver atrás (entonces la propuesta queda obsoleta).
+  const [perfilPropuesto, setPerfilPropuesto] = useState<string | null>(null);
   const [objetivos, setObjetivos] = useState<Record<string, number>>({});
   const [proponiendo, setProponiendo] = useState(false);
   const [firmando, setFirmando] = useState(false);
@@ -71,6 +74,7 @@ export default function OnboardingPage() {
     try {
       const p = await proponerEstrategia(perfil());
       setPropuesta(p);
+      setPerfilPropuesto(JSON.stringify(perfil()));
       const obj: Record<string, number> = {};
       for (const b of p.bloques) obj[b.categoria_base] = b.peso_objetivo;
       setObjetivos(obj);
@@ -95,6 +99,8 @@ export default function OnboardingPage() {
   };
 
   const sumaPct = Object.values(objetivos).reduce((s, v) => s + v, 0);
+  // La propuesta vigente quedó obsoleta si el perfil cambió desde que se generó.
+  const propuestaObsoleta = propuesta != null && perfilPropuesto !== JSON.stringify(perfil());
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -166,13 +172,15 @@ export default function OnboardingPage() {
       {/* Paso 2 — Propuesta IA */}
       {paso === 2 && (
         <section className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-5 space-y-4">
-          {!propuesta ? (
+          {!propuesta || propuestaObsoleta ? (
             <div className="text-center py-6">
               <p className="text-sm text-[rgb(var(--muted))] mb-4">
-                La IA propondrá un reparto por bloque según tu perfil. Tú lo ajustas después.
+                {propuestaObsoleta
+                  ? 'Has cambiado tu perfil. Vuelve a proponer para actualizar el reparto.'
+                  : 'La IA propondrá un reparto por bloque según tu perfil. Tú lo ajustas después.'}
               </p>
               <button onClick={proponer} disabled={proponiendo} className={`${BTN} disabled:opacity-50`}>
-                {proponiendo ? '·· la IA está pensando ··' : 'Proponer con IA'}
+                {proponiendo ? '·· la IA está pensando ··' : propuestaObsoleta ? 'Volver a proponer' : 'Proponer con IA'}
               </button>
             </div>
           ) : (
