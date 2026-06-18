@@ -6,8 +6,10 @@ import { HojaRutaReview } from '@/components/HojaRutaReview';
 import {
   fetchDistribucionBloques,
   fetchPlanFirmado,
+  fetchProyeccionCartera,
   firmarPlan,
   fmtPct,
+  prefillEstimaciones,
   proponerEstrategia,
 } from '@/lib/api';
 import { CAT_COLOR, CAT_LABEL } from '@/lib/categorias';
@@ -44,6 +46,10 @@ export default function OnboardingPage() {
   const [error, setError] = useState<string | null>(null);
   const [tienePosiciones, setTienePosiciones] = useState<boolean | null>(null);
   const [planVigente, setPlanVigente] = useState<PlanFirmado | null>(null);
+  // CAGR4+Div proyectado de la cartera (de Estimaciones). Si faltan, se
+  // auto-rellenan al entrar para que el diseño se haga con la proyección real.
+  const [proyectadaPct, setProyectadaPct] = useState<number | null>(null);
+  const [calculandoProy, setCalculandoProy] = useState(false);
 
   useEffect(() => {
     fetchDistribucionBloques()
@@ -60,6 +66,30 @@ export default function OnboardingPage() {
       if (typeof pf.tolerancia === 'string') setTolerancia(pf.tolerancia);
       if (typeof pf.fase === 'string') setFase(pf.fase);
     }).catch(() => {});
+  }, []);
+
+  // Al entrar: si faltan estimaciones (no hay CAGR proyectada fiable), se
+  // rellenan automáticamente para diseñar la estrategia con la proyección real
+  // de la cartera (no solo con el retorno requerido).
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        let proy = await fetchProyeccionCartera();
+        if (vivo) setProyectadaPct(proy.cagr_proyectada_pct);
+        if (!proy.completa) {
+          if (vivo) setCalculandoProy(true);
+          await prefillEstimaciones().catch(() => {});
+          proy = await fetchProyeccionCartera();
+          if (vivo) setProyectadaPct(proy.cagr_proyectada_pct);
+        }
+      } catch {
+        /* sin cartera o sin red: el wizard sigue sin la proyección */
+      } finally {
+        if (vivo) setCalculandoProy(false);
+      }
+    })();
+    return () => { vivo = false; };
   }, []);
 
   const perfil = (): PerfilOnboarding => ({
@@ -120,6 +150,12 @@ export default function OnboardingPage() {
           {planVigente.fecha && <> · {planVigente.fecha.slice(0, 10)}</>}. Hemos precargado tu
           perfil. Rediseñarlo guarda una <strong>nueva versión</strong>: solo se actualizan los
           objetivos por bloque — tus posiciones y su clasificación no se tocan.
+        </div>
+      )}
+
+      {calculandoProy && (
+        <div className="rounded-lg border border-[rgb(var(--border))] bg-[rgb(var(--bg))] p-3 text-sm text-[rgb(var(--muted))] animate-pulse">
+          ·· calculando la proyección (CAGR4+Div) de tu cartera ··
         </div>
       )}
 
@@ -201,6 +237,23 @@ export default function OnboardingPage() {
                         : fmtPct(propuesta.viabilidad.cagr_requerido_pct, 1)}
                     </span>
                   </div>
+                  {(() => {
+                    const proy = propuesta.viabilidad.cagr_proyectada_pct ?? proyectadaPct;
+                    const req = propuesta.viabilidad.cagr_requerido_pct;
+                    if (proy == null) return null;
+                    const gap = req != null && proy < req - 0.001;
+                    return (
+                      <div className="flex items-center justify-between gap-3 mt-1">
+                        <span className="text-[rgb(var(--muted))]">Proyección de tu cartera (CAGR4+Div)</span>
+                        <span className={`font-mono font-semibold ${gap ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          {fmtPct(proy, 1)}{gap ? ' ⚠ gap' : ''}
+                          {propuesta.viabilidad.cobertura_estim != null && propuesta.viabilidad.cobertura_estim < 0.8
+                            ? <span className="text-[10px] text-[rgb(var(--muted))] font-sans ml-1">(parcial)</span>
+                            : null}
+                        </span>
+                      </div>
+                    );
+                  })()}
                   <p className="mt-1 text-xs text-[rgb(var(--muted))]">
                     {propuesta.viabilidad.veredicto}
                   </p>

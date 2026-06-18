@@ -40,6 +40,11 @@ class Viabilidad:
     cagr_requerido_pct: float | None # retorno anual aprox. necesario (fracción); None si no calculable
     viable: bool
     veredicto: str
+    # CAGR4+Div proyectado de la cartera actual (ponderado por valor, de
+    # Estimaciones). None si no hay estimaciones curadas. `cobertura_estim` =
+    # fracción del valor con estimación válida (para avisar si es parcial).
+    cagr_proyectada_pct: float | None = None
+    cobertura_estim: float | None = None
 
 
 @dataclass
@@ -62,7 +67,10 @@ def _capital_actual(db: Session, cartera_id: str) -> Decimal:
     return capital_en_estrategia_eur(db, cartera_id)
 
 
-def _viabilidad(perfil: dict, capital_actual: Decimal) -> Viabilidad | None:
+def _viabilidad(
+    perfil: dict, capital_actual: Decimal,
+    cagr_proyectada: Decimal | None = None, cobertura: Decimal | None = None,
+) -> Viabilidad | None:
     objetivo = perfil.get("objetivo_if_eur")
     horizonte = perfil.get("horizonte_anios")
     aport_mes = perfil.get("aportacion_mensual_eur") or 0
@@ -73,13 +81,16 @@ def _viabilidad(perfil: dict, capital_actual: Decimal) -> Viabilidad | None:
     n = float(horizonte)              # admite fracciones (p.ej. 2,5 años)
     aport_anual = Decimal(str(aport_mes)) * 12
     aportes = float(aport_anual) * n
+    proy = float(cagr_proyectada) if cagr_proyectada is not None else None
+    cob = float(cobertura) if cobertura is not None else None
     # Retorno requerido = inverso de la proyección del dashboard (capital a
     # mercado + aportación mensual capitalizada). Consistente por construcción.
     cagr = proyeccion.retorno_requerido(capital_actual, aport_anual, Decimal(str(objetivo)), n)
     if cagr is None:
         ver = ("Poco realista: ni con un retorno extraordinario llegas en este plazo. "
                "Alarga el horizonte o sube la aportación.")
-        return Viabilidad(float(capital_actual), aportes, None, False, ver)
+        return Viabilidad(float(capital_actual), aportes, None, False, ver,
+                          cagr_proyectada_pct=proy, cobertura_estim=cob)
     viable = cagr <= _UMBRAL_VIABLE
     if cagr <= 0.07:
         ver = "Holgado: el objetivo es alcanzable con una cartera equilibrada."
@@ -90,7 +101,18 @@ def _viabilidad(perfil: dict, capital_actual: Decimal) -> Viabilidad | None:
     else:
         ver = (f"Poco realista: necesitarías ~{cagr * 100:.0f}% anual, que ninguna cartera "
                "diversificada da con seguridad. Alarga el horizonte o sube la aportación.")
-    return Viabilidad(float(capital_actual), aportes, cagr, viable, ver)
+    # Comparar con la proyección real de la cartera: si proyecta por debajo de
+    # lo requerido, el usuario debe reforzar crecimiento (o ajustar objetivo).
+    if proy is not None and cagr is not None:
+        gap = cagr - proy
+        if gap > 0.01:
+            ver += (f" Tu cartera actual proyecta ~{proy * 100:.1f}% anual, "
+                    f"por debajo de lo requerido: hay que inclinar el reparto a crecimiento.")
+        elif proy >= cagr:
+            ver += (f" Tu cartera actual ya proyecta ~{proy * 100:.1f}% anual, "
+                    f"a la altura de lo requerido.")
+    return Viabilidad(float(capital_actual), aportes, cagr, viable, ver,
+                      cagr_proyectada_pct=proy, cobertura_estim=cob)
 
 
 def _catalogo(db: Session, cartera_id: str) -> list[models.Bloque]:
@@ -143,11 +165,21 @@ def build_prompt(perfil: dict, dist_bloques: list, viab: Viabilidad | None) -> t
     if viab is not None:
         req = (f"{viab.cagr_requerido_pct * 100:.1f}%" if viab.cagr_requerido_pct is not None
                else "—")
+        proy_txt = ""
+        if viab.cagr_proyectada_pct is not None:
+            proy_txt = (
+                f"- CAGR4+Div PROYECTADO de su cartera ACTUAL (de Estimaciones): "
+                f"{viab.cagr_proyectada_pct * 100:.1f}%"
+                f"{f' (cobertura {viab.cobertura_estim * 100:.0f}% del valor)' if viab.cobertura_estim is not None else ''}. "
+                f"Si está por debajo del requerido, el reparto debe inclinarse a "
+                f"Compounders/Dividend Growth para cerrar el hueco.\n"
+            )
         viab_txt = (
             f"\n- Capital ya invertido en estrategia: {viab.capital_actual_eur:.0f} €\n"
             f"- Aportaciones previstas en el horizonte: {viab.aportaciones_eur:.0f} €\n"
             f"- RETORNO ANUAL REQUERIDO (aprox) para el objetivo: {req}"
             f"{' — POCO REALISTA' if not viab.viable else ''}\n"
+            f"{proy_txt}"
         )
     user = (
         f"PERFIL DEL USUARIO:\n"
@@ -189,10 +221,14 @@ def parse_propuesta(texto: str, categorias_validas: set[str]) -> PropuestaEstrat
 def proponer_estrategia(db: Session, cartera_id: str, perfil: dict) -> PropuestaEstrategia:
     from app.services.bloques import calcular_distribucion
 
+    from app.services.estimaciones import agregado_cartera
+
     dist = calcular_distribucion(db, cartera_id)
     cats = {b.categoria_base for b in dist.bloques
             if b.en_estrategia and b.categoria_base != "sin_clasificar"}
-    viab = _viabilidad(perfil, _capital_actual(db, cartera_id))
+    agg = agregado_cartera(db, cartera_id, solo_estrategia=True)
+    viab = _viabilidad(perfil, _capital_actual(db, cartera_id),
+                       agg.cagr4_div_ponderado_pct, agg.cobertura)
     system, user = build_prompt(perfil, dist.bloques, viab)
     texto = get_clasificador().completar(system, user, timeout_s=settings.ia_chat_timeout_s)
     prop = parse_propuesta(texto, cats)

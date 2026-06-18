@@ -541,6 +541,16 @@ export async function fetchPlanFirmado(): Promise<import('./types').PlanFirmado 
   return fetchJson('/api/onboarding/plan');
 }
 
+export interface ProyeccionCartera {
+  cagr_proyectada_pct: number | null;
+  cobertura: number;
+  completa: boolean;
+}
+
+export async function fetchProyeccionCartera(): Promise<ProyeccionCartera> {
+  return fetchJson('/api/onboarding/proyeccion');
+}
+
 export async function fetchVigilancia(): Promise<import('./types').Vigilancia> {
   return fetchJson('/api/vigilancia');
 }

@@ -35,6 +35,8 @@ class ViabilidadOut(BaseModel):
     cagr_requerido_pct: float | None
     viable: bool
     veredicto: str
+    cagr_proyectada_pct: float | None = None
+    cobertura_estim: float | None = None
 
 
 class PropuestaOut(BaseModel):
@@ -74,7 +76,31 @@ def proponer(payload: PerfilIn, db: Session = Depends(get_db),
         viabilidad=ViabilidadOut(
             capital_actual_eur=v.capital_actual_eur, aportaciones_eur=v.aportaciones_eur,
             cagr_requerido_pct=v.cagr_requerido_pct, viable=v.viable, veredicto=v.veredicto,
+            cagr_proyectada_pct=v.cagr_proyectada_pct, cobertura_estim=v.cobertura_estim,
         ) if v else None,
+    )
+
+
+class ProyeccionOut(BaseModel):
+    cagr_proyectada_pct: float | None     # CAGR4+Div ponderado de la cartera (None si sin estimaciones)
+    cobertura: float                      # fracción del valor con estimación válida
+    completa: bool                        # True si la cobertura es suficiente para fiarse
+
+
+@router.get("/proyeccion", response_model=ProyeccionOut,
+            summary="CAGR4+Div proyectado de la cartera (para el wizard de estrategia)")
+def proyeccion(db: Session = Depends(get_db),
+               cartera: models.Cartera = Depends(get_current_cartera)) -> ProyeccionOut:
+    from app.services.estimaciones import agregado_cartera
+
+    agg = agregado_cartera(db, cartera.id, solo_estrategia=True)
+    cob = float(agg.cobertura)
+    return ProyeccionOut(
+        cagr_proyectada_pct=(float(agg.cagr4_div_ponderado_pct)
+                             if agg.cagr4_div_ponderado_pct is not None else None),
+        cobertura=cob,
+        # < 80% del valor con estimación → el wizard lanzará el prefill al entrar.
+        completa=(agg.cagr4_div_ponderado_pct is not None and cob >= 0.80),
     )
 
 

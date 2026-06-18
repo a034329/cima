@@ -927,6 +927,8 @@ export interface Viabilidad {
   cagr_requerido_pct: number | null;
   viable: boolean;
   veredicto: string;
+  cagr_proyectada_pct: number | null;
+  cobertura_estim: number | null;
 }
 
 export interface PropuestaEstrategia {
