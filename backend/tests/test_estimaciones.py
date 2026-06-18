@@ -547,3 +547,41 @@ def test_2b_factor_calidad_neutro_sin_senales():
     svc._seed_estimacion(e, {"book_value_ps": 10.0, "price_to_book": 1.0}, None)
     # Sin ROE/márgenes/crecimiento → factor 1.0 → objetivo = P/B actual
     assert e.multiplo_objetivo == Decimal("1.0000")
+
+
+def test_2b_refinar_multiplo_por_pares(db: Session, cartera):
+    """2b-pares: el múltiplo objetivo se fija = mediana de pares × calidad
+    relativa; respeta ediciones; marca el origen para que el prefill no lo pise."""
+    import json as _json
+    from app.services.comps import Comps, Peer
+    from app.services import estimaciones as svc
+
+    _pos(db, cartera, "US_BKP", "BankPeer", 10, 1000, 50)
+    e = models.Estimacion(cartera_id=cartera.id, isin="US_BKP", tipo_val="P_BV",
+                          metrica_base_4y=Decimal("60"),
+                          consenso_json=_json.dumps({"calidad": {"roe": 0.25, "revenue_growth": 0.10}}))
+    db.add(e); db.commit()
+
+    comps = Comps(isin="US_BKP", nombre="BankPeer", sector="Banks", peers=[
+        Peer(nombre="BankPeer", ticker="BKP", per=None, ev_ebitda=None, p_fcf=None,
+             yield_pct=None, crecimiento_pct=0.10, roic_pct=0.25, es_objetivo=True, p_bv=1.5),
+        Peer(nombre="PeerA", ticker="A", per=None, ev_ebitda=None, p_fcf=None,
+             yield_pct=None, crecimiento_pct=0.05, roic_pct=0.12, es_objetivo=False, p_bv=1.0),
+        Peer(nombre="PeerB", ticker="B", per=None, ev_ebitda=None, p_fcf=None,
+             yield_pct=None, crecimiento_pct=0.06, roic_pct=0.14, es_objetivo=False, p_bv=1.2),
+    ])
+    ok = svc.refinar_multiplo_por_pares(db, cartera.id, "US_BKP", comps)
+    assert ok
+    db.refresh(e)
+    # mediana pares (excl. objetivo) P/B = mediana(1.0, 1.2) = 1.1; ROE 0.25 > mediana
+    # peer ROIC 0.13×1.1 → +0.08; growth 0.10 > 0.055×1.1 → +0.06 → factor 1.14
+    assert e.multiplo_objetivo == (Decimal("1.1") * Decimal("1.14")).quantize(Decimal("0.0001"))
+    assert _json.loads(e.consenso_json).get("multiplo_pares") is True
+
+    # Una edición del usuario tiene prioridad: no se refina.
+    e.consenso_json = _json.dumps({"editado": ["multiplo_objetivo"]})
+    e.multiplo_objetivo = Decimal("2.0")
+    db.commit()
+    assert svc.refinar_multiplo_por_pares(db, cartera.id, "US_BKP", comps) is False
+    db.refresh(e)
+    assert e.multiplo_objetivo == Decimal("2.0")

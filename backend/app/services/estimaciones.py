@@ -541,8 +541,12 @@ def _clasificar_tipo_val(industria: str, sector: str, nombre_u: str,
 # crecimiento de la métrica. Los pares (comps IA) afinan esto on-demand.
 _BANDA_CALIDAD = (Decimal("0.90"), Decimal("1.15"))
 # Bandas de saneo del múltiplo objetivo por tipo (evita objetivos absurdos).
-_BANDA_MULT = {"P_BV": (Decimal("0.4"), Decimal("5")),
+_BANDA_MULT = {"PER": (Decimal("5"), Decimal("45")),
+               "P_BV": (Decimal("0.4"), Decimal("5")),
                "P_FCF": (Decimal("5"), Decimal("35"))}
+# Campo de `Peer` (comps) que corresponde a cada tipo de valoración.
+_CAMPO_PAR = {"PER": "per", "P_FCF": "p_fcf", "P_BV": "p_bv"}
+_BANDA_CALIDAD_PARES = (Decimal("0.85"), Decimal("1.20"))
 
 
 def _factor_calidad(f: dict) -> Decimal:
@@ -581,6 +585,77 @@ def _crec_metrica_no_per(tipo: str, f: dict) -> float:
         rg = f.get("revenue_growth")
         return max(-0.05, min(0.15, rg)) if isinstance(rg, (int, float)) else 0.0
     return 0.0
+
+
+def _factor_calidad_vs_pares(calidad: dict, peers: list) -> Decimal:
+    """Prima/descuento del múltiplo por calidad RELATIVA a los pares (Fase 2b):
+    ROE vs ROIC mediano de pares y crecimiento vs crecimiento mediano. Banda
+    [0.85, 1.20]. Sin datos comparables → 1.0."""
+    import statistics
+    score = Decimal("0")
+    roe = calidad.get("roe")
+    roics = [p.roic_pct for p in peers
+             if not getattr(p, "es_objetivo", False) and isinstance(getattr(p, "roic_pct", None), (int, float))]
+    if isinstance(roe, (int, float)) and roics:
+        m = statistics.median(roics)
+        if m and roe > m * 1.1:
+            score += Decimal("0.08")
+        elif m and roe < m * 0.9:
+            score -= Decimal("0.08")
+    rg = calidad.get("revenue_growth")
+    crecs = [p.crecimiento_pct for p in peers
+             if not getattr(p, "es_objetivo", False) and isinstance(getattr(p, "crecimiento_pct", None), (int, float))]
+    if isinstance(rg, (int, float)) and crecs:
+        m = statistics.median(crecs)
+        if m and rg > m * 1.1:
+            score += Decimal("0.06")
+        elif m and rg < m * 0.9:
+            score -= Decimal("0.06")
+    lo, hi = _BANDA_CALIDAD_PARES
+    return max(lo, min(hi, Decimal("1") + score))
+
+
+def refinar_multiplo_por_pares(db: Session, cartera_id: str, isin: str, comps) -> bool:
+    """Fija el múltiplo objetivo desde los PARES (Fase 2b on-demand): mediana del
+    múltiplo del tipo entre los pares × prima/descuento por calidad relativa.
+    Respeta ediciones del usuario. Marca el origen para que el prefill no lo pise.
+    Devuelve True si lo actualizó. `comps` es un `services.comps.Comps`."""
+    import statistics
+
+    e = db.execute(
+        select(models.Estimacion)
+        .where(models.Estimacion.cartera_id == cartera_id)
+        .where(models.Estimacion.isin == isin)
+    ).scalars().first()
+    if e is None:
+        return False
+    campo = _CAMPO_PAR.get(e.tipo_val)
+    if not campo:                       # tipo sin múltiplo de pares (P_FRE/SOTP)
+        return False
+
+    prev: dict = {}
+    if e.consenso_json:
+        try:
+            prev = json.loads(e.consenso_json) or {}
+        except ValueError:
+            prev = {}
+    if "multiplo_objetivo" in set(prev.get("editado", [])):
+        return False                    # el usuario lo fijó → no tocar
+
+    vals = [getattr(p, campo) for p in comps.peers
+            if not getattr(p, "es_objetivo", False)
+            and isinstance(getattr(p, campo, None), (int, float)) and getattr(p, campo) > 0]
+    if len(vals) < 2:                   # pocos pares fiables
+        return False
+    med = Decimal(str(statistics.median(vals)))
+    factor = _factor_calidad_vs_pares(prev.get("calidad", {}), comps.peers)
+    lo, hi = _BANDA_MULT.get(e.tipo_val, (Decimal("1"), Decimal("60")))
+    e.multiplo_objetivo = max(lo, min(hi, med * factor)).quantize(Decimal("0.0001"))
+    prev["multiplo_pares"] = True       # el prefill respetará este valor
+    prev["multiplo_fuente"] = f"pares: mediana {float(med):.1f}× × calidad {float(factor):.2f}"
+    e.consenso_json = json.dumps(prev)
+    db.commit()
+    return True
 
 
 def _crecimiento_eps(eps_hist: list | None, forward_eps: float | None) -> float:
@@ -693,7 +768,7 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
         if e.tipo_val == "PER":
             # Múltiplo objetivo NORMALIZADO: min(forward de consenso, histórico
             # mediano), acotado a [5,45]. Respaldo no-US: forwardPE acotado.
-            if "multiplo_objetivo" not in editado:
+            if "multiplo_objetivo" not in editado and not prev.get("multiplo_pares"):
                 mult, _ = _multiplo_consenso_hist(c)
                 if mult is not None:
                     e.multiplo_objetivo = Decimal(str(mult)).quantize(Decimal("0.0001"))
@@ -720,7 +795,7 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
             if "metrica_base_4y" not in editado and actual_ps is not None and actual_ps > 0:
                 g = _crec_metrica_no_per(e.tipo_val, f)
                 e.metrica_base_4y = Decimal(str(float(actual_ps) * (1 + g) ** 4)).quantize(Decimal("0.0001"))
-            if ("multiplo_objetivo" not in editado
+            if ("multiplo_objetivo" not in editado and not prev.get("multiplo_pares")
                     and isinstance(mult_actual, (int, float)) and mult_actual > 0):
                 lo, hi = _BANDA_MULT[e.tipo_val]
                 obj = (Decimal(str(mult_actual)) * _factor_calidad(f))

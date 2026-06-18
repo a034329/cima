@@ -37,6 +37,7 @@ class Peer:
     crecimiento_pct: float | None    # crecimiento de ingresos/BPA, fracción
     roic_pct: float | None           # fracción
     es_objetivo: bool = False
+    p_bv: float | None = None        # P/valor contable (financieras/REITs) — default por compat
 
 
 @dataclass
@@ -83,8 +84,8 @@ def build_prompt(nombre: str, sector: str, tipo_activo: str, anclas: dict) -> tu
         "yield, crecimiento y roic en FRACCIÓN (0.03 = 3%). No inventes: si no encuentras un dato, null.\n"
         "Responde EXCLUSIVAMENTE con JSON, sin texto alrededor:\n"
         '{"sector": "<sector>", "peers": [{"nombre": "<empresa>", "ticker": "<TICK>", "per": <num|null>, '
-        '"ev_ebitda": <num|null>, "p_fcf": <num|null>, "yield_pct": <num|null>, "crecimiento_pct": '
-        '<num|null>, "roic_pct": <num|null>, "es_objetivo": <bool>}], '
+        '"ev_ebitda": <num|null>, "p_fcf": <num|null>, "p_bv": <num|null>, "yield_pct": <num|null>, '
+        '"crecimiento_pct": <num|null>, "roic_pct": <num|null>, "es_objetivo": <bool>}], '
         '"lectura": "<2-4 frases: prima/descuento vs pares y por qué>", "fuentes": ["<url>"]}'
     )
     user = (
@@ -120,6 +121,7 @@ def parse(texto: str, nombre: str, isin: str) -> Comps:
             per=_f(p.get("per")), ev_ebitda=_f(p.get("ev_ebitda")), p_fcf=_f(p.get("p_fcf")),
             yield_pct=_f(p.get("yield_pct")), crecimiento_pct=_f(p.get("crecimiento_pct")),
             roic_pct=_f(p.get("roic_pct")), es_objetivo=bool(p.get("es_objetivo")),
+            p_bv=_f(p.get("p_bv")),
         ))
     fus = data.get("fuentes")
     fuentes = [str(u) for u in fus if u] if isinstance(fus, list) else []
@@ -175,4 +177,11 @@ def generar(db: Session, cartera_id: str, isin: str) -> Comps:
     if getattr(settings.mode, "value", settings.mode) == "saas":
         c.disclaimer = _DISCLAIMER
     _persistir(db, cartera_id, c)
+    # Fase 2b on-demand: afinar el múltiplo objetivo de la estimación con la
+    # mediana de los pares + calidad relativa (respeta ediciones del usuario).
+    try:
+        from app.services.estimaciones import refinar_multiplo_por_pares
+        refinar_multiplo_por_pares(db, cartera_id, isin, c)
+    except Exception:
+        pass   # los comps se entregan igual aunque el refinado falle
     return c
