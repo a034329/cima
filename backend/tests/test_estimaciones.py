@@ -522,3 +522,28 @@ def test_consenso_caducado_avisa():
                           consenso_json=_json.dumps({"anio_consenso_4y": y}))  # objetivo = este año
     c = svc._calc_item("US_C", "C", e, Decimal("100"), "USD")
     assert c.mult_alerta and "caducado" in c.mult_alerta
+
+
+def test_2b_objetivo_no_per_metrica_proyectada_y_multiplo_calidad():
+    """Fase 2b: P_BV proyecta el valor contable 4Y (ROE×retención) y fija el
+    múltiplo objetivo = P/B actual × factor de calidad (acotado). Un negocio de
+    alta calidad (ROE/márgenes/crecimiento altos) recibe prima sobre el actual."""
+    e = models.Estimacion(cartera_id="x", isin="US_BK2", tipo_val="PER")
+    svc._seed_estimacion(e, {
+        "industry": "Banks - Diversified", "eps": 5.0,
+        "book_value_ps": 40.0, "price_to_book": 1.5, "payout": 0.4,
+        "roe": 0.22, "oper_margin": 0.40, "revenue_growth": 0.10,
+    }, None)
+    assert e.tipo_val == "P_BV"
+    # crecimiento sostenible = 0.22 × (1−0.4) = 0.132 → cap 0.12 → BV 4Y = 40×1.12^4
+    esperado_bv = Decimal(str(40.0 * (1.12) ** 4)).quantize(Decimal("0.0001"))
+    assert e.metrica_base_4y == esperado_bv
+    # factor calidad: ROE>0.20(+0.06) + oper>0.25(+0.05) + growth>0.06(+0.03) = 1.14
+    assert e.multiplo_objetivo == (Decimal("1.5") * Decimal("1.14")).quantize(Decimal("0.0001"))
+
+
+def test_2b_factor_calidad_neutro_sin_senales():
+    e = models.Estimacion(cartera_id="x", isin="US_BK3", tipo_val="P_BV")
+    svc._seed_estimacion(e, {"book_value_ps": 10.0, "price_to_book": 1.0}, None)
+    # Sin ROE/márgenes/crecimiento → factor 1.0 → objetivo = P/B actual
+    assert e.multiplo_objetivo == Decimal("1.0000")

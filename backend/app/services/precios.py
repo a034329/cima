@@ -520,6 +520,13 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             "revenue_growth": info.get("revenueGrowth"),  # fracción, unitless
             "gross_margin": info.get("grossMargins"),     # fracción
             "oper_margin": info.get("operatingMargins"),  # fracción
+            # Múltiplos ACTUALES para anclar el objetivo de los no-PER (Fase 2b).
+            # Ratios → sin escalado de divisa.
+            "price_to_book": info.get("priceToBook"),     # P/B actual
+            "p_fcf_actual": ((info["marketCap"] / info["freeCashflow"])
+                             if isinstance(info.get("marketCap"), (int, float))
+                             and isinstance(info.get("freeCashflow"), (int, float))
+                             and info.get("freeCashflow") else None),  # P/FCF actual
         }
     except Exception:
         return None

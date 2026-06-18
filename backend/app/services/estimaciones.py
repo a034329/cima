@@ -536,6 +536,53 @@ def _clasificar_tipo_val(industria: str, sector: str, nombre_u: str,
     return "PER", ""
 
 
+# Banda del tilt de calidad sobre el múltiplo objetivo (Fase 2b). Modesto: la
+# re-valoración por calidad es secundaria; el grueso del CAGR viene del
+# crecimiento de la métrica. Los pares (comps IA) afinan esto on-demand.
+_BANDA_CALIDAD = (Decimal("0.90"), Decimal("1.15"))
+# Bandas de saneo del múltiplo objetivo por tipo (evita objetivos absurdos).
+_BANDA_MULT = {"P_BV": (Decimal("0.4"), Decimal("5")),
+               "P_FCF": (Decimal("5"), Decimal("35"))}
+
+
+def _factor_calidad(f: dict) -> Decimal:
+    """Tilt de calidad ∈ [0.90, 1.15] desde ROE + márgenes + crecimiento de
+    ingresos (Fase 2b). Sin señales → 1.0 (neutro). Aproxima calidad ABSOLUTA;
+    la calidad VS PARES llega con comps (on-demand)."""
+    score = Decimal("0")
+    roe = f.get("roe")
+    if isinstance(roe, (int, float)):
+        score += Decimal("0.06") if roe > 0.20 else Decimal("0.03") if roe > 0.12 else \
+            Decimal("-0.05") if roe < 0.06 else Decimal("0")
+    om = f.get("oper_margin")
+    if isinstance(om, (int, float)):
+        score += Decimal("0.05") if om > 0.25 else Decimal("0.02") if om > 0.12 else \
+            Decimal("-0.04") if om < 0.05 else Decimal("0")
+    rg = f.get("revenue_growth")
+    if isinstance(rg, (int, float)):
+        score += Decimal("0.06") if rg > 0.15 else Decimal("0.03") if rg > 0.06 else \
+            Decimal("-0.05") if rg < 0 else Decimal("0")
+    factor = Decimal("1") + score
+    lo, hi = _BANDA_CALIDAD
+    return max(lo, min(hi, factor))
+
+
+def _crec_metrica_no_per(tipo: str, f: dict) -> float:
+    """Crecimiento 4Y de la métrica no-PER (Fase 2b): P_BV vía crecimiento
+    sostenible (ROE×retención), P_FCF vía crecimiento de ingresos. Acotado."""
+    if tipo == "P_BV":
+        roe = f.get("roe")
+        if not isinstance(roe, (int, float)) or roe <= 0:
+            return 0.0
+        payout = f.get("payout")
+        retencion = (1 - payout) if isinstance(payout, (int, float)) and 0 <= payout <= 1 else 0.6
+        return max(0.0, min(0.12, roe * retencion))
+    if tipo == "P_FCF":
+        rg = f.get("revenue_growth")
+        return max(-0.05, min(0.15, rg)) if isinstance(rg, (int, float)) else 0.0
+    return 0.0
+
+
 def _crecimiento_eps(eps_hist: list | None, forward_eps: float | None) -> float:
     """CAGR del BPA sobre la serie [histórico real + forward FY+1], acotado a
     `_BANDA_CAGR_EPS`. Incluir el forward como último punto captura algo del
@@ -663,16 +710,23 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
                     e.metrica_base_4y = Decimal(
                         str(float(base_eps) * (1 + g) ** 4)
                     ).quantize(Decimal("0.0001"))
-        elif e.tipo_val == "P_FCF" and "metrica_base_4y" not in editado:
-            # FCF/acción actual como base (sin proyección 4Y — conservador). El
-            # múltiplo objetivo queda manual hasta 2b (hist+pares+calidad).
-            if fcf_ps is not None and fcf_ps > 0:
-                e.metrica_base_4y = Decimal(str(fcf_ps)).quantize(Decimal("0.0001"))
-        elif e.tipo_val == "P_BV" and "metrica_base_4y" not in editado:
-            if bvps is not None and bvps > 0:
-                e.metrica_base_4y = Decimal(str(bvps)).quantize(Decimal("0.0001"))
-        # P_FRE / SOTP: métrica no derivable del feed → manual (usuario/2b).
-        # El múltiplo objetivo de los no-PER queda manual hasta 2b.
+        elif e.tipo_val in ("P_FCF", "P_BV"):
+            # Fase 2b: proyectar la métrica 4Y (P_BV vía crecimiento sostenible,
+            # P_FCF vía crecimiento de ingresos) y anclar el múltiplo objetivo al
+            # ACTUAL ajustado por un factor de CALIDAD (ROE/márgenes/crecimiento).
+            # Los pares (comps IA) afinan esto on-demand.
+            actual_ps = fcf_ps if e.tipo_val == "P_FCF" else bvps
+            mult_actual = f.get("p_fcf_actual") if e.tipo_val == "P_FCF" else f.get("price_to_book")
+            if "metrica_base_4y" not in editado and actual_ps is not None and actual_ps > 0:
+                g = _crec_metrica_no_per(e.tipo_val, f)
+                e.metrica_base_4y = Decimal(str(float(actual_ps) * (1 + g) ** 4)).quantize(Decimal("0.0001"))
+            if ("multiplo_objetivo" not in editado
+                    and isinstance(mult_actual, (int, float)) and mult_actual > 0):
+                lo, hi = _BANDA_MULT[e.tipo_val]
+                obj = (Decimal(str(mult_actual)) * _factor_calidad(f))
+                e.multiplo_objetivo = max(lo, min(hi, obj)).quantize(Decimal("0.0001"))
+        # P_FRE / SOTP: métrica/múltiplo no derivables del feed → manuales (2b
+        # por pares on-demand o el usuario).
 
     if "dividendo_share" not in editado and div is not None:
         e.dividendo_share = Decimal(str(div)).quantize(Decimal("0.000001"))
