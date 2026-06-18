@@ -55,6 +55,7 @@ class EstimacionCalc:
     cagr4_div_bruto_pct: Decimal | None = None
     div_yield_neto_pct: Decimal | None = None        # yield × (1 − tipo_efectivo)
     div_horizonte_pct: Decimal | None = None         # neto × factor crecimiento 4Y
+    metrica_divisa: str | None = None                # divisa de la métrica (para reconciliar con el precio)
     tipo_efectivo_div_pct: Decimal | None = None     # 0.19 + exceso CDI del país
     crecimiento_div_aplicado_pct: Decimal | None = None  # g_div usado (campo o derivado)
     # Consenso de analistas (referencia, NO editable):
@@ -94,10 +95,60 @@ def _calc_item(
     base = Decimal(str(e.metrica_base_4y)) if e and e.metrica_base_4y is not None else None
     div = Decimal(str(e.dividendo_share)) if e and e.dividendo_share is not None else None
 
+    c: dict = {}
+    if e and e.consenso_json:
+        try:
+            c = json.loads(e.consenso_json) or {}
+        except ValueError:
+            c = {}
+    # Horizonte REAL del CAGR: si la métrica viene del consenso, su año objetivo
+    # (anio_consenso_4y) puede estar a menos de 4 años vista cuando el consenso
+    # envejece entre prefills. Annualizar sobre 4 años fijos subestima el retorno
+    # (auditoría 2026-06-18, 3C). Sin año de consenso → 4 (proyección derivada a 4A).
+    import datetime as _dt
+    anio_obj = c.get("anio_consenso_4y")
+    horizonte = 4
+    try:
+        if anio_obj:
+            horizonte = max(1, int(anio_obj) - _dt.date.today().year)
+    except (TypeError, ValueError):
+        horizonte = 4
+    consenso_caduco = bool(anio_obj) and horizonte <= 1
+
     precio_obj = (mult * base) if (mult is not None and base is not None) else None
-    cagr4 = _cagr(precio_obj, precio, 4) if (precio_obj is not None and precio) else None
-    yld = (div / precio) if (div is not None and precio and precio > 0) else None
-    crec = _cagr(base, eps, 4) if (base is not None and eps is not None) else None
+
+    # Reconciliar divisa de la métrica (precio_obj, dividendo) con la del PRECIO.
+    # Si están en monedas distintas, comparar precio_obj con precio (o div/precio)
+    # da un CAGR/yield disparatado (auditoría 2026-06-18, Grupo 1):
+    #   - misma familia distinta escala (GBp↔GBP): se reescala por la escala (exacto, sin FX).
+    #   - divisas realmente distintas: no inventamos número (precio_obj/div → None) y se avisa.
+    from app.services.precios import base_y_escala
+    div_yield = div
+    alerta_divisa = False
+    md = getattr(e, "metrica_divisa", None) if e else None
+    if md and divisa and md != divisa:
+        mb, em = base_y_escala(md)
+        pb, ep = base_y_escala(divisa)
+        if mb == pb and ep:
+            f = em / ep
+            if precio_obj is not None:
+                precio_obj = precio_obj * f
+            if div_yield is not None:
+                div_yield = div_yield * f
+        else:
+            precio_obj = None
+            div_yield = None
+            alerta_divisa = True
+
+    cagr4 = _cagr(precio_obj, precio, horizonte) if (precio_obj is not None and precio) else None
+    yld = (div_yield / precio) if (div_yield is not None and precio and precio > 0) else None
+    # `crec` = crecimiento de la MÉTRICA (col O vs col L) — SOLO tiene sentido en
+    # PER, donde ambas son EPS. En P/FCF·P/BV·P/FRE, `base` es la métrica (FRE,
+    # NAV, FCF/share…) y `eps_actual` sigue siendo el EPS real: compararlos mezcla
+    # familias y da un crecimiento falso que, además, contaminaba el g_div del
+    # dividendo cuando no había histórico de DPS (caso Blue Owl / OWL, P/FRE).
+    crec = (_cagr(base, eps, horizonte)
+            if (tipo == "PER" and base is not None and eps is not None) else None)
 
     # Componente Div NETA del horizonte (decisión Angel 2026-06-11):
     #   neto = yield × (1 − tipo_efectivo); tipo_efectivo = suelo del ahorro
@@ -112,10 +163,11 @@ def _calc_item(
     g_div = (Decimal(str(e.crecimiento_div_pct))
              if e is not None and e.crecimiento_div_pct is not None else None)
     if g_div is None:
-        if crec is not None:
-            g_div = max(Decimal("-0.05"), min(Decimal("0.20"), crec))
-        else:
-            g_div = Decimal("0")
+        g_div = crec if crec is not None else Decimal("0")
+    # Clamp SIEMPRE a [−5%, +20%] (no solo la rama derivada): un g_div editado a
+    # mano fuera de banda (p.ej. 15 = 1500%) disparaba factor_horizonte_div a
+    # ×17 y reventaba el cagr4_div (auditoría 2026-06-18, hallazgo 6A).
+    g_div = max(Decimal("-0.05"), min(Decimal("0.20"), g_div))
     # Tipo efectivo CALIBRADO: suelo del ahorro + exceso sobre el tope CDI con
     # la retención OBSERVADA en los propios dividendos del usuario (el broker
     # manda: DeGiro retiene 25% en FR aunque la estatutaria de TR sea 12,8%).
@@ -129,21 +181,27 @@ def _calc_item(
     cagr4_div_bruto = (cagr4 + yld) if (cagr4 is not None and yld is not None) else cagr4
     cagr4_div = (cagr4 + div_horizonte) if (cagr4 is not None and div_horizonte is not None) else cagr4
 
-    c: dict = {}
-    if e and e.consenso_json:
-        try:
-            c = json.loads(e.consenso_json) or {}
-        except ValueError:
-            c = {}
-
     # Alerta del múltiplo. La marca defensiva (familia de métrica contable sin
     # confirmar) tiene prioridad: avisa de que NO se autocompletó y hay que fijar
     # el tipo_val. Si no, la alerta de divergencia consenso/histórico (solo PER).
     revisar = c.get("revisar_tipo_val")
-    if revisar:
+    if alerta_divisa:
+        # Divisa de la métrica ≠ divisa del precio y no reconciliable → no se
+        # calcula CAGR (mejor sin número que con uno falso).
+        alerta = f"métrica en {md} pero precio en {divisa} — revisa la divisa (CAGR no calculado)"
+    elif revisar:
         alerta = f"posible métrica contable ({revisar}?) — fija el tipo_val, no autocompletado"
+    elif consenso_caduco:
+        # El año objetivo del consenso ya llegó/pasó → el CAGR se anualiza sobre
+        # ~1 año y queda inflado. Refresca las estimaciones (3C).
+        alerta = "consenso caducado (año objetivo alcanzado) — refresca las estimaciones"
     elif tipo == "PER":
         alerta = _multiplo_consenso_hist(c)[1]
+    elif mult is None or base is None:
+        # No-PER clasificado pero sin múltiplo/métrica objetivo (los no-PER se
+        # fijan a mano hasta la Fase 2b) → avisar en vez de quedar mudo.
+        from app.db.models import etiquetas_tipo_val
+        alerta = f"{etiquetas_tipo_val(tipo)[0]} clasificado — fija múltiplo y métrica objetivo"
     else:
         alerta = None
 
@@ -154,6 +212,7 @@ def _calc_item(
         crecimiento_pct=crec, cagr4_pct=cagr4, div_yield_pct=yld,
         cagr4_div_pct=cagr4_div, cagr4_div_bruto_pct=cagr4_div_bruto,
         div_yield_neto_pct=yld_neto, div_horizonte_pct=div_horizonte,
+        metrica_divisa=md,
         tipo_efectivo_div_pct=tipo_efectivo, crecimiento_div_aplicado_pct=g_div,
         notas=(e.notas if e else None),
         eps_forward=_d(c.get("eps_forward")),
@@ -434,7 +493,47 @@ _BANDA_CAGR_EPS = (-0.05, 0.15)
 # para revisión; el usuario fija el tipo exacto. Se excluyen a propósito "credit
 # services" (arrastraría Visa/Mastercard) y "stock exchanges" (arrastraría SPGI,
 # MSCI…), todos PER legítimos. COIN (P/FCF) queda como excepción manual.
-_IND_CONTABLE = ("asset management", "reit")
+# Familias que NO se valoran por PER sobre EPS (EPS volátil por provisiones/
+# mark-to-market) → P/BV·P/FRE·P/AFFO… La detección SOLO activa la marca
+# `revisar_tipo_val` (no fija tipo), así que ampliarla es conservador.
+_IND_CONTABLE = ("asset management", "reit", "banks", "bank", "insurance",
+                 "capital markets", "mortgage", "credit services")
+# Excepciones valoradas SÍ por PER pese a contener una palabra contable
+# (corredores de seguros tipo Marsh/AON, bolsas/mercados tipo CME/ICE).
+_IND_CONTABLE_EXCL = ("insurance brokers", "financial data", "stock exchanges")
+# Respaldo cuando `industry` viene vacío (típico no-US): nombre/sector.
+_NOMBRE_CONTABLE = ("REIT", "BDC", "MORTGAGE", "CAPITAL CORP", "BANCO", "BANCA")
+_SECTOR_CONTABLE = ("financial services", "real estate")
+
+
+def _clasificar_tipo_val(industria: str, sector: str, nombre_u: str,
+                         eps: float | None, fcf_ps: float | None) -> tuple[str, str]:
+    """Clasifica el TIPO de múltiplo por modelo de negocio (ADR-005, 2a), dentro
+    del catálogo actual (PER/P_FCF/P_BV/P_FRE/SOTP). Devuelve (tipo, razón).
+    Determinista: industria/sector + nombre + señal de EPS. El usuario puede
+    override (queda fijado). P_S/P_AFFO/EV-EBITDA llegan en 2c."""
+    def has(s: str, *ks: str) -> bool:
+        return any(k in s for k in ks)
+
+    # REIT / inmobiliario patrimonialista → P_BV (NAV; P_AFFO en 2c)
+    if has(industria, "reit") or has(nombre_u, "REIT") or \
+       (not industria and sector == "real estate"):
+        return "P_BV", "REIT/inmobiliario — valor patrimonial (NAV)"
+    # Gestoras de activos / alternativos (OWL, BAM, BX…) → P_FRE
+    if has(industria, "asset management"):
+        return "P_FRE", "gestora de activos — fee-related earnings"
+    # Banca / seguros de balance (excl. corredores) → P_BV
+    if (has(industria, "bank", "insurance") and not has(industria, "insurance brokers")) \
+       or (not industria and (sector == "financial services"
+                              or has(nombre_u, "BANCO", "BANCA"))):
+        return "P_BV", "financiera de balance — valor contable"
+    # Holdings / conglomerados → SOTP (suma de partes)
+    if has(industria, "conglomerates") or has(nombre_u, "HOLDING", "HUTCHISON"):
+        return "SOTP", "holding/conglomerado — suma de partes (NAV)"
+    # EPS no representativo (≤0 o ausente) con FCF positivo → P_FCF
+    if (eps is None or eps <= 0) and (fcf_ps is not None and fcf_ps > 0):
+        return "P_FCF", "EPS no representativo; FCF positivo"
+    return "PER", ""
 
 
 def _crecimiento_eps(eps_hist: list | None, forward_eps: float | None) -> float:
@@ -496,6 +595,11 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
         except ValueError:
             prev = {}
     confirmado = bool(prev.get("tipo_confirmado"))
+    # Campos que el usuario editó a mano (router.editar los registra). El prefill
+    # RE-SIEMBRA los AUTO con dato fresco (arregla la rancidez) pero NUNCA pisa un
+    # campo editado (auditoría 2026-06-18, 3D). Antes solo rellenaba si era None →
+    # una vez sembrado, jamás se actualizaba.
+    editado: set[str] = set(prev.get("editado", []))
     # Los fondos/ETF no se valoran por PER (su retorno = CAGR histórico, ver
     # `_enriquecer_etfs_historico`): nunca sembrar múltiplo/EPS sobre ellos.
     # La marca se INICIALIZA aquí por detección (auditoría Cima 2026-06-11,
@@ -506,11 +610,9 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
         e.isin, f.get("nombre") or f.get("name") or f.get("shortName") or ""
     )
 
-    # Familia de métrica contable: el feed no distingue P/BV/P/FRE/PER dentro de
-    # ella, así que frenamos el sembrado-como-PER en vez de plantar EPS donde va
-    # NAV/FRE. Solo aplica si el tipo no está confirmado.
     industria = (f.get("industry") or "").lower()
-    contable = (not confirmado) and any(k in industria for k in _IND_CONTABLE)
+    sector = (f.get("sector") or "").lower()
+    nombre_u = (f.get("nombre") or f.get("name") or f.get("shortName") or e.isin or "").upper()
 
     eps = f.get("eps")                  # trailing (TTM)
     feps = f.get("forward_eps")         # forward FY+1
@@ -518,45 +620,75 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
     eps_hist = f.get("eps_hist")        # BPA real por año fiscal (oldest→newest)
     div = f.get("dividend")
     pe = f.get("pe")
+    fcf_ps = f.get("fcf_ps")
+    bvps = f.get("book_value_ps")
 
     # BPA base = último ejercicio fiscal real (respeta el año fiscal propio de
     # cada empresa); respaldo = trailing.
     base_eps = eps_fiscal if (eps_fiscal is not None and eps_fiscal > 0) else eps
-    if e.eps_actual is None and base_eps is not None:
+    if "eps_actual" not in editado and base_eps is not None:
         e.eps_actual = Decimal(str(base_eps)).quantize(Decimal("0.0001"))
 
-    if e.tipo_val == "PER" and not contable and not es_fondo_flag:
-        # Múltiplo objetivo NORMALIZADO: min(forward de consenso, histórico mediano),
-        # acotado a [5,45]. Respaldo no-US: forwardPE acotado.
-        if e.multiplo_objetivo is None:
-            mult, _ = _multiplo_consenso_hist(c)
-            if mult is not None:
-                e.multiplo_objetivo = Decimal(str(mult)).quantize(Decimal("0.0001"))
-            elif pe and pe > 0:
-                e.multiplo_objetivo = Decimal(str(max(5.0, min(45.0, pe)))).quantize(Decimal("0.0001"))
+    # CLASIFICAR el tipo de múltiplo (ADR-005, 2a) y fijarlo si el usuario no lo
+    # confirmó/editó y no es un fondo. Antes solo se MARCABA para revisar; ahora
+    # se asigna el tipo correcto (overridable).
+    razon_tipo = ""
+    # Solo se reclasifica desde el DEFAULT (PER): un tipo no-PER ya presente lo
+    # eligió alguien deliberadamente y se respeta (aunque no esté "confirmado").
+    if (not confirmado and not es_fondo_flag and "tipo_val" not in editado
+            and e.tipo_val == "PER"):
+        tipo_sug, razon_tipo = _clasificar_tipo_val(industria, sector, nombre_u, eps, fcf_ps)
+        if tipo_sug != "PER":
+            e.tipo_val = tipo_sug
 
-        # Métrica base 4A. Con consenso de analistas → EPS del año ~+4. Sin
-        # consenso → proyectar el BPA base con un CAGR REAL: el de la serie
-        # [BPA histórico + forward FY+1], acotado a banda (quita el ruido de
-        # años atípicos y captura algo del optimismo/pesimismo próximo). NO se
-        # extrapola un crecimiento de un solo año.
-        eps4 = c.get("eps_consenso_4y") if c else None
-        if e.metrica_base_4y is None:
-            if eps4 is not None and eps4 > 0:
-                e.metrica_base_4y = Decimal(str(eps4)).quantize(Decimal("0.0001"))
-            elif base_eps is not None and base_eps > 0:
-                g = _crecimiento_eps(eps_hist, feps)
-                e.metrica_base_4y = Decimal(
-                    str(float(base_eps) * (1 + g) ** 4)
-                ).quantize(Decimal("0.0001"))
+    # Sembrar métrica/múltiplo según el TIPO (respetando ediciones del usuario).
+    if not es_fondo_flag:
+        if e.tipo_val == "PER":
+            # Múltiplo objetivo NORMALIZADO: min(forward de consenso, histórico
+            # mediano), acotado a [5,45]. Respaldo no-US: forwardPE acotado.
+            if "multiplo_objetivo" not in editado:
+                mult, _ = _multiplo_consenso_hist(c)
+                if mult is not None:
+                    e.multiplo_objetivo = Decimal(str(mult)).quantize(Decimal("0.0001"))
+                elif pe and pe > 0:
+                    e.multiplo_objetivo = Decimal(str(max(5.0, min(45.0, pe)))).quantize(Decimal("0.0001"))
+            # Métrica base 4A: EPS de consenso ~+4 o, sin consenso, proyección del
+            # BPA base con CAGR real de la serie [histórico + forward].
+            eps4 = c.get("eps_consenso_4y") if c else None
+            if "metrica_base_4y" not in editado:
+                if eps4 is not None and eps4 > 0:
+                    e.metrica_base_4y = Decimal(str(eps4)).quantize(Decimal("0.0001"))
+                elif base_eps is not None and base_eps > 0:
+                    g = _crecimiento_eps(eps_hist, feps)
+                    e.metrica_base_4y = Decimal(
+                        str(float(base_eps) * (1 + g) ** 4)
+                    ).quantize(Decimal("0.0001"))
+        elif e.tipo_val == "P_FCF" and "metrica_base_4y" not in editado:
+            # FCF/acción actual como base (sin proyección 4Y — conservador). El
+            # múltiplo objetivo queda manual hasta 2b (hist+pares+calidad).
+            if fcf_ps is not None and fcf_ps > 0:
+                e.metrica_base_4y = Decimal(str(fcf_ps)).quantize(Decimal("0.0001"))
+        elif e.tipo_val == "P_BV" and "metrica_base_4y" not in editado:
+            if bvps is not None and bvps > 0:
+                e.metrica_base_4y = Decimal(str(bvps)).quantize(Decimal("0.0001"))
+        # P_FRE / SOTP: métrica no derivable del feed → manual (usuario/2b).
+        # El múltiplo objetivo de los no-PER queda manual hasta 2b.
 
-    if e.dividendo_share is None and div is not None:
+    if "dividendo_share" not in editado and div is not None:
         e.dividendo_share = Decimal(str(div)).quantize(Decimal("0.000001"))
+
+    # Divisa de la métrica = la de reporte del feed (= la del precio tras el fix
+    # 1A). Permite reconciliar con la divisa del precio en _calc_item.
+    if "metrica_divisa" not in editado and f.get("currency"):
+        e.metrica_divisa = str(f.get("currency"))[:8]
 
     # g_div asistido: CAGR del DPS anual REAL (años completos) si el usuario
     # no lo ha fijado. Mejor base que el crecimiento implícito de la métrica
     # (capta política de dividendo, no de beneficios). Misma banda [−5%,+20%]
     # que el derivado; fondos fuera (su g_div es 0 por diseño).
+    # g_div NO entra en el refresco 3D: es un juicio de política (no dato de
+    # mercado que caduque) y hay decisión fijada de no pisar el del usuario
+    # (test_seed_no_pisa_g_div_del_usuario). Se mantiene "rellena si está vacío".
     if e.crecimiento_div_pct is None and not es_fondo_flag:
         g_dps = _crecimiento_dps(f.get("dps_hist"))
         if g_dps is not None:
@@ -570,8 +702,17 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
         payload["tipo_confirmado"] = True
     if es_fondo_flag:
         payload["es_fondo"] = True
-    if contable and e.tipo_val == "PER":
-        payload["revisar_tipo_val"] = "P/BV·P/FRE"
+    if razon_tipo:                    # por qué se clasificó este tipo (transparencia)
+        payload["tipo_clasificado"] = razon_tipo
+    else:
+        payload.pop("revisar_tipo_val", None)   # ya no se usa (sustituido por clasificación)
+    # Señales de calidad para la Fase 2b (prima/descuento de múltiplo vs pares).
+    calidad = {k: f.get(k) for k in ("roe", "gross_margin", "oper_margin", "revenue_growth")
+               if isinstance(f.get(k), (int, float))}
+    if calidad:
+        payload["calidad"] = calidad
+    if editado:                       # preservar qué campos editó el usuario
+        payload["editado"] = sorted(editado)
     e.consenso_json = json.dumps(payload) if payload else None
 
 

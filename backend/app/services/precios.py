@@ -434,10 +434,14 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             warnings.simplefilter("ignore")
             tk = yf.Ticker(sim)
             info = tk.info or {}
-        cur = info.get("currency")
+        # La divisa que MANDA para el ×100 es la del PRECIO que usará la
+        # valoración (cacheada en px:<sim> desde history_metadata), NO
+        # info["currency"] aislado: Yahoo a veces da 'GBP' en info y 'GBp' en el
+        # precio → la métrica salía 100× respecto al precio y el CAGR4 ≈ −80%
+        # (auditoría 2026-06-18, hallazgo 1A). Fallback a info si no hay px.
+        cur = _leer_cache().get(f"px:{sim}", {}).get("divisa") or info.get("currency")
         # Quirk yfinance en LSE: cotiza en PENIQUES (currency='GBp') pero da
         # BPA/dividendo en LIBRAS → ×100 para igualar la unidad del precio.
-        # (financialCurrency NO es fiable: da USD/EUR para valores británicos.)
         esc = 100 if cur == "GBp" else 1
         def _x(v):  # type: ignore[no-untyped-def]
             return v * esc if isinstance(v, (int, float)) else v
@@ -482,7 +486,12 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             "eps": _x(info.get("trailingEps")),
             "forward_eps": _x(info.get("forwardEps")),
             "dividend": _x(info.get("dividendRate")),
-            "pe": info.get("forwardPE") or info.get("trailingPE"),  # ratio, sin unidad
+            # Primer PE POSITIVO de (forward, trailing): un forwardPE negativo
+            # (pérdidas previstas) ya no enmascara un trailingPE usable —
+            # antes `fwd or trail` tomaba el negativo y el seed lo descartaba,
+            # dejando la posición sin múltiplo (auditoría 2026-06-18, 2C).
+            "pe": next((x for x in (info.get("forwardPE"), info.get("trailingPE"))
+                        if isinstance(x, (int, float)) and x > 0), None),
             "sector": info.get("sector"),
             "industry": info.get("industry"),   # para detectar familias de métrica contable
 
@@ -499,6 +508,18 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             "payout": info.get("payoutRatio"),   # sobre beneficios (fracción)
             "fcf_cobertura_div": _cobertura_fcf(info),
             "dps_hist": dps_hist,    # DPS anual real (oldest→newest, años completos)
+            # Métricas por acción para los tipos no-PER + señales de calidad
+            # (clasificador de múltiplo, ADR-005). FCF/acción y book value/acción
+            # llevan el escalado GBp; los ratios/márgenes son unitless.
+            "fcf_ps": (_x(info["freeCashflow"] / info["sharesOutstanding"])
+                       if isinstance(info.get("freeCashflow"), (int, float))
+                       and isinstance(info.get("sharesOutstanding"), (int, float))
+                       and info.get("sharesOutstanding") else None),
+            "book_value_ps": _x(info.get("bookValue")),   # ya es por acción
+            "revenue_ps": _x(info.get("revenuePerShare")),
+            "revenue_growth": info.get("revenueGrowth"),  # fracción, unitless
+            "gross_margin": info.get("grossMargins"),     # fracción
+            "oper_margin": info.get("operatingMargins"),  # fracción
         }
     except Exception:
         return None
@@ -905,9 +926,24 @@ def precios_nativos(
             continue
         figi = cache.get(f"figi:{pos.isin}", {})
         sim = _ISIN_OVERRIDE.get(pos.isin) or _yf_simbolo(figi.get("ticker"), figi.get("exch"))
+        px = cache.get(f"px:{sim}", {}) if sim else {}
+        # Override manual: tiene prioridad sobre el feed (igual que en
+        # obtener_precios_eur). Antes precios_nativos lo IGNORABA → la posición
+        # desaparecía de la valoración cuando el feed fallaba (justo el caso que
+        # motiva el override) — auditoría 2026-06-18, hallazgo 5. El precio
+        # manual está en EUR: lo pasamos a la divisa NATIVA (la del feed o la de
+        # la posición) para que case con métrica/dividendo, que van en nativa.
+        if pos.precio_manual_eur is not None:
+            div_nat = px.get("divisa") or pos.divisa_local or "EUR"
+            fac = _fx_eur(div_nat, cache)                # nativa → EUR
+            manual = Decimal(str(pos.precio_manual_eur))
+            if fac and fac != 0 and div_nat != "EUR":
+                out[pos.isin] = (manual / fac, div_nat)
+            else:
+                out[pos.isin] = (manual, "EUR")
+            continue
         if not sim:
             continue
-        px = cache.get(f"px:{sim}", {})
         if px.get("precio") is not None:
             out[pos.isin] = (Decimal(str(px["precio"])), px.get("divisa", "EUR"))
     return out

@@ -29,6 +29,7 @@ class EstimacionOut(BaseModel):
     eps_actual: Decimal | None
     multiplo_objetivo: Decimal | None
     metrica_base_4y: Decimal | None
+    metrica_divisa: str | None = None
     dividendo_share: Decimal | None
     precio_objetivo: Decimal | None
     crecimiento_pct: Decimal | None
@@ -68,8 +69,12 @@ class EstimacionIn(BaseModel):
     eps_actual: Decimal | None = None
     multiplo_objetivo: Decimal | None = None
     metrica_base_4y: Decimal | None = None
+    metrica_divisa: str | None = None       # divisa de la métrica (ISO o 'GBp')
     dividendo_share: Decimal | None = None
-    crecimiento_div_pct: Decimal | None = None   # g_div editable (fracción)
+    # g_div editable como FRACCIÓN (0.08 = 8%), no porcentaje crudo. Acotado a
+    # (−1, 1) para rechazar un "15" que dispararía el factor del horizonte; el
+    # cálculo además clampa a [−5%,+20%] (auditoría 2026-06-18, 6A).
+    crecimiento_div_pct: Decimal | None = Field(default=None, gt=-1, lt=1)
     notas: str | None = None
 
 
@@ -79,6 +84,7 @@ def _to_out(c) -> EstimacionOut:  # type: ignore[no-untyped-def]
         precio_actual=_q(c.precio_actual, "0.0001"), eps_actual=_q(c.eps_actual, "0.0001"),
         multiplo_objetivo=_q(c.multiplo_objetivo, "0.0001"),
         metrica_base_4y=_q(c.metrica_base_4y, "0.0001"),
+        metrica_divisa=c.metrica_divisa,
         dividendo_share=_q(c.dividendo_share, "0.000001"),
         precio_objetivo=_q(c.precio_objetivo, "0.0001"),
         crecimiento_pct=_q(c.crecimiento_pct, "0.0001"),
@@ -142,18 +148,27 @@ def editar(isin: str, payload: EstimacionIn, db: Session = Depends(get_db),
     campos = payload.model_dump(exclude_unset=True)
     for k, v in campos.items():
         setattr(e, k, v)
+
+    import json
+    meta = {}
+    if e.consenso_json:
+        try:
+            meta = json.loads(e.consenso_json) or {}
+        except ValueError:
+            meta = {}
+    # Registrar qué campos AUTO ha tocado el usuario: el prefill los respetará y
+    # NO los re-sembrará (3D). El resto sí se refresca con dato fresco.
+    _EDITABLES = {"eps_actual", "multiplo_objetivo", "metrica_base_4y",
+                  "metrica_divisa", "dividendo_share", "crecimiento_div_pct"}
+    tocados = {k for k in campos if k in _EDITABLES}
+    if tocados:
+        meta["editado"] = sorted(set(meta.get("editado", [])) | tocados)
     # Fijar el tipo_val cuenta como confirmación: levanta la marca defensiva de
     # "revisar tipo" y autoriza al prefill a volver a sembrar (ver _seed_estimacion).
     if "tipo_val" in campos:
-        import json
-        meta = {}
-        if e.consenso_json:
-            try:
-                meta = json.loads(e.consenso_json) or {}
-            except ValueError:
-                meta = {}
         meta["tipo_confirmado"] = True
         meta.pop("revisar_tipo_val", None)
+    if meta:
         e.consenso_json = json.dumps(meta)
     db.commit()
 

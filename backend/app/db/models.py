@@ -710,6 +710,11 @@ class Estimacion(Base):
     eps_actual: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     multiplo_objetivo: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     metrica_base_4y: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    # Divisa en la que están la métrica base, el EPS y el dividendo (la de reporte
+    # del feed = la del precio cuando se siembra). Permite reconciliar con la
+    # divisa del precio en _calc_item y NO calcular un CAGR si no cuadran
+    # (auditoría 2026-06-18, coherencia divisa métrica↔precio).
+    metrica_divisa: Mapped[str | None] = mapped_column(String(8), nullable=True)
     dividendo_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     # Crecimiento estimado del dividendo a 4 años (fracción, p.ej. 0.10 = 10%).
     # Editable; si es NULL se deriva del crecimiento implícito de la métrica

@@ -119,9 +119,8 @@ def test_multiplo_normalizado_min_y_alerta(db: Session, cartera, monkeypatch) ->
 
 
 def test_heuristica_defensiva_metrica_contable(db: Session, cartera, monkeypatch) -> None:
-    """Industria de métrica contable (gestora/BDC/REIT) → el prefill NO siembra
-    múltiplo/métrica como PER y marca para revisión. Un PER normal sí se siembra.
-    Al confirmar el tipo_val, la marca se levanta y el prefill vuelve a sembrar."""
+    """ADR-005 2a: una gestora de activos se CLASIFICA como P_FRE (no PER), con
+    múltiplo/métrica manuales y aviso; un software → PER sembrado normal."""
     _pos(db, cartera, "US_AM", "AltMgr", 10, 1000, 50)    # gestora alternativa (P/FRE real)
     _pos(db, cartera, "US_TECH", "TechCo", 10, 1000, 100)  # PER normal
     db.commit()
@@ -147,27 +146,17 @@ def test_heuristica_defensiva_metrica_contable(db: Session, cartera, monkeypatch
     svc.prefill_estimaciones(db, cartera.id)
 
     am = db.execute(select(models.Estimacion).where(models.Estimacion.isin == "US_AM")).scalars().first()
-    assert am.multiplo_objetivo is None      # NO sembrado como PER
+    assert am.tipo_val == "P_FRE"            # gestora → clasificada P_FRE
+    assert am.multiplo_objetivo is None      # múltiplo/métrica manuales (2b)
     assert am.metrica_base_4y is None
     assert am.dividendo_share == Decimal("1.500000")   # el dividendo sí (yield válido)
     cam = [x for x in svc.calcular_estimaciones(db, cartera.id) if x.isin == "US_AM"][0]
-    assert cam.mult_alerta is not None and "tipo_val" in cam.mult_alerta
+    assert cam.mult_alerta is not None and "clasificado" in cam.mult_alerta
 
     tech = db.execute(select(models.Estimacion).where(models.Estimacion.isin == "US_TECH")).scalars().first()
+    assert tech.tipo_val == "PER"
     assert tech.multiplo_objetivo is not None    # PER normal sí se siembra
     assert tech.metrica_base_4y == Decimal("8.0000")
-
-    # Confirmar el tipo_val (incl. PER) levanta la marca y autoriza el sembrado.
-    import json
-    meta = json.loads(am.consenso_json)
-    meta["tipo_confirmado"] = True
-    meta.pop("revisar_tipo_val", None)
-    am.consenso_json = json.dumps(meta)
-    db.commit()
-    svc.prefill_estimaciones(db, cartera.id)
-    am2 = db.execute(select(models.Estimacion).where(models.Estimacion.isin == "US_AM")).scalars().first()
-    assert am2.multiplo_objetivo is not None      # ya confirmado → siembra
-    assert am2.metrica_base_4y == Decimal("3.0000")
 
 
 def test_sin_inputs_no_calcula(db: Session, cartera, monkeypatch) -> None:
@@ -374,3 +363,162 @@ def test_precio_via_ia_fallback(monkeypatch) -> None:
     assert precios._precio_y_divisa("0001.HK") is None
     # `usar_ia=True` (refresco explícito): sí cae a la IA.
     assert precios._precio_y_divisa("0001.HK", usar_ia=True) == (67.6, "HKD")
+
+
+def test_no_per_eps_no_contamina_dividendo():
+    """Bug Blue Owl/OWL (P/FRE): `eps_actual` (EPS real) NO debe contaminar el
+    crecimiento ni el dividendo del horizonte cuando la métrica base es FRE/NAV.
+    Dos filas P_FRE idénticas salvo `eps_actual` deben dar el MISMO cagr4_div, y
+    `crecimiento_pct` debe ser None (no se mezcla FRE con EPS)."""
+    comun = dict(
+        cartera_id="x", isin="US_OWL", tipo_val="P_FRE",
+        multiplo_objetivo=Decimal("15"), metrica_base_4y=Decimal("1.10"),  # FRE/share 4Y
+        dividendo_share=Decimal("0.72"),
+        # crecimiento_div_pct NO fijado → antes caía al crec basura (FRE/EPS)
+    )
+    sin_eps = models.Estimacion(**comun)
+    con_eps = models.Estimacion(**comun, eps_actual=Decimal("0.60"))  # EPS real, otra familia
+
+    precio = Decimal("18")
+    a = svc._calc_item("US_OWL", "Blue Owl", sin_eps, precio, "USD")
+    b = svc._calc_item("US_OWL", "Blue Owl", con_eps, precio, "USD")
+
+    assert a.crecimiento_pct is None and b.crecimiento_pct is None
+    assert a.cagr4_div_pct == b.cagr4_div_pct      # eps_actual ya no afecta
+    assert a.div_yield_pct == b.div_yield_pct       # yield = div/precio, intacto
+
+
+def test_g_div_se_clampa_siempre():
+    """6A: un g_div editado fuera de banda (15 = 1500%) NO debe disparar el
+    factor del horizonte; se clampa a +20% como el derivado."""
+    base = dict(cartera_id="x", isin="US_D", tipo_val="PER",
+                multiplo_objetivo=Decimal("20"), metrica_base_4y=Decimal("12"),
+                eps_actual=Decimal("8"), dividendo_share=Decimal("2"))
+    loco = models.Estimacion(**base, crecimiento_div_pct=Decimal("15"))     # 1500%
+    tope = models.Estimacion(**base, crecimiento_div_pct=Decimal("0.20"))   # +20%
+    a = svc._calc_item("US_D", "D", loco, Decimal("100"), "USD")
+    b = svc._calc_item("US_D", "D", tope, Decimal("100"), "USD")
+    assert a.cagr4_div_pct == b.cagr4_div_pct      # ambos clampados a +20%
+
+
+def test_clasificador_tipo_multiplo():
+    """ADR-005 2a: el seed CLASIFICA el tipo de múltiplo (no solo marca) y no
+    siembra PER sobre financieras. Banco/REIT → P_BV; gestora → P_FRE;
+    corredor de seguros → PER; EPS<0 con FCF>0 → P_FCF."""
+    import json as _json
+    banco = models.Estimacion(cartera_id="x", isin="US_BANK", tipo_val="PER")
+    svc._seed_estimacion(banco, {"industry": "Banks - Regional", "eps": 3.0,
+                                 "forward_eps": 3.3, "pe": 11}, None)
+    assert banco.tipo_val == "P_BV"            # clasificado, no PER
+    assert banco.multiplo_objetivo is None     # no se siembra múltiplo PER
+    assert _json.loads(banco.consenso_json).get("tipo_clasificado")
+
+    # Corredor de seguros (Marsh/AON): SÍ se valora por PER pese a "insurance".
+    brk = models.Estimacion(cartera_id="x", isin="US_BRK", tipo_val="PER")
+    svc._seed_estimacion(brk, {"industry": "Insurance Brokers", "eps": 5.0,
+                               "forward_eps": 5.5, "pe": 20}, None)
+    assert brk.tipo_val == "PER" and brk.multiplo_objetivo is not None
+
+    reit = models.Estimacion(cartera_id="x", isin="ES_REIT", tipo_val="PER")
+    svc._seed_estimacion(reit, {"industry": "", "sector": "Real Estate",
+                                "eps": 1.0, "pe": 18}, None)
+    assert reit.tipo_val == "P_BV"
+
+    owl = models.Estimacion(cartera_id="x", isin="US_OWL2", tipo_val="PER")
+    svc._seed_estimacion(owl, {"industry": "Asset Management", "eps": 0.6, "pe": 25}, None)
+    assert owl.tipo_val == "P_FRE" and owl.metrica_base_4y is None   # múltiplo/métrica manuales (2b)
+
+    fcf = models.Estimacion(cartera_id="x", isin="US_FCF2", tipo_val="PER")
+    svc._seed_estimacion(fcf, {"industry": "Software - Application", "eps": -1.0,
+                               "fcf_ps": 3.5}, None)
+    assert fcf.tipo_val == "P_FCF" and fcf.metrica_base_4y == Decimal("3.5000")
+
+    # Un tipo no-PER ya elegido NO se degrada a PER (aunque no esté confirmado).
+    manual = models.Estimacion(cartera_id="x", isin="US_M", tipo_val="P_FCF")
+    svc._seed_estimacion(manual, {"industry": "Software - Application", "eps": 5.0, "pe": 20}, None)
+    assert manual.tipo_val == "P_FCF"
+
+
+def test_precios_nativos_respeta_precio_manual(db, cartera):
+    from app.services.precios import precios_nativos
+    _pos(db, cartera, "ES_MANUAL", "ManualCo", 10, 1000, 12.5)   # precio_manual_eur=12.5
+    db.commit()
+    out = precios_nativos(db, cartera.id)
+    assert "ES_MANUAL" in out          # ya no desaparece sin px cacheado
+    px, div = out["ES_MANUAL"]
+    assert div == "EUR" and px == Decimal("12.5")
+
+
+def test_metrica_divisa_reconcilia_misma_familia_gbp():
+    """Métrica en GBP (libras) y precio en GBp (peniques) → se reescala ×100 y
+    da el MISMO CAGR/yield que si todo estuviera en peniques (sin FX)."""
+    a = svc._calc_item("UK_A", "A", models.Estimacion(
+        cartera_id="x", isin="UK_A", tipo_val="PER", multiplo_objetivo=Decimal("15"),
+        metrica_base_4y=Decimal("100"), metrica_divisa="GBp", dividendo_share=Decimal("40"),
+    ), Decimal("1200"), "GBp")
+    b = svc._calc_item("UK_B", "B", models.Estimacion(
+        cartera_id="x", isin="UK_B", tipo_val="PER", multiplo_objetivo=Decimal("15"),
+        metrica_base_4y=Decimal("1.00"), metrica_divisa="GBP", dividendo_share=Decimal("0.40"),
+    ), Decimal("1200"), "GBp")
+    assert a.cagr4_pct == b.cagr4_pct
+    assert a.div_yield_pct == b.div_yield_pct
+
+
+def test_metrica_divisa_cross_currency_no_inventa_cagr():
+    """Métrica en DKK y precio en USD (ADR, caso NVO) → no reconciliable sin FX:
+    no se calcula CAGR/yield y se avisa, en vez de dar un número falso."""
+    c = svc._calc_item("DK_NVO", "Novo", models.Estimacion(
+        cartera_id="x", isin="DK0060534915", tipo_val="PER", multiplo_objetivo=Decimal("20"),
+        metrica_base_4y=Decimal("5"), metrica_divisa="DKK", dividendo_share=Decimal("1"),
+    ), Decimal("80"), "USD")
+    assert c.cagr4_pct is None and c.cagr4_div_pct is None and c.div_yield_pct is None
+    assert c.mult_alerta and "divisa" in c.mult_alerta
+
+
+def test_prefill_reseed_respeta_editado_y_refresca_auto():
+    """3D: el prefill RE-SIEMBRA los campos auto con dato fresco pero NUNCA pisa
+    los que el usuario editó (registrados en consenso_json['editado'])."""
+    import json as _json
+    e = models.Estimacion(cartera_id="x", isin="US_R", tipo_val="PER")
+    svc._seed_estimacion(e, {"industry": "Software", "eps": 2.0, "forward_eps": 2.2,
+                             "pe": 20, "dividend": 1.0, "currency": "USD"}, None)
+    assert e.multiplo_objetivo is not None and e.dividendo_share == Decimal("1.0")
+
+    # Usuario edita el múltiplo a mano → se marca como editado.
+    e.multiplo_objetivo = Decimal("30")
+    meta = _json.loads(e.consenso_json)
+    meta["editado"] = ["multiplo_objetivo"]
+    e.consenso_json = _json.dumps(meta)
+
+    # Segundo prefill con datos frescos DISTINTOS.
+    svc._seed_estimacion(e, {"industry": "Software", "eps": 3.0, "forward_eps": 3.3,
+                             "pe": 15, "dividend": 2.0, "currency": "USD"}, None)
+    assert e.multiplo_objetivo == Decimal("30")     # editado → preservado
+    assert e.dividendo_share == Decimal("2.0")      # auto → refrescado
+    assert e.eps_actual == Decimal("3.0")           # auto → refrescado
+
+
+def test_horizonte_cagr_se_acorta_si_consenso_cerca():
+    """3C: si el año objetivo del consenso está más cerca, el CAGR se anualiza
+    sobre menos años (mayor), en vez de sobre 4 fijos."""
+    import datetime as _dt, json as _json
+    y = _dt.date.today().year
+    def mk(years_out):
+        return models.Estimacion(
+            cartera_id="x", isin="US_H", tipo_val="PER",
+            multiplo_objetivo=Decimal("10"), metrica_base_4y=Decimal("20"),  # precio_obj=200
+            consenso_json=_json.dumps({"anio_consenso_4y": y + years_out}))
+    cerca = svc._calc_item("US_H", "H", mk(2), Decimal("100"), "USD")
+    lejos = svc._calc_item("US_H", "H", mk(4), Decimal("100"), "USD")
+    assert cerca.cagr4_pct is not None and lejos.cagr4_pct is not None
+    assert cerca.cagr4_pct > lejos.cagr4_pct      # 2 años anualiza más alto que 4
+
+
+def test_consenso_caducado_avisa():
+    import datetime as _dt, json as _json
+    y = _dt.date.today().year
+    e = models.Estimacion(cartera_id="x", isin="US_C", tipo_val="PER",
+                          multiplo_objetivo=Decimal("10"), metrica_base_4y=Decimal("20"),
+                          consenso_json=_json.dumps({"anio_consenso_4y": y}))  # objetivo = este año
+    c = svc._calc_item("US_C", "C", e, Decimal("100"), "USD")
+    assert c.mult_alerta and "caducado" in c.mult_alerta

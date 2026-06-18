@@ -97,6 +97,7 @@ def init_db() -> None:
         ("bloques", "en_estrategia", "BOOLEAN DEFAULT 1"),
         ("posiciones", "precio_manual_eur", "NUMERIC(18,6)"),
         ("estimaciones", "consenso_json", "TEXT"),
+        ("estimaciones", "metrica_divisa", "VARCHAR(8)"),
         ("carteras", "objetivo_if_eur", "NUMERIC(18,2) DEFAULT 300000"),
         ("carteras", "aportacion_mensual_eur", "NUMERIC(18,2) DEFAULT 0"),
         ("carteras", "regimen_macro_json", "TEXT"),

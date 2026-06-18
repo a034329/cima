@@ -79,11 +79,13 @@ def get_salud_datos(db: Session = Depends(get_db),
              summary="Refresca precios + tipos de cambio desde el feed y devuelve la frescura")
 def refrescar(db: Session = Depends(get_db),
               cartera: models.Cartera = Depends(get_current_cartera)) -> SaludDatos:
-    """Refresco LIGERO de mercado disparado desde el badge de frescura: vuelve a
-    bajar precios y FX de las posiciones abiertas (`forzar=True`), sin re-sembrar
-    estimaciones ni fundamentales (eso es el prefill, más pesado). Devuelve la
-    frescura actualizada para que el badge se repinte."""
-    from app.services.precios import obtener_precios_eur
+    """Refresco COMPLETO de mercado disparado desde el badge de frescura: precios,
+    FX, fundamentales y consenso, y re-siembra de estimaciones (3B). Antes era
+    ligero (solo precio+FX) porque re-sembrar no era seguro; con los flags
+    auto/editado (3D) el re-sembrado RESPETA las ediciones del usuario, así que el
+    badge ya refresca TODO — evita la trampa de "precio fresco + EPS/dividendo
+    viejo" que disparaba CAGR4+Div falsos tras resultados. Devuelve la frescura."""
+    from app.services.estimaciones import prefill_estimaciones
 
-    obtener_precios_eur(db, cartera.id, forzar=True)
+    prefill_estimaciones(db, cartera.id)   # incluye obtener_precios_eur(forzar=True)
     return _construir_salud(db, cartera)

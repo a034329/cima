@@ -101,8 +101,9 @@ def test_restaurar_descartada(client_y_db) -> None:
 
 
 def test_refrescar_endpoint(client_y_db, monkeypatch) -> None:
-    """POST /salud-datos/refrescar fuerza precios (forzar=True) y devuelve la
-    frescura. Simulamos el feed para no salir a red."""
+    """POST /salud-datos/refrescar dispara el refresco COMPLETO (prefill: precios,
+    FX, fundamentales, consenso y re-siembra — 3B) y devuelve la frescura.
+    Simulamos el prefill para no salir a red."""
     client, SessionLocal = client_y_db
     with SessionLocal() as s:
         user = models.User(email="r@cima.local", modo="owner")
@@ -110,16 +111,16 @@ def test_refrescar_endpoint(client_y_db, monkeypatch) -> None:
         s.add(models.Cartera(user_id=user.id, nombre="Test"))
         s.commit()
 
-    llamado = {"forzar": None}
-    from app.services import precios
-    def _fake(db, cid, forzar=False):
-        llamado["forzar"] = forzar
-        return ({}, [])
-    monkeypatch.setattr(precios, "obtener_precios_eur", _fake)
+    llamado = {"prefill": False}
+    from app.services import estimaciones
+    def _fake_prefill(db, cid):
+        llamado["prefill"] = True
+        return 0
+    monkeypatch.setattr(estimaciones, "prefill_estimaciones", _fake_prefill)
 
     r = client.post("/api/salud-datos/refrescar")
     assert r.status_code == 200
-    assert llamado["forzar"] is True   # refresco explícito del feed
+    assert llamado["prefill"] is True   # refresco completo, no solo precio+FX
     assert set(r.json()) == {
         "precios_ts", "fx_ts", "fundamentales_ts",
         "ultimo_import_ts", "ultimo_import_desc", "ultima_transaccion",
