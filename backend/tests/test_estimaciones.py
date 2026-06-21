@@ -84,7 +84,7 @@ def test_prefill_multiplo_consenso_y_guardarrail_no_per(db: Session, cartera, mo
     per = db.execute(
         select(models.Estimacion).where(models.Estimacion.isin == "US_PER")
     ).scalars().first()
-    assert per.multiplo_objetivo == Decimal("40.0000")     # 200/5 (sin histórico → consenso)
+    assert per.multiplo_objetivo == Decimal("38.0000")     # implícito consenso 200/5=40 − 2 (conservador)
     assert per.metrica_base_4y == Decimal("10.0000")       # EPS consenso 4A
     assert per.consenso_json is not None                   # referencia guardada
 
@@ -96,13 +96,14 @@ def test_prefill_multiplo_consenso_y_guardarrail_no_per(db: Session, cartera, mo
     assert fcf.consenso_json is not None                   # pero sí guarda referencia
 
 
-def test_multiplo_normalizado_min_y_alerta(db: Session, cartera, monkeypatch) -> None:
-    """El múltiplo por defecto = min(consenso forward, histórico mediano≥3 años),
-    acotado [5,45]; si divergen >30% se marca alerta (posible re-rating)."""
+def test_multiplo_implicito_consenso_menos_2_y_alerta(db: Session, cartera, monkeypatch) -> None:
+    """El múltiplo objetivo = implícito del consenso (target÷EPS) − 2 puntos
+    (conservador), NO el min con el histórico (que infravaloraba la calidad). Si
+    consenso e histórico divergen >30% → alerta de re-rating."""
     _pos(db, cartera, "US_RR", "ReRater", 10, 1000, 300)
     db.commit()
     import app.services.precios as precios
-    # consenso forward = 360/10 = 36×; histórico mediano = 24× (n=5) → min = 24×
+    # implícito consenso = 360/10 = 36× → objetivo 36 − 2 = 34× (NO el histórico 24×)
     cons = {"US_RR": {"precio_obj_consenso": 360.0, "eps_forward": 10.0,
                       "eps_consenso_4y": 15.0, "per_hist_mediano": 24.0, "per_hist_n": 5}}
     monkeypatch.setattr(precios, "consenso_por_isin", lambda db, cid: cons)
@@ -112,7 +113,7 @@ def test_multiplo_normalizado_min_y_alerta(db: Session, cartera, monkeypatch) ->
 
     svc.prefill_estimaciones(db, cartera.id)
     e = db.execute(select(models.Estimacion).where(models.Estimacion.isin == "US_RR")).scalars().first()
-    assert e.multiplo_objetivo == Decimal("24.0000")       # min(36, 24)
+    assert e.multiplo_objetivo == Decimal("34.0000")       # 36 − 2, no el histórico 24
 
     c = [x for x in svc.calcular_estimaciones(db, cartera.id) if x.isin == "US_RR"][0]
     assert c.mult_alerta is not None and "re-rating" in c.mult_alerta   # 36 vs 24 → diverge 50%
@@ -506,7 +507,7 @@ def test_horizonte_cagr_se_acorta_si_consenso_cerca():
     def mk(years_out):
         return models.Estimacion(
             cartera_id="x", isin="US_H", tipo_val="PER",
-            multiplo_objetivo=Decimal("10"), metrica_base_4y=Decimal("20"),  # precio_obj=200
+            multiplo_objetivo=Decimal("6.5"), metrica_base_4y=Decimal("20"),  # precio_obj=130 (CAGR modesto)
             consenso_json=_json.dumps({"anio_consenso_4y": y + years_out}))
     cerca = svc._calc_item("US_H", "H", mk(2), Decimal("100"), "USD")
     lejos = svc._calc_item("US_H", "H", mk(4), Decimal("100"), "USD")
@@ -518,7 +519,7 @@ def test_consenso_caducado_avisa():
     import datetime as _dt, json as _json
     y = _dt.date.today().year
     e = models.Estimacion(cartera_id="x", isin="US_C", tipo_val="PER",
-                          multiplo_objetivo=Decimal("10"), metrica_base_4y=Decimal("20"),
+                          multiplo_objetivo=Decimal("6.5"), metrica_base_4y=Decimal("20"),  # precio_obj=130
                           consenso_json=_json.dumps({"anio_consenso_4y": y}))  # objetivo = este año
     c = svc._calc_item("US_C", "C", e, Decimal("100"), "USD")
     assert c.mult_alerta and "caducado" in c.mult_alerta
@@ -585,3 +586,109 @@ def test_2b_refinar_multiplo_por_pares(db: Session, cartera):
     assert svc.refinar_multiplo_por_pares(db, cartera.id, "US_BKP", comps) is False
     db.refresh(e)
     assert e.multiplo_objetivo == Decimal("2.0")
+
+
+def test_guarda_cordura_per_implicito_absurdo():
+    """Guarda de cordura: EPS en otra divisa/unidad (caso Novo: EPS DKK ~18.76
+    contra precio USD 43.52 → PER implícito ~2×) → NO se calcula CAGR y se avisa,
+    en vez de soltar un 54% falso."""
+    e = models.Estimacion(cartera_id="x", isin="DK_NOVO", tipo_val="PER",
+                          eps_actual=Decimal("23.03"), multiplo_objetivo=Decimal("13.07"),
+                          metrica_base_4y=Decimal("18.76"), metrica_divisa="USD")
+    c = svc._calc_item("DK_NOVO", "Novo", e, Decimal("43.52"), "USD")
+    assert c.cagr4_pct is None and c.cagr4_div_pct is None
+    assert c.mult_alerta and "incoherente" in c.mult_alerta
+
+
+def test_seed_metrica_divisa_es_la_del_precio():
+    """metrica_divisa = la del PRECIO (los fundamentales ya vienen escalados a esa
+    unidad). NO se usa financial_currency: para LSE rompía el dividendo (Diageo
+    reporta en USD pero el dividendo va en peniques → ×78 → 324% yield)."""
+    e = models.Estimacion(cartera_id="x", isin="GB_DGE", tipo_val="PER")
+    svc._seed_estimacion(e, {"industry": "Beverages", "eps": 105.0,
+                             "currency": "GBp", "financial_currency": "USD"}, None)
+    assert e.metrica_divisa == "GBp"
+
+
+def test_guarda_cordura_yield_absurdo():
+    """Un dividendo en unidad/divisa equivocada (yield > 30%) → se suprime el yield
+    y se avisa, en vez de mostrar un 324% (caso Diageo)."""
+    e = models.Estimacion(cartera_id="x", isin="GB_X", tipo_val="PER",
+                          eps_actual=Decimal("105"), multiplo_objetivo=Decimal("15"),
+                          metrica_base_4y=Decimal("110"), dividendo_share=Decimal("4900"),
+                          metrica_divisa="GBp")
+    c = svc._calc_item("GB_X", "X", e, Decimal("1500"), "GBp")
+    assert c.div_yield_pct is None
+    assert c.mult_alerta and "yield" in c.mult_alerta
+
+
+def test_eps_trailing_deprimido_se_normaliza():
+    """EPS trailing atípicamente bajo (Carrefour: 0.47 vs histórico ~1.3-1.8) →
+    se usa la mediana reciente, no el crudo; CAGR deja de ser disparatado."""
+    e = models.Estimacion(cartera_id="x", isin="FR_CARR", tipo_val="PER")
+    svc._seed_estimacion(e, {
+        "industry": "Grocery Stores", "eps": 0.47, "forward_eps": 1.6,
+        "eps_hist": [1.3, 1.5, 1.7, 0.47], "pe": 9.0,
+    }, None)
+    # base normalizada = mediana de [1.5, 1.7, 0.47(desc?), 1.6 fwd]… > 1.0, no 0.47
+    assert float(e.eps_actual) > 1.0
+
+
+def test_eps_negativo_puntual_no_va_a_p_fcf():
+    """Kraft Heinz con EPS trailing negativo (impairment) pero histórico positivo
+    → se normaliza a positivo y se clasifica PER, no P_FCF."""
+    e = models.Estimacion(cartera_id="x", isin="US_KHC", tipo_val="PER")
+    svc._seed_estimacion(e, {
+        "industry": "Packaged Foods", "eps": -4.86, "forward_eps": 3.0,
+        "eps_hist": [2.6, 2.8, 3.0, -4.86], "fcf_ps": 3.0, "pe": 8.0,
+    }, None)
+    assert e.tipo_val == "PER" and float(e.eps_actual) > 0
+
+
+def test_3m_conglomerado_es_per_no_sotp():
+    e = models.Estimacion(cartera_id="x", isin="US_MMM", tipo_val="PER")
+    svc._seed_estimacion(e, {"industry": "Conglomerates", "eps": 6.0,
+                             "forward_eps": 6.5, "pe": 18.0}, None)
+    assert e.tipo_val == "PER"        # operativa → PER, no suma de partes
+
+
+def test_tipo_ia_es_primario_y_corrige_el_determinista():
+    """La clasificación IA manda: un BDC que el fallback determinista mandaría a
+    P_FRE (industria 'Asset Management') se fija a P_BV si la IA lo dice — y el
+    override actúa desde CUALQUIER tipo previo, no solo desde PER."""
+    e1 = models.Estimacion(cartera_id="x", isin="US_OBDC", tipo_val="PER")
+    svc._seed_estimacion(e1, {"industry": "Asset Management", "eps": 1.2}, None)
+    assert e1.tipo_val == "P_FRE"            # fallback determinista (imperfecto)
+    e2 = models.Estimacion(cartera_id="x", isin="US_OBDC", tipo_val="P_FRE")
+    svc._seed_estimacion(e2, {"industry": "Asset Management", "eps": 1.2,
+                              "book_value_ps": 15.0, "price_to_book": 1.0},
+                         None, tipo_ia=("P_BV", "BDC cotiza sobre NAV"))
+    assert e2.tipo_val == "P_BV"             # IA corrige, desde un no-PER
+
+
+def test_clasificar_tipos_ia_parsea_lote(monkeypatch):
+    """clasificar_tipos_ia: una llamada para varias empresas; parseo robusto;
+    descarta tipos inválidos; {} si no hay candidatos."""
+    from app.adapters.ia import get_clasificador
+    fake = ('Aquí: {"US1": {"tipo": "P_BV", "razon": "banco"}, '
+            '"US2": {"tipo": "PER", "razon": "operativa"}, '
+            '"US3": {"tipo": "XXX", "razon": "inválido"}}')
+    monkeypatch.setattr(type(get_clasificador()), "completar",
+                        lambda self, s, u, **k: fake, raising=False)
+    out = svc.clasificar_tipos_ia([{"isin": "US1"}, {"isin": "US2"}, {"isin": "US3"}])
+    assert out["US1"][0] == "P_BV" and out["US2"][0] == "PER"
+    assert "US3" not in out                  # tipo inválido descartado
+    assert svc.clasificar_tipos_ia([]) == {}
+
+
+def test_multiplo_desde_target_yfinance_sin_fmp():
+    """Sin consenso FMP, el múltiplo se deriva del target medio de YFINANCE
+    (targetMeanPrice ÷ forwardEps) − 2, en vez de caer al forwardPE crudo."""
+    e = models.Estimacion(cartera_id="x", isin="US_QC", tipo_val="PER")
+    svc._seed_estimacion(e, {
+        "industry": "Internet Content & Information", "eps": 22.0,
+        "forward_eps": 25.0, "target_mean": 700.0, "pe": 15.0,
+        "eps_hist": [14, 18, 22],
+    }, None)   # c=None → sin FMP
+    # implícito = 700/25 = 28 → −2 = 26 (no el forwardPE 15)
+    assert e.multiplo_objetivo == Decimal("26.0000")

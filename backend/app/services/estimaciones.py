@@ -12,6 +12,7 @@ pondera por valor de mercado (EUR) de cada posición y alimenta el dashboard.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -122,7 +123,7 @@ def _calc_item(
     # da un CAGR/yield disparatado (auditoría 2026-06-18, Grupo 1):
     #   - misma familia distinta escala (GBp↔GBP): se reescala por la escala (exacto, sin FX).
     #   - divisas realmente distintas: no inventamos número (precio_obj/div → None) y se avisa.
-    from app.services.precios import base_y_escala
+    from app.services.precios import base_y_escala, factor_fx_eur_cacheado
     div_yield = div
     alerta_divisa = False
     md = getattr(e, "metrica_divisa", None) if e else None
@@ -130,7 +131,14 @@ def _calc_item(
         mb, em = base_y_escala(md)
         pb, ep = base_y_escala(divisa)
         if mb == pb and ep:
-            f = em / ep
+            f = em / ep                      # misma divisa, distinta escala (GBp↔GBP): exacto
+        else:
+            # Divisas distintas (ADR: métrica DKK vs precio USD; Diageo: USD vs
+            # GBp): convertir vía FX cacheado. Sin FX en caché → no inventar.
+            fm = factor_fx_eur_cacheado(md)
+            fp = factor_fx_eur_cacheado(divisa)
+            f = (fm / fp) if (fm and fp and fp != 0) else None
+        if f is not None:
             if precio_obj is not None:
                 precio_obj = precio_obj * f
             if div_yield is not None:
@@ -142,6 +150,25 @@ def _calc_item(
 
     cagr4 = _cagr(precio_obj, precio, horizonte) if (precio_obj is not None and precio) else None
     yld = (div_yield / precio) if (div_yield is not None and precio and precio > 0) else None
+
+    # ── GUARDA DE CORDURA (auditoría 2026-06-18) ──────────────────────────────
+    # Un PER actual implícito (precio/EPS) o un CAGR resultante absurdos delatan
+    # que el EPS/métrica está en unidad o divisa equivocada (caso Novo: EPS en
+    # DKK contra precio en USD → PER 1,9× → CAGR 54%). Mejor NO dar un número que
+    # dar uno falso: se suprime el CAGR y se avisa para revisar.
+    pe_implicito = (precio / eps) if (tipo == "PER" and eps and eps > 0 and precio) else None
+    incoh_cagr = bool(
+        (pe_implicito is not None and (pe_implicito < 4 or pe_implicito > 70))
+        or (cagr4 is not None and abs(cagr4) > Decimal("0.40"))
+    )
+    # Yield absurdo (>30%) = casi seguro un error de unidad/divisa del dividendo
+    # (caso Diageo: dividendo en peniques tratado como USD → 324%). Lo suprimimos.
+    incoh_yld = bool(yld is not None and yld > Decimal("0.30"))
+    if incoh_cagr:
+        cagr4 = None
+    if incoh_yld:
+        yld = None
+    incoherente = incoh_cagr or incoh_yld
     # `crec` = crecimiento de la MÉTRICA (col O vs col L) — SOLO tiene sentido en
     # PER, donde ambas son EPS. En P/FCF·P/BV·P/FRE, `base` es la métrica (FRE,
     # NAV, FCF/share…) y `eps_actual` sigue siendo el EPS real: compararlos mezcla
@@ -185,7 +212,15 @@ def _calc_item(
     # confirmar) tiene prioridad: avisa de que NO se autocompletó y hay que fijar
     # el tipo_val. Si no, la alerta de divergencia consenso/histórico (solo PER).
     revisar = c.get("revisar_tipo_val")
-    if alerta_divisa:
+    if incoherente:
+        if incoh_yld:
+            det = "yield > 30%"
+        elif pe_implicito is not None and (pe_implicito < 4 or pe_implicito > 70):
+            det = f"PER actual {pe_implicito:.0f}×"
+        else:
+            det = "CAGR fuera de rango"
+        alerta = f"datos incoherentes ({det}) — revisa EPS/divisa del dividendo"
+    elif alerta_divisa:
         # Divisa de la métrica ≠ divisa del precio y no reconciliable → no se
         # calcula CAGR (mejor sin número que con uno falso).
         alerta = f"métrica en {md} pero precio en {divisa} — revisa la divisa (CAGR no calculado)"
@@ -250,17 +285,25 @@ def _multiplo_consenso_hist(c: dict | None) -> tuple[float | None, str | None]:
     eps_fwd = c.get("eps_forward")
     per_med = c.get("per_hist_mediano")
     per_n = c.get("per_hist_n") or 0
+    # Múltiplo IMPLÍCITO del consenso = precio objetivo ÷ EPS (mismo horizonte) =
+    # el múltiplo que los analistas asignan de media. Es el escenario base.
     cm = (target / eps_fwd) if (target and eps_fwd and eps_fwd > 0) else None
     hm = per_med if (per_med and per_n >= 3) else None
-    cand = [m for m in (cm, hm) if m and m > 0]
-    if not cand:
-        return None, None
-    norm = min(cand)
     alerta = None
-    if cm and hm and abs(cm - hm) / min(cm, hm) > 0.30:
-        alerta = f"consenso {cm:.0f}× vs histórico {hm:.0f}× — posible re-rating, revisa"
-    elif norm > 45 or norm < 5:
-        alerta = f"múltiplo normalizado {norm:.0f}× fuera de rango — revisa"
+    if cm:
+        # Conservador: el implícito del consenso − 2 puntos. Antes se tomaba
+        # min(consenso, histórico), lo que infravaloraba a las de CALIDAD que se
+        # re-ratearon (su histórico está deprimido y arrastraba el objetivo a la
+        # baja, p.ej. Meta 16× cuando el consenso implica ~24×).
+        norm = cm - 2.0
+        if hm and abs(cm - hm) / min(cm, hm) > 0.30:
+            alerta = f"consenso {cm:.0f}× vs histórico {hm:.0f}× — revisa si el re-rating es sostenible"
+    elif hm:
+        norm = hm                       # sin consenso → histórico como respaldo
+    else:
+        return None, None
+    if not alerta and (norm > 45 or norm < 5):
+        alerta = f"múltiplo {norm:.0f}× fuera de rango — revisa"
     return max(5.0, min(45.0, norm)), alerta
 
 
@@ -459,13 +502,39 @@ def prefill_estimaciones(db: Session, cartera_id: str) -> int:
     funds = fundamentales_por_isin(db, cartera_id, refrescar=True)
     cons = consenso_por_isin(db, cartera_id)
     existentes = _filas_estimacion(db, cartera_id)
+
+    # Clasificación IA del tipo de múltiplo EN LOTE (primaria, robusta). Solo
+    # para posiciones cuyo tipo no haya confirmado/editado el usuario. Si la IA
+    # falla, cada seed cae a su fallback determinista. Best-effort.
+    candidatos = []
+    for isin in set(funds) | set(cons):
+        e0 = existentes.get(isin)
+        meta0 = {}
+        if e0 and e0.consenso_json:
+            try:
+                meta0 = json.loads(e0.consenso_json) or {}
+            except ValueError:
+                meta0 = {}
+        if meta0.get("tipo_confirmado") or "tipo_val" in set(meta0.get("editado", [])):
+            continue
+        fi = funds.get(isin, {})
+        if _es_fondo(isin, fi.get("nombre") or fi.get("name") or ""):
+            continue
+        candidatos.append({
+            "isin": isin,
+            "nombre": fi.get("nombre") or fi.get("name") or fi.get("shortName") or isin,
+            "sector": fi.get("sector"), "industry": fi.get("industry"),
+            "eps": fi.get("eps"), "tiene_fcf": bool(fi.get("fcf_ps")),
+        })
+    tipos_ia = clasificar_tipos_ia(candidatos)
+
     n = 0
     for isin in set(funds) | set(cons):
         e = existentes.get(isin)
         nueva = e is None
         if nueva:
             e = models.Estimacion(cartera_id=cartera_id, isin=isin, tipo_val="PER")
-        _seed_estimacion(e, funds.get(isin, {}), cons.get(isin))
+        _seed_estimacion(e, funds.get(isin, {}), cons.get(isin), tipo_ia=tipos_ia.get(isin))
         if nueva:
             db.add(e)
         n += 1
@@ -508,32 +577,76 @@ _SECTOR_CONTABLE = ("financial services", "real estate")
 
 def _clasificar_tipo_val(industria: str, sector: str, nombre_u: str,
                          eps: float | None, fcf_ps: float | None) -> tuple[str, str]:
-    """Clasifica el TIPO de múltiplo por modelo de negocio (ADR-005, 2a), dentro
-    del catálogo actual (PER/P_FCF/P_BV/P_FRE/SOTP). Devuelve (tipo, razón).
-    Determinista: industria/sector + nombre + señal de EPS. El usuario puede
-    override (queda fijado). P_S/P_AFFO/EV-EBITDA llegan en 2c."""
+    """FALLBACK determinista PRINCIPISTA del tipo de múltiplo (la IA es la
+    primaria, ver `clasificar_tipos_ia`). Por sector/industria AMPLIOS + señales
+    financieras — SIN reglas por nombre concreto (eso no escalaba). Imperfecto a
+    propósito: solo cubre cuando la IA no está disponible (offline/tests).
+    Devuelve (tipo, razón). El usuario puede override (queda fijado)."""
     def has(s: str, *ks: str) -> bool:
         return any(k in s for k in ks)
 
-    # REIT / inmobiliario patrimonialista → P_BV (NAV; P_AFFO en 2c)
-    if has(industria, "reit") or has(nombre_u, "REIT") or \
-       (not industria and sector == "real estate"):
+    if has(industria, "reit") or sector == "real estate":
         return "P_BV", "REIT/inmobiliario — valor patrimonial (NAV)"
-    # Gestoras de activos / alternativos (OWL, BAM, BX…) → P_FRE
     if has(industria, "asset management"):
         return "P_FRE", "gestora de activos — fee-related earnings"
-    # Banca / seguros de balance (excl. corredores) → P_BV
     if (has(industria, "bank", "insurance") and not has(industria, "insurance brokers")) \
-       or (not industria and (sector == "financial services"
-                              or has(nombre_u, "BANCO", "BANCA"))):
+       or sector == "financial services":
         return "P_BV", "financiera de balance — valor contable"
-    # Holdings / conglomerados → SOTP (suma de partes)
-    if has(industria, "conglomerates") or has(nombre_u, "HOLDING", "HUTCHISON"):
-        return "SOTP", "holding/conglomerado — suma de partes (NAV)"
     # EPS no representativo (≤0 o ausente) con FCF positivo → P_FCF
     if (eps is None or eps <= 0) and (fcf_ps is not None and fcf_ps > 0):
         return "P_FCF", "EPS no representativo; FCF positivo"
     return "PER", ""
+
+
+_CATALOGO_TIPO_PROMPT = (
+    "PER = empresa operativa rentable normal (se valora por beneficios/EPS).\n"
+    "P_FCF = el flujo de caja libre refleja el valor mejor que el EPS "
+    "(capital-intensivas, o EPS distorsionado/negativo puntual pero FCF sólido).\n"
+    "P_BV = se valora sobre su PATRIMONIO/NAV: bancos, aseguradoras de balance, "
+    "BDCs, REITs.\n"
+    "P_FRE = gestoras de activos/alternativos: el valor son los fee-related "
+    "earnings (Blue Owl, Brookfield, Blackstone…).\n"
+    "SOTP = holding/conglomerado de inversión cuyo valor = suma de sus "
+    "participaciones (NAV), no sus beneficios consolidados (CK Hutchison…)."
+)
+
+
+def clasificar_tipos_ia(candidatos: list[dict]) -> dict[str, tuple[str, str]]:
+    """Clasificador PRIMARIO del tipo de múltiplo vía IA, EN LOTE (una llamada
+    para toda la cartera), igual que el clasificador de bloques. Razona el modelo
+    de negocio en vez de casar strings → generaliza a cualquier valor. Devuelve
+    {isin: (tipo_val, razón)}; {} si la IA falla o no devuelve JSON válido (el
+    caller cae al fallback determinista). `candidatos`: [{isin,nombre,sector,
+    industry,eps,tiene_fcf}]."""
+    if not candidatos:
+        return {}
+    from app.adapters.ia import get_clasificador
+    system = (
+        "Eres analista de valoración. Para cada empresa, elige el MÉTODO de "
+        "múltiplo más apropiado según su MODELO DE NEGOCIO, de este catálogo:\n"
+        f"{_CATALOGO_TIPO_PROMPT}\n"
+        "Responde EXCLUSIVAMENTE con JSON: un objeto {\"<ISIN>\": {\"tipo\": "
+        "\"PER|P_FCF|P_BV|P_FRE|SOTP\", \"razon\": \"<≤8 palabras>\"}} para cada "
+        "ISIN dado, sin texto alrededor."
+    )
+    user = json.dumps(candidatos, ensure_ascii=False)
+    try:
+        txt = get_clasificador().completar(system, user,
+                                           timeout_s=getattr(settings, "ia_chat_timeout_s", 120))
+        m = re.search(r"\{.*\}", txt or "", re.DOTALL)
+        if not m:
+            return {}
+        data = json.loads(m.group(0), strict=False)
+        out: dict[str, tuple[str, str]] = {}
+        for isin, v in (data.items() if isinstance(data, dict) else []):
+            if not isinstance(v, dict):
+                continue
+            tipo = str(v.get("tipo") or "").strip().upper()
+            if tipo in models.TIPOS_VAL:
+                out[isin] = (tipo, str(v.get("razon") or "").strip()[:60])
+        return out
+    except Exception:
+        return {}
 
 
 # Banda del tilt de calidad sobre el múltiplo objetivo (Fase 2b). Modesto: la
@@ -569,6 +682,27 @@ def _factor_calidad(f: dict) -> Decimal:
     factor = Decimal("1") + score
     lo, hi = _BANDA_CALIDAD
     return max(lo, min(hi, factor))
+
+
+def _eps_base_representativo(base_eps, eps_hist, forward_eps):
+    """EPS base REPRESENTATIVO para valorar (auditoría 2026-06-18): el trailing
+    crudo puede venir golpeado por un extraordinario (Carrefour) o negativo
+    (Kraft Heinz tras impairment) y arrastra toda la valoración. Si el trailing
+    está MUY por debajo de la mediana reciente (o es ≤0), se usa la mediana de
+    los últimos años positivos (+ forward). NO se toca al alza (un grower con
+    EPS actual en o sobre su norma se respeta) para no infravalorarlo."""
+    import statistics
+    pos = [float(x) for x in (eps_hist or []) if x is not None and float(x) > 0][-4:]
+    if forward_eps is not None and float(forward_eps) > 0:
+        pos = pos + [float(forward_eps)]
+    if len(pos) < 2:
+        return base_eps
+    med = statistics.median(pos)
+    if base_eps is None or base_eps <= 0:
+        return med
+    if base_eps < 0.6 * med:          # trailing deprimido/atípico → normalizar al alza
+        return med
+    return base_eps
 
 
 def _crec_metrica_no_per(tipo: str, f: dict) -> float:
@@ -703,7 +837,8 @@ def _crecimiento_dps(dps_hist: list | None) -> float | None:
     return max(lo, min(hi, g))
 
 
-def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
+def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None,
+                     tipo_ia: tuple[str, str] | None = None) -> None:
     """Rellena (solo campos VACÍOS) una fila Estimacion desde consenso + fundamentales.
     Compartido por cartera y seguimiento. El consenso de EPS solo siembra
     multiplo/metrica si tipo_val=PER (P_FCF/P_BV/P_FRE quedan manuales). Heurística
@@ -745,31 +880,46 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
     fcf_ps = f.get("fcf_ps")
     bvps = f.get("book_value_ps")
 
-    # BPA base = último ejercicio fiscal real (respeta el año fiscal propio de
-    # cada empresa); respaldo = trailing.
+    # Consenso EFECTIVO: el de FMP (`c`) y, si falta el target/EPS forward (sin
+    # FMP key), respaldo con el de YFINANCE (targetMeanPrice + forwardEps) — así
+    # el múltiplo implícito del consenso funciona sin FMP.
+    c_eff = dict(c or {})
+    if not c_eff.get("precio_obj_consenso") and f.get("target_mean"):
+        c_eff["precio_obj_consenso"] = f.get("target_mean")
+    if not c_eff.get("eps_forward") and feps:
+        c_eff["eps_forward"] = feps
+
+    # BPA base = último ejercicio fiscal real (respaldo trailing), NORMALIZADO
+    # contra el histórico: un EPS trailing deprimido por un extraordinario o
+    # negativo (Carrefour, Kraft Heinz) se sustituye por la mediana reciente.
     base_eps = eps_fiscal if (eps_fiscal is not None and eps_fiscal > 0) else eps
+    base_eps = _eps_base_representativo(base_eps, eps_hist, feps)
     if "eps_actual" not in editado and base_eps is not None:
         e.eps_actual = Decimal(str(base_eps)).quantize(Decimal("0.0001"))
 
     # CLASIFICAR el tipo de múltiplo (ADR-005, 2a) y fijarlo si el usuario no lo
-    # confirmó/editó y no es un fondo. Antes solo se MARCABA para revisar; ahora
-    # se asigna el tipo correcto (overridable).
+    # confirmó/editó y no es un fondo. Se clasifica con el EPS NORMALIZADO: así
+    # un negativo puntual (Kraft Heinz) no manda la empresa a P_FCF por error.
     razon_tipo = ""
-    # Solo se reclasifica desde el DEFAULT (PER): un tipo no-PER ya presente lo
-    # eligió alguien deliberadamente y se respeta (aunque no esté "confirmado").
-    if (not confirmado and not es_fondo_flag and "tipo_val" not in editado
-            and e.tipo_val == "PER"):
-        tipo_sug, razon_tipo = _clasificar_tipo_val(industria, sector, nombre_u, eps, fcf_ps)
-        if tipo_sug != "PER":
-            e.tipo_val = tipo_sug
+    if not confirmado and not es_fondo_flag and "tipo_val" not in editado:
+        if tipo_ia is not None:
+            # IA (primaria): puede corregir un tipo mal puesto antes (override
+            # desde CUALQUIER tipo, no solo desde PER).
+            e.tipo_val, razon_tipo = tipo_ia[0], f"IA: {tipo_ia[1]}" if tipo_ia[1] else "IA"
+        elif e.tipo_val == "PER":
+            # Fallback determinista: solo reclasifica desde el default PER (un
+            # no-PER ya elegido se respeta).
+            tipo_sug, razon_tipo = _clasificar_tipo_val(industria, sector, nombre_u, base_eps, fcf_ps)
+            if tipo_sug != "PER":
+                e.tipo_val = tipo_sug
 
     # Sembrar métrica/múltiplo según el TIPO (respetando ediciones del usuario).
     if not es_fondo_flag:
         if e.tipo_val == "PER":
-            # Múltiplo objetivo NORMALIZADO: min(forward de consenso, histórico
-            # mediano), acotado a [5,45]. Respaldo no-US: forwardPE acotado.
+            # Múltiplo objetivo = implícito del consenso (target÷EPS) − 2; respaldo
+            # forwardPE acotado si no hay consenso ni en FMP ni en yfinance.
             if "multiplo_objetivo" not in editado and not prev.get("multiplo_pares"):
-                mult, _ = _multiplo_consenso_hist(c)
+                mult, _ = _multiplo_consenso_hist(c_eff)
                 if mult is not None:
                     e.multiplo_objetivo = Decimal(str(mult)).quantize(Decimal("0.0001"))
                 elif pe and pe > 0:
@@ -806,8 +956,12 @@ def _seed_estimacion(e: models.Estimacion, f: dict, c: dict | None) -> None:
     if "dividendo_share" not in editado and div is not None:
         e.dividendo_share = Decimal(str(div)).quantize(Decimal("0.000001"))
 
-    # Divisa de la métrica = la de reporte del feed (= la del precio tras el fix
-    # 1A). Permite reconciliar con la divisa del precio en _calc_item.
+    # Divisa de la métrica = la del PRECIO. OJO: los valores de fundamentales
+    # (eps, dividendo, fcf) ya vienen ESCALADOS a la unidad del precio por `_x`
+    # (×100 en GBp), NO en `financial_currency`. Usar financial_currency aquí
+    # rompía LSE (Diageo reporta en USD pero el dividendo va en peniques →
+    # ×78 → 324% de yield). El cross-currency de ADRs (Novo) lo caza la guarda
+    # de cordura por PER/CAGR/yield implícitos, no esta etiqueta.
     if "metrica_divisa" not in editado and f.get("currency"):
         e.metrica_divisa = str(f.get("currency"))[:8]
 

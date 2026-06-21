@@ -75,9 +75,9 @@ def test_endpoint_seguimiento_e2e(monkeypatch) -> None:
             assert body["isin"] == "US_TEST"
             assert body["nombre"] == "Test Co"
             est = body["estimacion"]
-            assert est["multiplo_objetivo"] == "40.0000"     # 200 / 5
+            assert est["multiplo_objetivo"] == "38.0000"     # implícito consenso 200/5=40 − 2 (conservador)
             assert est["metrica_base_4y"] == "10.0000"       # EPS consenso 4A
-            assert est["precio_objetivo"] == "400.0000"      # 40 × 10
+            assert est["precio_objetivo"] == "380.0000"      # 38 × 10
 
             lst = c.get("/api/seguimiento").json()
             assert [x["isin"] for x in lst] == ["US_TEST"]

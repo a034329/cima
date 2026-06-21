@@ -395,6 +395,20 @@ def resolver_simbolos(isines: list[str]) -> dict[str, str]:
     return out
 
 
+def factor_fx_eur_cacheado(divisa: str) -> Decimal | None:
+    """EUR por 1 unidad de `divisa` leyendo SOLO la caché (sin red), incl. la
+    escala de peniques. Para reconciliar divisas distintas en _calc_item sin
+    bloquear las lecturas. None si el par no está cacheado."""
+    base, escala = base_y_escala(divisa)
+    if base == "EUR":
+        return escala
+    entry = _leer_cache().get(f"fx:EUR{base}=X", {})
+    rate = entry.get("valor")
+    if not rate:
+        return None
+    return (Decimal("1") / Decimal(str(rate))) * escala
+
+
 def base_y_escala(divisa: str) -> tuple[str, Decimal]:
     """Divisa de cotización → (divisa BASE para el par EUR, escala). GBp/GBX →
     (GBP, 0.01); el resto → (divisa, 1). Misma convención de peniques que el spot."""
@@ -496,6 +510,15 @@ def _fetch_fundamentales(sim: str) -> dict | None:
             "industry": info.get("industry"),   # para detectar familias de métrica contable
 
             "currency": cur,
+            # Divisa de REPORTE (la del EPS/book/FCF), que en ADRs difiere de la
+            # de cotización (Novo: financials en DKK, precio en USD). Es la que
+            # debe llevar la métrica para reconciliar bien (auditoría 2026-06-18).
+            "financial_currency": info.get("financialCurrency"),
+            # Consenso de analistas DE YFINANCE (gratis, sin FMP): precio objetivo
+            # medio + nº de analistas. Permite derivar el múltiplo implícito del
+            # consenso (target ÷ forward_eps) aunque no haya FMP key.
+            "target_mean": info.get("targetMeanPrice"),
+            "n_analistas": info.get("numberOfAnalystOpinions"),
             "eps_hist": eps_hist,        # BPA real por año fiscal (oldest→newest)
             "eps_fiscal": eps_fiscal,    # BPA del último ejercicio cerrado
             "beta": info.get("beta"),    # beta 5y (unitless) — señal de volatilidad
